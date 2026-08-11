@@ -1,7 +1,7 @@
 # M2 执行进度交接文档
 
 - 日期：2026-08-11（任务 7–17 更新于 2026-08-12）
-- 状态：**M2 任务 1–17 全部完成并通过双审查 + 最终整体审查（257 passed / ruff clean）**；任务 18（真 key 冒烟）待用户提供 DeepSeek API key
+- 状态：**M2 全部 18 个任务完成**（任务 1–17 双审查 + 最终整体审查通过，任务 18 真实 DeepSeek 冒烟通过）；257 passed / ruff clean
 - 写给：接手执行的 agent（或人类）
 
 ## 0. 最新状态（2026-08-12 更新）
@@ -10,7 +10,15 @@
 
 任务 7–17 全部完成，commit 序列：`d108eac`(7) `82ecb0e`(8) `eaef4ff`(9) `dde7ad2`(10) `a5b28e8`(11) `a8bdd06`(12) `0197d08`(13) `be8a750`(14) `ec28139`(15) `49bbabb`(16) `ff646fe`(18 脚本)。最终整体审查通过：附录 A 需求映射逐条落地、附录 B 命名一致、无越界实现、状态机/幂等/白名单跨任务一致。
 
-**任务 18 唯一阻塞**：`~/langgraph-test/.env`（DEEPSEEK_API_KEY）已不存在，需用户提供 key 写入项目根 `.env`（已 gitignore）后执行冒烟（脚本 `scripts/smoke_seed.py` + `scripts/smoke_two_agents.py` 已就绪，步骤见计划行 4440-4649）。
+**任务 18 冒烟结果（2026-08-12，真实 DeepSeek，模型 deepseek-v4-flash）**：完整两轮真实闭环通过——
+1. 空问题开始 → LLM 首轮出题 5 题（与背景高度相关），in_progress+generating → collecting+open，处理中态文案正常
+2. 双 Agent（MCP token）list/get/submit 成功，收齐自动驱动
+3. 第 1 轮摘要四块准确、convergence=continue，定向追问精准针对分歧/盲区/未决，第 2 轮自动开启
+4. 第 2 轮 Agent 端 previous_summary=True（PRD 9.2 端到端），第 2 轮摘要 continue，第 3 轮开启
+5. Web 详情页：每轮摘要四块、收敛徽章、累计轮次/上限（2→3/10）全部渲染
+6. 审计叙事完整：matter_started(mode=llm_generate)→round_generated→task_submitted×2→round_summarized→convergence_decided(continue)→round_generated(2)→…
+
+冒烟注意事项：dev 库 hub.db 是 M1 旧 schema 导致启动报错（no such column granted_extra_rounds），已备份为 hub.pre-m2-backup.db 后重建；后台任务需显式长 timeout（默认 60s 会杀 uvicorn）；脚本需 `PYTHONPATH=.`（项目 package=false）。
 
 新接受的计划偏离（均已实证真实必要）：
 - 任务 13：`test_start_from_blocked_rejected_with_audit` 加 `expire_all()`（Core UPDATE 不同步 identity map）；`init_u` 去绑定（F841）
