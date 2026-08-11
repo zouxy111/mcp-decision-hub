@@ -10,9 +10,10 @@ from sqlalchemy.orm import Session
 
 from hub.api import audit
 from hub.api.errors import ApiError
+from hub.api.matters import is_participant
 from hub.api.passwords import sha256_hex
 from hub.config import Settings
-from hub.db.models import IdempotencyRecord, Matter, Output, Round, Task
+from hub.db.models import IdempotencyRecord, Matter, Output, Round, Task, User
 from hub.domain.approval import ApprovalWindowError, validate_approved_at
 from hub.domain.digest import compute_content_digest
 from hub.domain.idempotency import IdempotencyDecision, decide_idempotency
@@ -313,3 +314,70 @@ def mcp_submit_output(
         matter_id=task.matter_id, detail={"task_id": task_id},
     )
     return response
+
+
+def mcp_get_matter_status(
+    session: Session,
+    settings: Settings,
+    *,
+    user_id: int,
+    matter_id: str,
+    rounds_before: int | None = None,
+) -> dict:
+    matter = session.get(Matter, matter_id)
+    if matter is None:
+        raise ApiError(404, "RESOURCE_NOT_FOUND", "事项不存在")
+    involved = matter.initiator_id == user_id or is_participant(
+        session, matter_id=matter_id, user_id=user_id
+    )
+    if not involved:
+        audit.record_audit(
+            session, audit.FORBIDDEN_DENIED, actor_user_id=user_id,
+            matter_id=matter_id, detail={"action": "get_matter_status"},
+        )
+        raise ApiError(404, "RESOURCE_NOT_FOUND", "事项不存在或不可见")
+    all_rounds = session.scalars(
+        select(Round)
+        .where(Round.matter_id == matter_id)
+        .order_by(Round.round_number.desc())
+    ).all()
+    visible = all_rounds
+    if rounds_before is not None:
+        visible = [r for r in visible if r.round_number < rounds_before]
+    recent = visible[:3]
+    round_views = []
+    for rnd in recent:
+        tasks = session.scalars(
+            select(Task).where(Task.round_id == rnd.id)
+        ).all()
+        round_views.append({
+            "round_id": rnd.id,
+            "round_number": rnd.round_number,
+            "status": rnd.status,
+            "tasks_total": len(tasks),
+            "tasks_submitted": sum(1 for t in tasks if t.status == "submitted"),
+            "summaries": [],  # M1: no summaries yet, never fabricate
+        })
+    result = {
+        "matter_id": matter.id,
+        "title": matter.title,
+        "status": matter.status,
+        "rounds_total": len(all_rounds),
+        "recent_rounds": round_views,
+        "resolution": None,  # M1: resolutions land in M3
+    }
+    if matter.initiator_id == user_id and round_views:
+        latest = round_views[0]
+        tasks = session.scalars(
+            select(Task).where(Task.round_id == latest["round_id"])
+        ).all()
+        result["participant_progress"] = [
+            {
+                "user_id": t.assignee_id,
+                "username": session.get(User, t.assignee_id).username,
+                "task_id": t.id,
+                "task_status": t.status,
+            }
+            for t in tasks
+        ]
+    return result

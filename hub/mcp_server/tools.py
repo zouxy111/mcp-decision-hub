@@ -75,3 +75,13 @@ def register_tools(mcp: FastMCP, session_factory, settings: Settings) -> None:
             session_factory, methods.mcp_submit_output,
             settings=settings, user_id=_current_user_id(), payload=payload,
         )
+
+    @mcp.tool
+    def get_matter_status(matter_id: str,
+                          rounds_before: int | None = None) -> dict:
+        """Matter progress for initiator or participant (PRD 3.0)."""
+        return _call(
+            session_factory, methods.mcp_get_matter_status,
+            settings=settings, user_id=_current_user_id(), matter_id=matter_id,
+            rounds_before=rounds_before,
+        )
