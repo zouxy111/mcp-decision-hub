@@ -30,10 +30,16 @@ def db_session(session_factory):
 
 
 @pytest.fixture()
-def client(settings):
+def app_llm():
+    """Override in tests that drive the background pipeline via the app."""
+    return None
+
+
+@pytest.fixture()
+def client(settings, app_llm):
     from hub.main import create_app
 
-    app = create_app(settings)
+    app = create_app(settings, llm=app_llm)
     with TestClient(app) as test_client:
         yield test_client
 

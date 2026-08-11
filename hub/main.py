@@ -1,45 +1,79 @@
-"""Application assembly: FastAPI + MCP sub-app + web routes."""
+"""Application assembly: FastAPI + MCP sub-app + web routes + drive worker."""
 
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
 from hub.api.accounts import seed_admin
+from hub.background import drive_worker
 from hub.config import Settings, load_settings
 from hub.db.session import init_db, make_engine, make_session_factory
+from hub.llm.client import DeepSeekClient
 from hub.web import routes_admin, routes_agents, routes_auth, routes_matters
 
 try:
     from hub.mcp_server.app import create_mcp_asgi
-except ImportError:  # MCP server module lands in task 18; web-only runs until then
+except ImportError:
     create_mcp_asgi = None
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def _make_llm(settings: Settings):
+    return DeepSeekClient(
+        api_key=settings.deepseek_api_key,
+        base_url=settings.llm_base_url,
+        model=settings.llm_model,
+        timeout_seconds=settings.llm_request_timeout_seconds,
+    )
+
+
+def _find_interrupted(session_factory) -> list[str]:
+    from hub.api.pipeline import find_interrupted_round_ids
+
+    with session_factory() as session:
+        return find_interrupted_round_ids(session)
+
+
+def create_app(settings: Settings | None = None, *, llm=None) -> FastAPI:
     settings = settings or load_settings()
     engine = make_engine(settings.database_url)
     init_db(engine)
     session_factory = make_session_factory(engine)
+    if llm is None:
+        llm = _make_llm(settings)
+    drive_queue: asyncio.Queue[str] = asyncio.Queue()
 
     mcp_asgi = None
     mcp_inner_lifespan = None
     if create_mcp_asgi is not None:
-        mcp_asgi, mcp_inner_lifespan = create_mcp_asgi(session_factory, settings)
+        mcp_asgi, mcp_inner_lifespan = create_mcp_asgi(
+            session_factory, settings, drive_queue
+        )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         with session_factory() as session:
             seed_admin(session, settings)
             session.commit()
-        if mcp_inner_lifespan is not None:
-            async with mcp_inner_lifespan(app):
+        for round_id in await asyncio.to_thread(_find_interrupted, session_factory):
+            drive_queue.put_nowait(round_id)
+        worker = asyncio.create_task(
+            drive_worker(drive_queue, session_factory, settings, llm)
+        )
+        try:
+            if mcp_inner_lifespan is not None:
+                async with mcp_inner_lifespan(app):
+                    yield
+            else:
                 yield
-        else:
-            yield
+        finally:
+            worker.cancel()
 
     app = FastAPI(title="mcp-decision-hub", lifespan=lifespan)
     app.state.settings = settings
     app.state.session_factory = session_factory
+    app.state.llm = llm
+    app.state.drive_queue = drive_queue
     app.include_router(routes_auth.router)
     app.include_router(routes_matters.router)
     app.include_router(routes_agents.router)

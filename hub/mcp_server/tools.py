@@ -31,7 +31,9 @@ def _call(session_factory, fn, **kwargs):
         return result
 
 
-def register_tools(mcp: FastMCP, session_factory, settings: Settings) -> None:
+def register_tools(mcp: FastMCP, session_factory, settings: Settings,
+                   drive_queue=None) -> None:
+    from hub.api import pipeline
     from hub.mcp_server import methods
 
     @mcp.tool
@@ -71,10 +73,15 @@ def register_tools(mcp: FastMCP, session_factory, settings: Settings) -> None:
             "content_digest": content_digest,
             "idempotency_key": idempotency_key,
         }
-        return _call(
+        result = _call(
             session_factory, methods.mcp_submit_output,
             settings=settings, user_id=_current_user_id(), payload=payload,
         )
+        round_id = _call(session_factory, pipeline.maybe_drive_round,
+                         task_id=task_id)
+        if round_id is not None and drive_queue is not None:
+            drive_queue.put_nowait(round_id)
+        return result
 
     @mcp.tool
     def get_matter_status(matter_id: str,
