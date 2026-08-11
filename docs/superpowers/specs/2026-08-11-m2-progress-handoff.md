@@ -1,12 +1,29 @@
 # M2 执行进度交接文档
 
-- 日期：2026-08-11
-- 状态：M2 进行中，任务 1–6 完成并通过双审查，任务 7 待重新分派
+- 日期：2026-08-11（任务 7–17 更新于 2026-08-12）
+- 状态：**M2 任务 1–17 全部完成并通过双审查 + 最终整体审查（257 passed / ruff clean）**；任务 18（真 key 冒烟）待用户提供 DeepSeek API key
 - 写给：接手执行的 agent（或人类）
+
+## 0. 最新状态（2026-08-12 更新）
+
+仓库已迁移至 `/Volumes/ZXSSD/work/公司项目/mcp-decision-hub`（Desktop 路径已不存在）。
+
+任务 7–17 全部完成，commit 序列：`d108eac`(7) `82ecb0e`(8) `eaef4ff`(9) `dde7ad2`(10) `a5b28e8`(11) `a8bdd06`(12) `0197d08`(13) `be8a750`(14) `ec28139`(15) `49bbabb`(16) `ff646fe`(18 脚本)。最终整体审查通过：附录 A 需求映射逐条落地、附录 B 命名一致、无越界实现、状态机/幂等/白名单跨任务一致。
+
+**任务 18 唯一阻塞**：`~/langgraph-test/.env`（DEEPSEEK_API_KEY）已不存在，需用户提供 key 写入项目根 `.env`（已 gitignore）后执行冒烟（脚本 `scripts/smoke_seed.py` + `scripts/smoke_two_agents.py` 已就绪，步骤见计划行 4440-4649）。
+
+新接受的计划偏离（均已实证真实必要）：
+- 任务 13：`test_start_from_blocked_rejected_with_audit` 加 `expire_all()`（Core UPDATE 不同步 identity map）；`init_u` 去绑定（F841）
+- 任务 15：`continue_matter` 加 `session.refresh(matter)`（陈旧读会误抛 409）；审计 detail 的 `granted_after` 提前捕获（evaluate 同步会多计 1）
+- 任务 16：测试 import 排序（I001）、未用 `Matter` import 移除（F401）
+
+遗留风险（最终审查确认可接受/M3/M4）：闭合标记伪造、二阶注入、_block_matter rowcount、双 worker INSERT 竞态、race_lost evaluate 污染、awaiting_decision 无专属审计（M3）、matter_blocked 先于 llm_failed 的审计顺序（叙事瑕疵）。
+
+以下为 2026-08-11 原始交接内容（任务 1–6 状态，已过时但保留背景）：
 
 ## 1. 项目现状
 
-仓库：`/Users/zouxingyu/Desktop/work/公司项目/mcp-decision-hub`（直接在 main 分支开发，用户已明确同意）。
+仓库：`/Volumes/ZXSSD/work/公司项目/mcp-decision-hub`（原 `/Users/zouxingyu/Desktop/work/公司项目/mcp-decision-hub`，已迁移；直接在 main 分支开发，用户已明确同意）。
 
 - **M1 骨架：已完成**。22 个 commit，149 测试全绿，终审通过。账号/邀请/Token/事项/4 个 MCP 方法/人审三件套/幂等六象限全部落地。
 - **M2 串联（DeepSeek 出题+摘要+收敛+追问）：进行中**。18 个任务的计划已定稿并**已提交 git**（commit `4f762fd`，见下方关键路径）。
