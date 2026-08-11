@@ -26,3 +26,23 @@ def session_factory(settings):
 def db_session(session_factory):
     with session_factory() as session:
         yield session
+
+
+def make_user(db_session, username, password="pw-12345", *, is_admin=False,
+              is_active=True, must_change_password=False, email=None):
+    """Test user factory. Uses argon2 directly to stay independent of service modules."""
+    from argon2 import PasswordHasher
+
+    from hub.db.models import User
+
+    user = User(
+        username=username,
+        email=email or f"{username}@example.com",
+        password_hash=PasswordHasher().hash(password),
+        is_admin=is_admin,
+        is_active=is_active,
+        must_change_password=must_change_password,
+    )
+    db_session.add(user)
+    db_session.flush()
+    return user
