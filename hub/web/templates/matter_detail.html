@@ -6,6 +6,9 @@
 <p>目标：{{ matter.goal }}</p>
 {% if matter.background %}<p>背景：{{ matter.background }}</p>{% endif %}
 {% if error %}<p class="error">{{ error }}</p>{% endif %}
+{% if matter.status == "in_progress" and round_views and round_views[0].round.status == "generating" %}
+<p><strong>正在生成第一轮问题（平台大模型处理中，请稍后刷新）。</strong></p>
+{% endif %}
 {% if is_initiator and matter.status == "draft" %}
 <form method="post" action="/matters/{{ matter.id }}/start">
   <button type="submit">开始事项（生成第一轮任务）</button>

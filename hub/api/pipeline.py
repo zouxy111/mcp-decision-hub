@@ -33,6 +33,7 @@ from hub.domain.timeutil import utcnow
 from hub.llm.client import MAX_RETRIES, LLMError
 from hub.llm.prompts import (
     build_followup_questions_prompt,
+    build_generate_questions_prompt,
     build_round_summary_prompt,
 )
 
@@ -41,6 +42,7 @@ BLOCKED_REASON_ROUND_LIMIT = "达到轮次上限"
 BLOCKED_REASON_SUMMARY_FAILED = "摘要生成失败（LLM 重试耗尽）"
 BLOCKED_REASON_FOLLOWUP_FAILED = "定向追问出题失败（LLM 重试耗尽）"
 BLOCKED_REASON_LLM_BLOCKED = "收敛判定为 blocked"
+BLOCKED_REASON_FIRST_ROUND_FAILED = "首轮出题失败（LLM 重试耗尽）"
 
 
 def maybe_drive_round(session: Session, *, task_id: str) -> str | None:
@@ -82,7 +84,9 @@ def run_round_pipeline(
     safe to call repeatedly for the same round."""
     with session_factory() as session:
         rnd = session.get(Round, round_id)
-        if rnd is not None and rnd.status == "awaiting_summary":
+        if rnd is not None and rnd.status == "generating" and not rnd.questions:
+            _generate_first_round_phase(session, rnd, llm)
+        elif rnd is not None and rnd.status == "awaiting_summary":
             _summarize_phase(session, rnd, llm)
         session.commit()
     with session_factory() as session:
@@ -370,3 +374,70 @@ def find_interrupted_round_ids(session: Session) -> list[str]:
         if latest is not None:
             ids.append(latest.id)
     return list(dict.fromkeys(ids))
+
+
+def _generate_first_round_phase(session: Session, rnd: Round, llm) -> None:
+    """First-round question generation (FR-05, scenario 12). Only runs for a
+    'generating' round with empty questions. The first round never consumes
+    round credits: PRD 7.5 limits auto-advance only (see _branch_phase)."""
+    matter = session.get(Matter, rnd.matter_id)
+    system_prompt, user_prompt = build_generate_questions_prompt(
+        title=matter.title, goal=matter.goal, background=matter.background,
+    )
+    try:
+        data = llm.complete_json(system_prompt, user_prompt,
+                                 schema_name="questions")
+    except LLMError as e:
+        session.execute(
+            update(Round)
+            .where(Round.id == rnd.id, Round.status == "generating")
+            .values(status="failed")
+        )
+        _block_matter(
+            session, matter,
+            f"{BLOCKED_REASON_FIRST_ROUND_FAILED}：{e.error_code}"
+            f"（已重试 {e.retry_count} 次）",
+        )
+        audit.record_audit(session, audit.LLM_FAILED, matter_id=matter.id,
+                           detail={"stage": "first_round_questions",
+                                   "round_id": rnd.id,
+                                   "error_code": e.error_code,
+                                   "retry_count": e.retry_count})
+        return
+    # question_id 是服务端标识符；LLM 只提供问题文本（PRD 9.1）
+    questions = [
+        {"question_id": f"q{i + 1}", "content": content}
+        for i, content in enumerate(data["questions"])
+    ]
+    result = session.execute(
+        update(Round)
+        .where(Round.id == rnd.id, Round.status == "generating")
+        .values(questions=questions)
+    )
+    if result.rowcount != 1:
+        return  # 轮次状态并发变化；由 reconciler 重新评估
+    participant_ids = session.scalars(
+        select(MatterParticipant.user_id)
+        .where(MatterParticipant.matter_id == matter.id)
+    ).all()
+    deadline = utcnow() + timedelta(seconds=matter.timeout_seconds)
+    for uid in participant_ids:
+        session.add(
+            Task(round_id=rnd.id, matter_id=matter.id, assignee_id=uid,
+                 status="pending", deadline_at=deadline)
+        )
+    session.execute(
+        update(Round)
+        .where(Round.id == rnd.id, Round.status == "generating")
+        .values(status="open")
+    )
+    session.execute(
+        update(Matter)
+        .where(Matter.id == matter.id, Matter.status == "in_progress")
+        .values(status="collecting", updated_at=utcnow())
+    )
+    audit.record_audit(session, audit.ROUND_GENERATED, matter_id=matter.id,
+                       detail={"round_id": rnd.id,
+                               "round_number": rnd.round_number,
+                               "task_count": len(participant_ids),
+                               "mode": "llm_generate"})

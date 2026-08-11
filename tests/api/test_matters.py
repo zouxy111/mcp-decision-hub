@@ -52,11 +52,11 @@ def test_create_rejects_unknown_participant(db_session):
     assert exc.value.error_code == "RESOURCE_NOT_FOUND"
 
 
-def test_create_rejects_empty_questions(db_session):
+def test_create_allows_empty_questions_for_llm_generation(db_session):
     init, a, b = _three_users(db_session)
-    with pytest.raises(ApiError) as exc:
-        _create(db_session, init, [a.id, b.id], draft_questions=["  ", ""])
-    assert exc.value.error_code == "QUESTION_INVALID"
+    matter = _create(db_session, init, [a.id, b.id], draft_questions=["  ", ""])
+    assert matter.draft_questions == []
+    assert matter.status == "draft"
 
 
 def test_create_with_initiator_self_answer(db_session):
@@ -145,3 +145,38 @@ def test_list_and_get_matter_visibility(db_session):
     assert matter_svc.is_participant(db_session, matter_id=matter.id, user_id=a.id)
     assert not matter_svc.is_participant(
         db_session, matter_id=matter.id, user_id=init.id)
+
+
+def test_start_from_blocked_rejected_with_audit(db_session):
+    import pytest
+    from sqlalchemy import select
+
+    from hub.api import matters as matter_svc
+    from hub.api.errors import ApiError
+    from hub.db.models import AuditEvent, Matter
+    from tests.conftest import make_user
+
+    init = make_user(db_session, "init_b")
+    alice = make_user(db_session, "alice_b")
+    bob = make_user(db_session, "bob_b")
+    matter = matter_svc.create_matter(
+        db_session, initiator=init, title="T", goal="G", background="B",
+        participant_ids=[alice.id, bob.id], initiator_participates=False,
+        timeout_seconds=3600, max_rounds=10, draft_questions=["Q1?"],
+    )
+    db_session.execute(
+        Matter.__table__.update()
+        .where(Matter.id == matter.id).values(status="blocked")
+    )
+    db_session.commit()
+    with pytest.raises(ApiError) as exc:
+        matter_svc.start_matter(db_session, matter_id=matter.id, actor=init)
+    assert exc.value.status_code == 409
+    assert exc.value.error_code == "INVALID_STATE_TRANSITION"
+    # 上一句 Core UPDATE 未同步 identity map（expire_on_commit=False），
+    # 且 race_lost 分支的 ORM UPDATE 会按陈旧对象做 evaluate 同步；
+    # 过期后重读以断言数据库真实状态。
+    db_session.expire_all()
+    assert db_session.get(Matter, matter.id).status == "blocked"
+    types = [r.event_type for r in db_session.scalars(select(AuditEvent)).all()]
+    assert "invalid_state_transition" in types

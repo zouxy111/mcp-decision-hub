@@ -171,4 +171,10 @@ def matter_start(
         return templates.TemplateResponse(request, "matter_detail.html", context,
                                           status_code=e.status_code)
     db.commit()
+    generating_round_id = db.scalar(
+        select(Round.id).where(Round.matter_id == matter_id,
+                               Round.status == "generating")
+    )
+    if generating_round_id is not None:
+        request.app.state.drive_queue.put_nowait(generating_round_id)
     return RedirectResponse(f"/matters/{matter_id}", status_code=303)
