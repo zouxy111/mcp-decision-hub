@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>{% block title %}MCP 决策中台{% endblock %}</title>
+  <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 880px; margin: 2rem auto; padding: 0 1rem; }
+    nav a { margin-right: 1rem; }
+    .error { color: #b00020; margin: 0.5rem 0; }
+    .notice { background: #fff8e1; border: 1px solid #e0c060; padding: 0.5rem; margin: 0.5rem 0; }
+    .ok { background: #e8f5e9; border: 1px solid #66bb6a; padding: 0.5rem; margin: 0.5rem 0; }
+    label { display: block; margin-top: 0.75rem; }
+    table { border-collapse: collapse; width: 100%; margin-top: 1rem; }
+    td, th { border: 1px solid #ccc; padding: 0.3rem 0.5rem; text-align: left; }
+  </style>
+</head>
+<body>
+  <nav>
+    <a href="/dashboard">总览</a>
+    <a href="/matters/new">新建事项</a>
+    <a href="/settings/agents">Agent Token</a>
+    {% if current_user_is_admin %}<a href="/admin/invitations">邀请管理</a>{% endif %}
+    <form method="post" action="/logout" style="display:inline">
+      <button type="submit">退出</button>
+    </form>
+  </nav>
+  <hr>
+  {% block content %}{% endblock %}
+</body>
+</html>

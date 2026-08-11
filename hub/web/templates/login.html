@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}登录 - MCP 决策中台{% endblock %}
+{% block content %}
+<h1>登录</h1>
+<div class="notice">{{ llm_notice }}</div>
+{% if error %}<p class="error">{{ error }}</p>{% endif %}
+<form method="post" action="/login">
+  <label>用户名 <input name="username" required></label>
+  <label>密码 <input name="password" type="password" required></label>
+  <button type="submit">登录</button>
+</form>
+<hr>
+<h2>首次使用（邀请凭证）</h2>
+{% if invite_error %}<p class="error">{{ invite_error }}</p>{% endif %}
+<form method="post" action="/invite/consume">
+  <label>用户名 <input name="username" required></label>
+  <label>邀请凭证 <input name="invitation_token" required></label>
+  <label>设置新密码 <input name="new_password" type="password" required></label>
+  <button type="submit">激活并登录</button>
+</form>
+{% endblock %}

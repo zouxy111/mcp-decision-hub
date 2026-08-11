@@ -1,4 +1,5 @@
 import pytest
+from fastapi.testclient import TestClient
 
 from hub.config import Settings
 from hub.db.session import init_db, make_engine, make_session_factory
@@ -26,6 +27,15 @@ def session_factory(settings):
 def db_session(session_factory):
     with session_factory() as session:
         yield session
+
+
+@pytest.fixture()
+def client(settings):
+    from hub.main import create_app
+
+    app = create_app(settings)
+    with TestClient(app) as test_client:
+        yield test_client
 
 
 def make_user(db_session, username, password="pw-12345", *, is_admin=False,
