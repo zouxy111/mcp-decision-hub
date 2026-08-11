@@ -180,3 +180,59 @@ def test_start_from_blocked_rejected_with_audit(db_session):
     assert db_session.get(Matter, matter.id).status == "blocked"
     types = [r.event_type for r in db_session.scalars(select(AuditEvent)).all()]
     assert "invalid_state_transition" in types
+
+
+def test_continue_matter_grants_one_round(db_session):
+    import pytest
+    from sqlalchemy import select
+
+    from hub.api import matters as matter_svc
+    from hub.api.errors import ApiError
+    from hub.db.models import AuditEvent, Matter
+    from tests.conftest import make_user
+
+    init = make_user(db_session, "init_c")
+    alice = make_user(db_session, "alice_c")
+    bob = make_user(db_session, "bob_c")
+    matter = matter_svc.create_matter(
+        db_session, initiator=init, title="T", goal="G", background="B",
+        participant_ids=[alice.id, bob.id], initiator_participates=False,
+        timeout_seconds=3600, max_rounds=10, draft_questions=["Q1?"],
+    )
+    matter_svc.start_matter(db_session, matter_id=matter.id, actor=init)
+    db_session.execute(
+        Matter.__table__.update().where(Matter.id == matter.id)
+        .values(status="blocked", blocked_reason="达到轮次上限")
+    )
+    db_session.commit()
+
+    round_id = matter_svc.continue_matter(db_session, matter_id=matter.id, actor=init)
+    db_session.commit()
+    db_session.expire_all()
+    reloaded = db_session.get(Matter, matter.id)
+    assert reloaded.status == "in_progress"
+    assert reloaded.granted_extra_rounds == 1
+    assert reloaded.blocked_reason is None
+    assert round_id is not None
+    events = [r.event_type for r in db_session.scalars(select(AuditEvent)).all()]
+    assert "matter_continued" in events
+
+    # 非发起人
+    db_session.execute(
+        Matter.__table__.update().where(Matter.id == matter.id)
+        .values(status="blocked", blocked_reason="达到轮次上限")
+    )
+    db_session.commit()
+    with pytest.raises(ApiError) as exc:
+        matter_svc.continue_matter(db_session, matter_id=matter.id, actor=alice)
+    assert exc.value.status_code == 403
+
+    # 非"达到轮次上限"原因
+    db_session.execute(
+        Matter.__table__.update().where(Matter.id == matter.id)
+        .values(status="blocked", blocked_reason="本轮无有效输出")
+    )
+    db_session.commit()
+    with pytest.raises(ApiError) as exc:
+        matter_svc.continue_matter(db_session, matter_id=matter.id, actor=init)
+    assert exc.value.status_code == 409

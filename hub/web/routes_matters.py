@@ -199,3 +199,28 @@ def matter_start(
     if generating_round_id is not None:
         request.app.state.drive_queue.put_nowait(generating_round_id)
     return RedirectResponse(f"/matters/{matter_id}", status_code=303)
+
+
+@router.post("/matters/{matter_id}/continue", response_class=HTMLResponse)
+def matter_continue(
+    request: Request,
+    matter_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+    settings: Settings = Depends(get_settings),
+):
+    try:
+        round_id = matter_svc.continue_matter(db, matter_id=matter_id, actor=user)
+    except ApiError as e:
+        db.commit()  # persist forbidden/invalid-state audit
+        matter = matter_svc.get_matter_for_user(db, matter_id=matter_id, user=user)
+        if matter is None:
+            raise HTTPException(status_code=404, detail="事项不存在或不可见") from e
+        context = _build_detail(db, matter, user, settings)
+        context["current_user_is_admin"] = user.is_admin
+        context["error"] = e.message
+        return templates.TemplateResponse(request, "matter_detail.html", context,
+                                          status_code=e.status_code)
+    db.commit()
+    request.app.state.drive_queue.put_nowait(round_id)
+    return RedirectResponse(f"/matters/{matter_id}", status_code=303)

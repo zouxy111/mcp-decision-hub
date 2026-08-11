@@ -7,7 +7,9 @@ from sqlalchemy.orm import Session
 
 from hub.api import audit
 from hub.api.errors import ApiError
+from hub.api.pipeline import BLOCKED_REASON_ROUND_LIMIT
 from hub.db.models import Matter, MatterParticipant, Round, Task, User
+from hub.domain.credits import CREDIT_GRANT_PER_CONTINUE
 from hub.domain.participants import ParticipantValidationError, validate_participants
 from hub.domain.state import InvalidTransitionError, assert_matter_transition
 from hub.domain.timeutil import utcnow
@@ -190,3 +192,52 @@ def list_matters_for_user(session: Session, *, user: User) -> list[Matter]:
             select(Matter).where(Matter.id.in_(ids)).order_by(Matter.created_at.desc())
         ).all()
     )
+
+
+def continue_matter(session: Session, *, matter_id: str, actor: User) -> str:
+    """Grant +1 round credit and resume driving (PRD 7.5). Only the initiator,
+    only when blocked on the round limit. Returns the latest round_id so the
+    caller can enqueue a re-drive; the branch phase is idempotent."""
+    matter = session.get(Matter, matter_id)
+    if matter is None:
+        raise ApiError(404, "RESOURCE_NOT_FOUND", "事项不存在")
+    session.refresh(matter)  # 避免读到 identity map 中的陈旧状态
+    if matter.initiator_id != actor.id:
+        audit.record_audit(session, audit.FORBIDDEN_DENIED,
+                           actor_user_id=actor.id, matter_id=matter_id,
+                           detail={"action": "continue_matter"})
+        raise ApiError(403, "FORBIDDEN_SCOPE", "仅发起人可继续事项")
+    if (matter.status != "blocked"
+            or matter.blocked_reason != BLOCKED_REASON_ROUND_LIMIT):
+        audit.record_audit(session, audit.INVALID_STATE_TRANSITION,
+                           actor_user_id=actor.id, matter_id=matter_id,
+                           detail={"action": "continue_matter",
+                                   "current": matter.status,
+                                   "blocked_reason": matter.blocked_reason})
+        raise ApiError(409, "INVALID_STATE_TRANSITION",
+                       "当前状态不允许继续（仅达到轮次上限的阻塞可授予额度）")
+    assert_matter_transition(matter.status, "in_progress")
+    granted_after = matter.granted_extra_rounds + CREDIT_GRANT_PER_CONTINUE
+    result = session.execute(
+        update(Matter)
+        .where(Matter.id == matter_id, Matter.status == "blocked",
+               Matter.blocked_reason == BLOCKED_REASON_ROUND_LIMIT)
+        .values(status="in_progress", blocked_reason=None,
+                granted_extra_rounds=(
+                    Matter.granted_extra_rounds + CREDIT_GRANT_PER_CONTINUE
+                ),
+                updated_at=utcnow())
+    )
+    if result.rowcount != 1:
+        raise ApiError(409, "INVALID_STATE_TRANSITION",
+                       "事项状态已变化，请刷新后重试")
+    latest = session.scalar(
+        select(Round).where(Round.matter_id == matter_id)
+        .order_by(Round.round_number.desc()).limit(1)
+    )
+    audit.record_audit(session, audit.MATTER_CONTINUED, actor_user_id=actor.id,
+                       matter_id=matter_id,
+                       detail={"granted_extra_rounds": granted_after,
+                               "resume_round_id": latest.id})
+    session.flush()
+    return latest.id
