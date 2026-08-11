@@ -12,7 +12,7 @@ def settings(tmp_path):
         session_secret="test-secret",
         admin_username=None,
         admin_initial_password=None,
-        llm_provider_name="测试服务商（M1 骨架）",
+        llm_provider_name="DeepSeek（测试）",
     )
 
 

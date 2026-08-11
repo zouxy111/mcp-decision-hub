@@ -35,7 +35,8 @@ def test_new_page_shows_notice_and_users(client, users, settings):
     _login(client, "init")
     resp = client.get("/matters/new")
     assert resp.status_code == 200
-    assert "骨架阶段" in resp.text
+    assert "第三方大模型服务商" in resp.text
+    assert "骨架阶段" not in resp.text
     assert settings.llm_provider_name in resp.text
     assert "alice" in resp.text and "bob" in resp.text
 

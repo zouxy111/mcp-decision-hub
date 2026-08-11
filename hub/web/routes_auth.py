@@ -21,8 +21,7 @@ templates = Jinja2Templates(directory="hub/web/templates")
 
 LLM_NOTICE = (
     "本事项中提交的回答正文将发送至平台配置的第三方大模型服务商，"
-    "用于生成摘要与决议草案。当前服务商：{provider}（当前为骨架阶段，"
-    "尚未接入 LLM，不会发送任何内容）。"
+    "用于生成摘要与决议草案。当前服务商：{provider}。"
 )
 
 

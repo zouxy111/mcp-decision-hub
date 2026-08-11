@@ -13,7 +13,7 @@ def test_login_page_renders_llm_notice(client, settings):
     assert resp.status_code == 200
     assert "第三方大模型服务商" in resp.text
     assert settings.llm_provider_name in resp.text
-    assert "骨架阶段" in resp.text
+    assert "骨架阶段" not in resp.text
 
 
 def test_wrong_password_shows_generic_error(client, db_session):
