@@ -6,16 +6,35 @@ which is executed by the background worker — never in request paths
 all LLM artifacts are idempotent (constraint 11).
 """
 
+from datetime import timedelta
+
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from hub.api import audit
 from hub.config import Settings
-from hub.db.models import Matter, Output, Round, RoundSummary, Task
+from hub.db.models import (
+    Matter,
+    MatterParticipant,
+    Output,
+    Round,
+    RoundSummary,
+    Task,
+)
 from hub.domain.collection import count_submitted, is_round_collected
+from hub.domain.convergence import (
+    CONVERGENCE_BLOCKED,
+    CONVERGENCE_CONTINUE,
+    CONVERGENCE_CONVERGED,
+    CONVERGENCE_PROVISIONALLY_READY,
+)
+from hub.domain.credits import can_auto_advance
 from hub.domain.timeutil import utcnow
 from hub.llm.client import LLMError
-from hub.llm.prompts import build_round_summary_prompt
+from hub.llm.prompts import (
+    build_followup_questions_prompt,
+    build_round_summary_prompt,
+)
 
 BLOCKED_REASON_NO_OUTPUT = "本轮无有效输出"
 BLOCKED_REASON_ROUND_LIMIT = "达到轮次上限"
@@ -196,6 +215,102 @@ def _summarize_phase(session: Session, rnd: Round, llm) -> None:
 
 
 def _branch_phase(session: Session, rnd: Round, llm) -> None:
-    """Task 10 implements the convergence branch; placeholder keeps the
-    two-phase structure callable now."""
-    return None
+    """Convergence branch (PRD 7.5/7.6). Idempotent: only ever branches from
+    the matter's latest round, only while the matter is in_progress, and
+    never creates round_number+1 twice."""
+    matter = session.get(Matter, rnd.matter_id)
+    if matter.status != "in_progress":
+        return
+    if rnd.status != "closed":
+        return
+    summary = session.scalar(
+        select(RoundSummary).where(RoundSummary.round_id == rnd.id,
+                                   RoundSummary.generation_status == "ok")
+    )
+    if summary is None:
+        return
+    latest = session.scalar(
+        select(Round).where(Round.matter_id == matter.id)
+        .order_by(Round.round_number.desc()).limit(1)
+    )
+    if latest is None or latest.id != rnd.id:
+        return
+    convergence = summary.convergence
+    if convergence == CONVERGENCE_BLOCKED:
+        _block_matter(session, matter, BLOCKED_REASON_LLM_BLOCKED)
+        return
+    if convergence in (CONVERGENCE_PROVISIONALLY_READY, CONVERGENCE_CONVERGED):
+        # M2: both go to awaiting_decision; decision drafts land in M3.
+        session.execute(
+            update(Matter)
+            .where(Matter.id == matter.id, Matter.status == "in_progress")
+            .values(status="awaiting_decision", blocked_reason=None,
+                    updated_at=utcnow())
+        )
+        return
+    if convergence != CONVERGENCE_CONTINUE:
+        return  # defensive: client schema validation guarantees one of four
+    if not can_auto_advance(
+        current_round_number=rnd.round_number,
+        max_rounds=matter.max_rounds,
+        granted_extra_rounds=matter.granted_extra_rounds,
+    ):
+        _block_matter(session, matter, BLOCKED_REASON_ROUND_LIMIT)
+        return
+    exists_next = session.scalar(
+        select(Round.id).where(Round.matter_id == matter.id,
+                               Round.round_number == rnd.round_number + 1)
+    )
+    if exists_next is not None:
+        return
+    system_prompt, user_prompt = build_followup_questions_prompt(
+        title=matter.title, goal=matter.goal, background=matter.background,
+        summary=_summary_to_dict(summary),
+    )
+    try:
+        data = llm.complete_json(system_prompt, user_prompt,
+                                 schema_name="questions")
+    except LLMError as e:
+        _block_matter(
+            session, matter,
+            f"{BLOCKED_REASON_FOLLOWUP_FAILED}：{e.error_code}"
+            f"（已重试 {e.retry_count} 次）",
+        )
+        audit.record_audit(session, audit.LLM_FAILED, matter_id=matter.id,
+                           detail={"stage": "followup_questions",
+                                   "round_id": rnd.id,
+                                   "error_code": e.error_code,
+                                   "retry_count": e.retry_count})
+        return
+    # question_id is a server-side identifier; the LLM only provides content
+    # (PRD 9.1).
+    questions = [
+        {"question_id": f"q{i + 1}", "content": content}
+        for i, content in enumerate(data["questions"])
+    ]
+    new_round = Round(
+        matter_id=matter.id, round_number=rnd.round_number + 1,
+        status="generating", questions=questions,
+    )
+    session.add(new_round)
+    session.flush()
+    participant_ids = session.scalars(
+        select(MatterParticipant.user_id)
+        .where(MatterParticipant.matter_id == matter.id)
+    ).all()
+    deadline = utcnow() + timedelta(seconds=matter.timeout_seconds)
+    for uid in participant_ids:
+        session.add(
+            Task(round_id=new_round.id, matter_id=matter.id, assignee_id=uid,
+                 status="pending", deadline_at=deadline)
+        )
+    new_round.status = "open"
+    session.execute(
+        update(Matter)
+        .where(Matter.id == matter.id, Matter.status == "in_progress")
+        .values(status="collecting", blocked_reason=None, updated_at=utcnow())
+    )
+    audit.record_audit(session, audit.ROUND_GENERATED, matter_id=matter.id,
+                       detail={"round_id": new_round.id,
+                               "round_number": new_round.round_number,
+                               "task_count": len(participant_ids)})

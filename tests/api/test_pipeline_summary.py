@@ -80,8 +80,7 @@ def test_success_writes_summary_and_closes_round(
     assert summary.convergence == "continue"
     assert summary.error_code is None
     assert db_session.get(Round, scenario["round"].id).status == "closed"
-    # TODO(task 10): 分支阶段实现后改回 == 2（摘要 + 定向追问）
-    assert len(llm.calls) >= 1
+    assert len(llm.calls) == 2
     types = [r.event_type for r in db_session.scalars(select(AuditEvent)).all()]
     assert "round_summarized" in types
     assert "convergence_decided" in types
