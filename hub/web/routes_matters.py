@@ -8,8 +8,9 @@ from sqlalchemy.orm import Session
 
 from hub.api import matters as matter_svc
 from hub.api.errors import ApiError
+from hub.api.pipeline import BLOCKED_REASON_ROUND_LIMIT
 from hub.config import Settings
-from hub.db.models import Matter, Output, Round, Task, User
+from hub.db.models import Matter, Output, Round, RoundSummary, Task, User
 from hub.web.deps import get_current_user, get_db, get_settings
 from hub.web.routes_auth import LLM_NOTICE
 
@@ -119,17 +120,37 @@ def _build_detail(db: Session, matter: Matter, user: User, settings: Settings) -
             own = [t for t in tasks if t.assignee_id == user.id]
             task_views = [{"task": t, "assignee": user.username, "output": None}
                           for t in own]
+        ok_summary = db.scalar(
+            select(RoundSummary).where(RoundSummary.round_id == rnd.id,
+                                       RoundSummary.generation_status == "ok")
+        )
+        failed_summary = db.scalar(
+            select(RoundSummary).where(RoundSummary.round_id == rnd.id,
+                                       RoundSummary.generation_status == "failed")
+        )
         round_views.append({
             "round": rnd,
             "tasks_total": len(tasks),
             "tasks_submitted": sum(1 for t in tasks if t.status == "submitted"),
             "task_views": task_views,
+            "summary": ok_summary,
+            "failed_summary": failed_summary,
         })
+    rounds_used = len(rounds)
+    auto_limit = matter.max_rounds + matter.granted_extra_rounds
     return {
         "matter": matter,
         "is_initiator": is_initiator,
         "round_views": round_views,
         "llm_provider": settings.llm_provider_name,
+        "rounds_used": rounds_used,
+        "auto_limit": auto_limit,
+        "at_round_limit": rounds_used >= auto_limit,
+        "can_continue": (
+            is_initiator
+            and matter.status == "blocked"
+            and matter.blocked_reason == BLOCKED_REASON_ROUND_LIMIT
+        ),
     }
 
 
