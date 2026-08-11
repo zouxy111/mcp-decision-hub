@@ -30,7 +30,7 @@ from hub.domain.convergence import (
 )
 from hub.domain.credits import can_auto_advance
 from hub.domain.timeutil import utcnow
-from hub.llm.client import LLMError
+from hub.llm.client import MAX_RETRIES, LLMError
 from hub.llm.prompts import (
     build_followup_questions_prompt,
     build_round_summary_prompt,
@@ -314,3 +314,59 @@ def _branch_phase(session: Session, rnd: Round, llm) -> None:
                        detail={"round_id": new_round.id,
                                "round_number": new_round.round_number,
                                "task_count": len(participant_ids)})
+
+
+def find_interrupted_round_ids(session: Session) -> list[str]:
+    """Startup recovery scan (FR-24, M2 scope). Returns round_ids that must
+    be re-driven. Safe to run repeatedly: re-driving is idempotent."""
+    ids: list[str] = []
+    # (a0) rounds stuck in 'generating' with empty questions — first-round
+    # LLM generation interrupted before or during the LLM call (task 13)
+    generating = list(
+        session.scalars(select(Round).where(Round.status == "generating")).all()
+    )
+    for rnd in generating:
+        if not rnd.questions:
+            ids.append(rnd.id)
+    # (a) rounds stuck in awaiting_summary without a usable summary
+    awaiting = list(
+        session.scalars(select(Round).where(Round.status == "awaiting_summary"))
+        .all()
+    )
+    for rnd in awaiting:
+        ok_exists = session.scalar(
+            select(RoundSummary.id).where(
+                RoundSummary.round_id == rnd.id,
+                RoundSummary.generation_status == "ok",
+            )
+        )
+        if ok_exists is not None:
+            continue
+        failed = session.scalar(
+            select(RoundSummary).where(
+                RoundSummary.round_id == rnd.id,
+                RoundSummary.generation_status == "failed",
+            )
+        )
+        if failed is None or (failed.retry_count or 0) < MAX_RETRIES:
+            ids.append(rnd.id)
+    # (b) matters in_progress with no active round (branch phase interrupted)
+    matters = list(
+        session.scalars(select(Matter).where(Matter.status == "in_progress")).all()
+    )
+    for matter in matters:
+        active = session.scalar(
+            select(Round.id).where(
+                Round.matter_id == matter.id,
+                Round.status.in_(("generating", "open", "awaiting_summary")),
+            )
+        )
+        if active is not None:
+            continue
+        latest = session.scalar(
+            select(Round).where(Round.matter_id == matter.id)
+            .order_by(Round.round_number.desc()).limit(1)
+        )
+        if latest is not None:
+            ids.append(latest.id)
+    return list(dict.fromkeys(ids))
