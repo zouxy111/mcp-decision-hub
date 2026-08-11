@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}新建事项 - MCP 决策中台{% endblock %}
+{% block content %}
+<h1>新建协作事项</h1>
+<div class="notice">{{ llm_notice }}</div>
+{% if error %}<p class="error">{{ error }}</p>{% endif %}
+<form method="post" action="/matters/new">
+  <label>主题（必填）<input name="title" required></label>
+  <label>目标（必填）<textarea name="goal" required></textarea></label>
+  <label>背景 <textarea name="background"></textarea></label>
+  <label>第一轮问题（每行一个，至少 1 个；当前为骨架阶段未接入 LLM，问题由发起人手动录入）
+    <textarea name="questions_text" rows="5" required></textarea>
+  </label>
+  <label>任务超时（小时）<input name="timeout_hours" type="number" value="72" min="1"></label>
+  <fieldset>
+    <legend>参与人（2–5 名，不含未自答的发起人）</legend>
+    {% for u in users %}
+    {% if u.id != current_user_id %}
+    <label><input type="checkbox" name="participant_ids" value="{{ u.id }}">
+      {{ u.username }}（{{ u.email }}）</label>
+    {% endif %}
+    {% endfor %}
+    <label><input type="checkbox" name="initiator_participates" value="true">
+      我也参与作答（占用一个参与人名额）</label>
+  </fieldset>
+  <button type="submit">保存为草稿</button>
+</form>
+{% endblock %}

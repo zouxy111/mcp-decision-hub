@@ -9,7 +9,6 @@ from hub.api import audit
 from hub.api.errors import ApiError
 from hub.db.models import Matter, MatterParticipant, Round, Task, User
 from hub.domain.participants import ParticipantValidationError, validate_participants
-from hub.domain.state import InvalidTransitionError, assert_matter_transition
 from hub.domain.timeutil import utcnow
 
 
@@ -70,15 +69,14 @@ def start_matter(session: Session, *, matter_id: str, actor: User) -> Matter:
         audit.record_audit(session, audit.FORBIDDEN_DENIED, actor_user_id=actor.id,
                            matter_id=matter_id, detail={"action": "start_matter"})
         raise ApiError(403, "FORBIDDEN_SCOPE", "仅发起人可开始事项")
-    try:
-        assert_matter_transition(matter.status, "in_progress")
-    except InvalidTransitionError as e:
+    if matter.status != "draft":
         audit.record_audit(session, audit.INVALID_STATE_TRANSITION,
                            actor_user_id=actor.id, matter_id=matter_id,
-                           detail={"action": "start_matter", "current": e.current,
-                                   "target": e.target})
+                           detail={"action": "start_matter",
+                                   "current": matter.status,
+                                   "target": "in_progress"})
         raise ApiError(409, "INVALID_STATE_TRANSITION",
-                       f"当前状态 {matter.status} 不允许开始") from e
+                       f"当前状态 {matter.status} 不允许开始")
     # conditional UPDATE: only from draft
     result = session.execute(
         update(Matter)

@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}{{ matter.title }} - MCP 决策中台{% endblock %}
+{% block content %}
+<h1>{{ matter.title }}</h1>
+<p>状态：<strong>{{ matter.status }}</strong> ｜ LLM 服务商：{{ llm_provider }}</p>
+<p>目标：{{ matter.goal }}</p>
+{% if matter.background %}<p>背景：{{ matter.background }}</p>{% endif %}
+{% if error %}<p class="error">{{ error }}</p>{% endif %}
+{% if is_initiator and matter.status == "draft" %}
+<form method="post" action="/matters/{{ matter.id }}/start">
+  <button type="submit">开始事项（生成第一轮任务）</button>
+</form>
+{% endif %}
+{% for rv in round_views %}
+<h2>第 {{ rv.round.round_number }} 轮（{{ rv.round.status }}）</h2>
+<p>进度：{{ rv.tasks_submitted }} / {{ rv.tasks_total }} 已提交</p>
+<ol>
+  {% for q in rv.round.questions %}
+  <li><code>{{ q.question_id }}</code> {{ q.content }}</li>
+  {% endfor %}
+</ol>
+{% if is_initiator %}
+<h3>全部任务</h3>
+<table>
+  <tr><th>参与人</th><th>状态</th><th>截止(UTC)</th><th>提交时间(UTC)</th><th>回答</th></tr>
+  {% for tv in rv.task_views %}
+  <tr>
+    <td>{{ tv.assignee }}</td>
+    <td>{{ tv.task.status }}</td>
+    <td>{{ tv.task.deadline_at.strftime("%Y-%m-%dT%H:%M:%SZ") if tv.task.deadline_at else "-" }}</td>
+    <td>{{ tv.task.submitted_at.strftime("%Y-%m-%dT%H:%M:%SZ") if tv.task.submitted_at else "-" }}</td>
+    <td>
+      {% if tv.output %}
+      <details>
+        <summary>查看（approved_at={{ tv.output.approved_at.strftime("%Y-%m-%dT%H:%M:%SZ") }}）</summary>
+        <p>content_digest: <code>{{ tv.output.content_digest }}</code></p>
+        {% for a in tv.output.answers %}
+        <p><code>{{ a.question_id }}</code>：{{ a.content }}</p>
+        {% endfor %}
+        {% if tv.output.notes %}<p>备注：{{ tv.output.notes }}</p>{% endif %}
+      </details>
+      {% else %}-{% endif %}
+    </td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<h3>我的任务</h3>
+{% if rv.task_views %}
+<table>
+  <tr><th>任务</th><th>状态</th><th>截止(UTC)</th></tr>
+  {% for tv in rv.task_views %}
+  <tr>
+    <td><code>{{ tv.task.id }}</code></td>
+    <td>{{ tv.task.status }}</td>
+    <td>{{ tv.task.deadline_at.strftime("%Y-%m-%dT%H:%M:%SZ") if tv.task.deadline_at else "-" }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<p>本轮没有分配给你的任务。</p>
+{% endif %}
+{% endif %}
+{% endfor %}
+{% endblock %}
