@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}邀请管理 - MCP 决策中台{% endblock %}
+{% block content %}
+<h1>邀请管理</h1>
+{% if error %}<p class="error">{{ error }}</p>{% endif %}
+{% if credential %}
+<div class="ok">
+  <p>用户「{{ credential_for }}」的邀请凭证（有效期 7 天，一次性使用，
+     <strong>仅显示一次</strong>）：</p>
+  <p><code>{{ credential }}</code></p>
+</div>
+{% endif %}
+<h2>邀请新成员</h2>
+<form method="post" action="/admin/invitations">
+  <label>用户名 <input name="username" required></label>
+  <label>邮箱 <input name="email" type="email" required></label>
+  <button type="submit">创建邀请</button>
+</form>
+<h2>待消费的邀请</h2>
+{% if not pending %}
+<p>暂无待消费邀请。</p>
+{% else %}
+<table>
+  <tr><th>用户名</th><th>邮箱</th><th>过期时间(UTC)</th><th>操作</th></tr>
+  {% for u in pending %}
+  <tr>
+    <td>{{ u.username }}</td>
+    <td>{{ u.email }}</td>
+    <td>{{ u.invitation_expires_at.strftime("%Y-%m-%dT%H:%M:%SZ") if u.invitation_expires_at else "-" }}</td>
+    <td>
+      <form method="post" action="/admin/invitations/{{ u.id }}/revoke">
+        <button type="submit">撤销</button>
+      </form>
+    </td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+{% endblock %}
