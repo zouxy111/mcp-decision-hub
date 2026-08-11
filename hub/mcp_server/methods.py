@@ -13,7 +13,15 @@ from hub.api.errors import ApiError
 from hub.api.matters import is_participant
 from hub.api.passwords import sha256_hex
 from hub.config import Settings
-from hub.db.models import IdempotencyRecord, Matter, Output, Round, Task, User
+from hub.db.models import (
+    IdempotencyRecord,
+    Matter,
+    Output,
+    Round,
+    RoundSummary,
+    Task,
+    User,
+)
 from hub.domain.approval import ApprovalWindowError, validate_approved_at
 from hub.domain.digest import compute_content_digest
 from hub.domain.idempotency import IdempotencyDecision, decide_idempotency
@@ -113,7 +121,7 @@ def mcp_get_task(
             "round_number": rnd.round_number,
             "questions": rnd.questions,
         },
-        "previous_summary": None,  # M1: summaries land in M2; never fabricate
+        "previous_summary": _previous_summary_view(session, rnd),
         "deadline_at": iso_z(task.deadline_at) if task.deadline_at else None,
         "llm_provider": settings.llm_provider_name,
     }
@@ -356,7 +364,7 @@ def mcp_get_matter_status(
             "status": rnd.status,
             "tasks_total": len(tasks),
             "tasks_submitted": sum(1 for t in tasks if t.status == "submitted"),
-            "summaries": [],  # M1: no summaries yet, never fabricate
+            "summaries": _round_summaries_view(session, rnd.id),
         })
     result = {
         "matter_id": matter.id,
@@ -381,3 +389,49 @@ def mcp_get_matter_status(
             for t in tasks
         ]
     return result
+
+
+def _summary_payload(summary: RoundSummary) -> dict:
+    return {
+        "consensus_points": summary.consensus_points,
+        "divergences": summary.divergences,
+        "blind_spots": summary.blind_spots,
+        "open_questions": summary.open_questions,
+        "convergence": summary.convergence,
+    }
+
+
+def _previous_summary_view(session: Session, rnd: Round) -> dict | None:
+    """Previous round's ok summary for get_task (PRD 9.2). None for round 1
+    or when the previous round has no ok summary; never fabricated."""
+    if rnd.round_number <= 1:
+        return None
+    prev_round = session.scalar(
+        select(Round).where(Round.matter_id == rnd.matter_id,
+                            Round.round_number == rnd.round_number - 1)
+    )
+    if prev_round is None:
+        return None
+    prev = session.scalar(
+        select(RoundSummary).where(RoundSummary.round_id == prev_round.id,
+                                   RoundSummary.generation_status == "ok")
+    )
+    if prev is None:
+        return None
+    return {"round_number": prev_round.round_number, **_summary_payload(prev)}
+
+
+def _round_summaries_view(session: Session, round_id: str) -> list[dict]:
+    """Real ok summaries for a round (at most one row by unique constraint);
+    visible to initiator AND participants (FR-07). Empty list when absent."""
+    ok = session.scalar(
+        select(RoundSummary).where(RoundSummary.round_id == round_id,
+                                   RoundSummary.generation_status == "ok")
+    )
+    if ok is None:
+        return []
+    return [{
+        "summary_id": ok.id,
+        **_summary_payload(ok),
+        "created_at": iso_z(ok.created_at),
+    }]
