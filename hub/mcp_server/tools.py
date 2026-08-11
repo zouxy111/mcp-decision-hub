@@ -50,3 +50,28 @@ def register_tools(mcp: FastMCP, session_factory, settings: Settings) -> None:
             session_factory, methods.mcp_get_task,
             settings=settings, user_id=_current_user_id(), task_id=task_id,
         )
+
+    @mcp.tool
+    def submit_output(
+        task_id: str,
+        answers: list[dict],
+        human_approved: bool,
+        approved_at: str,
+        content_digest: str,
+        idempotency_key: str,
+        notes: str | None = None,
+    ) -> dict:
+        """Submit human-approved output for a task (PRD 9.2/9.3/9.4)."""
+        payload = {
+            "task_id": task_id,
+            "answers": answers,
+            "notes": notes,
+            "human_approved": human_approved,
+            "approved_at": approved_at,
+            "content_digest": content_digest,
+            "idempotency_key": idempotency_key,
+        }
+        return _call(
+            session_factory, methods.mcp_submit_output,
+            settings=settings, user_id=_current_user_id(), payload=payload,
+        )
