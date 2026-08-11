@@ -18,6 +18,12 @@ TASK_SUBMITTED = "task_submitted"
 OUTPUT_REPLAYED = "output_replayed"
 INVALID_STATE_TRANSITION = "invalid_state_transition"
 FORBIDDEN_DENIED = "forbidden_denied"
+ROUND_SUMMARIZED = "round_summarized"
+CONVERGENCE_DECIDED = "convergence_decided"
+ROUND_GENERATED = "round_generated"
+MATTER_BLOCKED = "matter_blocked"
+MATTER_CONTINUED = "matter_continued"
+LLM_FAILED = "llm_failed"
 
 
 def record_audit(
