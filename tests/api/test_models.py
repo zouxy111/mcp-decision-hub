@@ -1,5 +1,6 @@
 from datetime import timedelta
 
+import pytest
 from sqlalchemy import select
 
 from hub.db.models import (
@@ -62,3 +63,57 @@ def test_task_id_has_prefix(db_session):
 
     assert new_id("tsk").startswith("tsk_")
     assert new_id("mat") != new_id("mat")
+
+
+def test_round_summary_roundtrip_and_unique(db_session):
+    from sqlalchemy.exc import IntegrityError
+
+    from hub.db.models import RoundSummary
+
+    initiator = make_user(db_session, "init2")
+    matter = Matter(
+        initiator_id=initiator.id, title="t", goal="g", background="b",
+        status="collecting", timeout_seconds=3600, max_rounds=10,
+        initiator_participates=False, draft_questions=["Q1?"],
+    )
+    db_session.add(matter)
+    db_session.flush()
+    rnd = Round(matter_id=matter.id, round_number=1, status="open",
+                questions=[{"question_id": "q1", "content": "Q1?"}])
+    db_session.add(rnd)
+    db_session.flush()
+    summary = RoundSummary(
+        round_id=rnd.id, matter_id=matter.id,
+        consensus_points=["共识一"], divergences=["分歧一"],
+        blind_spots=[], open_questions=["问题一"],
+        convergence="continue", generation_status="ok",
+    )
+    db_session.add(summary)
+    db_session.commit()
+    assert db_session.scalar(
+        select(RoundSummary).where(RoundSummary.round_id == rnd.id)
+    ).convergence == "continue"
+
+    duplicate = RoundSummary(
+        round_id=rnd.id, matter_id=matter.id,
+        consensus_points=[], divergences=[], blind_spots=[], open_questions=[],
+        convergence=None, generation_status="failed",
+        error_code="LLM_TIMEOUT", retry_count=3,
+    )
+    db_session.add(duplicate)
+    with pytest.raises(IntegrityError):
+        db_session.commit()
+    db_session.rollback()
+
+
+def test_matter_new_columns_defaults(db_session):
+    initiator = make_user(db_session, "init3")
+    matter = Matter(
+        initiator_id=initiator.id, title="t", goal="g", background="b",
+        status="draft", timeout_seconds=3600, max_rounds=10,
+        initiator_participates=False, draft_questions=["Q1?"],
+    )
+    db_session.add(matter)
+    db_session.commit()
+    assert matter.granted_extra_rounds == 0
+    assert matter.blocked_reason is None

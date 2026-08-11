@@ -54,6 +54,10 @@ class Matter(Base):
     max_rounds: Mapped[int] = mapped_column(Integer, default=10, nullable=False)
     initiator_participates: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     draft_questions: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    granted_extra_rounds: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    blocked_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow, nullable=False)
 
@@ -121,4 +125,25 @@ class AuditEvent(Base):
     event_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     matter_id: Mapped[str | None] = mapped_column(String(48), nullable=True, index=True)
     detail: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(default=utcnow, nullable=False)
+
+
+class RoundSummary(Base):
+    __tablename__ = "round_summaries"
+
+    id: Mapped[str] = mapped_column(String(48), primary_key=True,
+                                    default=lambda: new_id("sum"))
+    round_id: Mapped[str] = mapped_column(ForeignKey("rounds.id"), unique=True,
+                                          nullable=False)
+    matter_id: Mapped[str] = mapped_column(ForeignKey("matters.id"), nullable=False,
+                                           index=True)
+    consensus_points: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    divergences: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    blind_spots: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    open_questions: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    convergence: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    generation_status: Mapped[str] = mapped_column(String(16), default="ok",
+                                                   nullable=False)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    retry_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(default=utcnow, nullable=False)
