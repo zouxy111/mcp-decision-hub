@@ -41,7 +41,12 @@ def scan_once(session_factory, settings: Settings, drive_queue=None) -> int:
     """扫描到期 pending 任务 → timeout + task_timeout 审计；对每个超时任务
     调 ``maybe_drive_round`` 评估收齐；收齐则把 round_id 放入 drive_queue
     （可为 None，测试不传）。返回本次置 timeout 的任务条数。异常上抛
-    （由 worker 记状态）。"""
+    （由 worker 记状态）。
+
+    ``settings`` 当前未使用：签名与 worker/管线惯例对齐，为后续可配置项
+    预留。``deadline_at`` 为 NULL 的任务不参与比较（SQL 中 NULL <= now 为
+    假），即永不超时——所有建任务路径均设置 deadline，此为隐含不变量。
+    """
     round_ids_to_drive: list[str] = []
     with session_factory() as session:
         now = utcnow()

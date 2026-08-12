@@ -122,8 +122,10 @@ def test_scan_once_ignores_future_deadline_and_non_pending(
         .values(deadline_at=utcnow() - timedelta(seconds=10))
     )
     db_session.commit()
-    processed = scan_once(session_factory, settings)
+    queue = _QueueStub()
+    processed = scan_once(session_factory, settings, drive_queue=queue)
     assert processed == 0
+    assert queue.items == []  # 无到期任务不入队
     db_session.expire_all()
     assert db_session.get(Task, scenario["task_a"].id).status == "cancelled"
     assert db_session.get(Task, scenario["task_b"].id).status == "pending"
@@ -139,8 +141,10 @@ def test_scan_once_ignores_submitted_task_past_deadline(
     db_session.commit()
     assert result["status"] == "submitted"
     _expire(db_session, scenario["task_a"].id)
-    processed = scan_once(session_factory, settings)
+    queue = _QueueStub()
+    processed = scan_once(session_factory, settings, drive_queue=queue)
     assert processed == 0
+    assert queue.items == []  # submitted 任务不入队
     db_session.expire_all()
     assert db_session.get(Task, scenario["task_a"].id).status == "submitted"
     assert _timeout_audits(db_session) == []
