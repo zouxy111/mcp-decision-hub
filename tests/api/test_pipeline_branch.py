@@ -113,19 +113,6 @@ def test_continue_with_granted_credit_advances(
     assert db_session.scalar(select(func.count()).select_from(Round)) == 2
 
 
-@pytest.mark.parametrize("convergence", ["provisionally_ready", "converged"])
-def test_ready_states_go_awaiting_decision(
-    db_session, session_factory, settings, scenario, make_fake_llm, convergence
-):
-    _write_summary(db_session, scenario, convergence)
-    llm = make_fake_llm()
-    run_round_pipeline(session_factory, settings,
-                       round_id=scenario["round"].id, llm=llm)
-    assert len(llm.calls) == 0
-    db_session.expire_all()
-    assert db_session.get(Matter, scenario["matter"].id).status == "awaiting_decision"
-
-
 def test_llm_blocked_convergence_blocks_matter(
     db_session, session_factory, settings, scenario, make_fake_llm
 ):

@@ -24,6 +24,10 @@ ROUND_GENERATED = "round_generated"
 MATTER_BLOCKED = "matter_blocked"
 MATTER_CONTINUED = "matter_continued"
 LLM_FAILED = "llm_failed"
+RESOLUTION_DRAFTED = "resolution_drafted"
+RESOLUTION_DECIDED = "resolution_decided"
+MATTER_COMPLETED = "matter_completed"
+MATTER_AWAITING_DECISION = "matter_awaiting_decision"
 
 
 def record_audit(

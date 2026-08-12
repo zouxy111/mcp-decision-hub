@@ -8,7 +8,7 @@ all LLM artifacts are idempotent (constraint 11).
 
 from datetime import timedelta
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from hub.api import audit
@@ -17,6 +17,7 @@ from hub.db.models import (
     Matter,
     MatterParticipant,
     Output,
+    Resolution,
     Round,
     RoundSummary,
     Task,
@@ -34,6 +35,7 @@ from hub.llm.client import MAX_RETRIES, LLMError
 from hub.llm.prompts import (
     build_followup_questions_prompt,
     build_generate_questions_prompt,
+    build_resolution_draft_prompt,
     build_round_summary_prompt,
 )
 
@@ -43,6 +45,7 @@ BLOCKED_REASON_SUMMARY_FAILED = "摘要生成失败（LLM 重试耗尽）"
 BLOCKED_REASON_FOLLOWUP_FAILED = "定向追问出题失败（LLM 重试耗尽）"
 BLOCKED_REASON_LLM_BLOCKED = "收敛判定为 blocked"
 BLOCKED_REASON_FIRST_ROUND_FAILED = "首轮出题失败（LLM 重试耗尽）"
+BLOCKED_REASON_DRAFT_FAILED = "决议草案生成失败（LLM 重试耗尽）"
 
 
 def maybe_drive_round(session: Session, *, task_id: str) -> str | None:
@@ -93,6 +96,10 @@ def run_round_pipeline(
         rnd = session.get(Round, round_id)
         if rnd is not None:
             _branch_phase(session, rnd, llm)
+            matter = session.get(Matter, rnd.matter_id)
+            if matter is not None:
+                session.refresh(matter)
+                _draft_resolution_phase(session, matter, llm)
         session.commit()
 
 
@@ -244,13 +251,8 @@ def _branch_phase(session: Session, rnd: Round, llm) -> None:
         _block_matter(session, matter, BLOCKED_REASON_LLM_BLOCKED)
         return
     if convergence in (CONVERGENCE_PROVISIONALLY_READY, CONVERGENCE_CONVERGED):
-        # M2: both go to awaiting_decision; decision drafts land in M3.
-        session.execute(
-            update(Matter)
-            .where(Matter.id == matter.id, Matter.status == "in_progress")
-            .values(status="awaiting_decision", blocked_reason=None,
-                    updated_at=utcnow())
-        )
+        # M3: 不在这里翻状态；决议草案与 awaiting_decision 翻转由
+        # _draft_resolution_phase 负责（FR-19/7.6）。
         return
     if convergence != CONVERGENCE_CONTINUE:
         return  # defensive: client schema validation guarantees one of four
@@ -318,6 +320,103 @@ def _branch_phase(session: Session, rnd: Round, llm) -> None:
                        detail={"round_id": new_round.id,
                                "round_number": new_round.round_number,
                                "task_count": len(participant_ids)})
+
+
+def _next_resolution_version(session: Session, matter_id: str) -> int:
+    current = session.scalar(
+        select(func.max(Resolution.version)).where(Resolution.matter_id == matter_id)
+    )
+    return (current or 0) + 1
+
+
+def _all_summaries_for_draft(session: Session, matter_id: str) -> list[dict]:
+    """All rounds' ok summaries ordered by round_number (design §5: 草案基于
+    全部轮次摘要)。"""
+    rows = session.execute(
+        select(Round.round_number, RoundSummary)
+        .join(RoundSummary, RoundSummary.round_id == Round.id)
+        .where(Round.matter_id == matter_id, RoundSummary.generation_status == "ok")
+        .order_by(Round.round_number)
+    ).all()
+    return [
+        {"round_number": round_number, **_summary_to_dict(summary)}
+        for round_number, summary in rows
+    ]
+
+
+def _draft_resolution_phase(session: Session, matter: Matter, llm) -> None:
+    """Resolution draft generation (FR-19/7.6). Idempotent: at most one draft
+    per source round (source_round_id guard). converged flips the matter to
+    awaiting_decision in the same transaction; provisionally_ready keeps the
+    matter in_progress until the initiator chooses (PRD 7.1/7.6)."""
+    if matter.status != "in_progress":
+        return
+    latest = session.scalar(
+        select(Round).where(Round.matter_id == matter.id)
+        .order_by(Round.round_number.desc()).limit(1)
+    )
+    if latest is None or latest.status != "closed":
+        return
+    summary = session.scalar(
+        select(RoundSummary).where(RoundSummary.round_id == latest.id,
+                                   RoundSummary.generation_status == "ok")
+    )
+    if summary is None or summary.convergence not in (
+        CONVERGENCE_PROVISIONALLY_READY, CONVERGENCE_CONVERGED,
+    ):
+        return
+    exists = session.scalar(
+        select(Resolution.id).where(Resolution.source_round_id == latest.id)
+    )
+    if exists is not None:
+        return
+    system_prompt, user_prompt = build_resolution_draft_prompt(
+        title=matter.title, goal=matter.goal, background=matter.background,
+        summaries=_all_summaries_for_draft(session, matter.id),
+    )
+    try:
+        data = llm.complete_json(system_prompt, user_prompt,
+                                 schema_name="resolution_draft")
+    except LLMError as e:
+        _block_matter(
+            session, matter,
+            f"{BLOCKED_REASON_DRAFT_FAILED}：{e.error_code}"
+            f"（已重试 {e.retry_count} 次）",
+        )
+        audit.record_audit(session, audit.LLM_FAILED, matter_id=matter.id,
+                           detail={"stage": "resolution_draft",
+                                   "round_id": latest.id,
+                                   "error_code": e.error_code,
+                                   "retry_count": e.retry_count})
+        return
+    resolution = Resolution(
+        matter_id=matter.id, source_round_id=latest.id,
+        version=_next_resolution_version(session, matter.id),
+        status="pending_review",
+        recommendation=data["recommendation"], rationale=data["rationale"],
+        risks=data["risks"], divergences=data["divergences"],
+        cited_rounds=data["cited_rounds"],
+    )
+    session.add(resolution)
+    session.flush()
+    if summary.convergence == CONVERGENCE_CONVERGED:
+        session.execute(
+            update(Matter)
+            .where(Matter.id == matter.id, Matter.status == "in_progress")
+            .values(status="awaiting_decision", blocked_reason=None,
+                    updated_at=utcnow())
+        )
+        audit.record_audit(session, audit.MATTER_AWAITING_DECISION,
+                           matter_id=matter.id,
+                           detail={"resolution_id": resolution.id,
+                                   "version": resolution.version,
+                                   "convergence": "converged"})
+    audit.record_audit(session, audit.RESOLUTION_DRAFTED, matter_id=matter.id,
+                       detail={"resolution_id": resolution.id,
+                               "version": resolution.version,
+                               "source_round_id": latest.id,
+                               "convergence": summary.convergence,
+                               "cited_rounds": data["cited_rounds"]})
 
 
 def find_interrupted_round_ids(session: Session) -> list[str]:
