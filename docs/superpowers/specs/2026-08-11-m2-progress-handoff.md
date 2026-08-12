@@ -1,8 +1,18 @@
 # M2 执行进度交接文档
 
-- 日期：2026-08-11（任务 7–17 更新于 2026-08-12）
-- 状态：**M2 全部 18 个任务完成**（任务 1–17 双审查 + 最终整体审查通过，任务 18 真实 DeepSeek 冒烟通过）；257 passed / ruff clean
+- 日期：2026-08-11（M2 任务 7–18 更新于 2026-08-12；M3 完成更新于 2026-08-12 晚）
+- 状态：**M2 与 M3 全部完成**。M2：18 任务 + 真实 DeepSeek 冒烟通过（257 passed）。M3（决议闸门）：18 任务 + 双审查 + 最终整体审查 + 真实 DeepSeek 决议闭环冒烟通过（**380 passed / ruff clean**）
 - 写给：接手执行的 agent（或人类）
+
+## -1. M3 完成摘要（2026-08-12，最新）
+
+计划：`docs/superpowers/plans/2026-08-12-m3-resolution-gate.md`（6070 行，18 任务，经一轮审查修订 cd200a2 + 两处实现同步 5c3a16e/bb07c8f）。用户四口径（已拍板不可回退）：三终态 version 都递增；驳回仅达上限时授信；补上轮次上限 blocked 直接生成草案入口；拍板/驳回理由入审计（截断 AUDIT_RATIONALE_MAX=500）。编排方案：按用户决定引入 LangGraph（langgraph 1.2.11 + langgraph-checkpoint-sqlite 3.1.1，af45542），checkpoint 与业务表同 SQLite 文件，`open_checkpointer` 自建连接 + busy_timeout=5000（禁用 from_conn_string）。
+
+M3 commit 序列：c37d104(1 语义锁定) fc17d54(2 domain) cd29306(3 表) e002803(4 schema/prompt) afbdea1(5 草案相位) bfa1d22(6 图 tick) 0d18d58(7 拍板服务) 71f03c7(8 二选一) 9209e77(9 阻塞草案入口) 32f0bd8(10 闸门) f015986(11 resume 接线) 000d5be(12 拍板页) 7120917(13 MCP) baaac3e(14 审计页) 7752a86(15 状态展示) ca6e141+bb07c8f(16 验收场景+deflake)。
+
+M3 冒烟（真实 DeepSeek deepseek-v4-flash，hub-m3-smoke.db 未入库）：完整闭环（provisional→accept→approve→completed）、驳回开新轮（旧草案只读 v2）、暂停闸门重启恢复（FR-24）、版本冲突 409"请重新加载后再操作"且不覆盖、管理员/发起人审计页。注意：冒烟 Agent 罐头答案不切题时 DeepSeek 会合理判 blocked（连续无进展），非平台故障。
+
+M3 最终审查遗留（M4 候选）：M2 摘要 prompt 的 previous_summary 平铺二阶注入窗口（M3 决议 prompt 已逐条包裹，M2 侧未改）；resume/tick 并发窗口（有兜底，可接受）。任务 16 的 flake 教训：跨线程访问主线程 session 绑定的 ORM 对象会间歇异常（物化标量传闭包）；client fixture 的 lifespan reconciler 会拾起场景种子里的空 generating 轮次与同步驱动竞争（先完成同步驱动再建 TestClient）。
 
 ## 0. 最新状态（2026-08-12 更新）
 
