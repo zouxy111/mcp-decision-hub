@@ -82,25 +82,17 @@ def maybe_drive_round(session: Session, *, task_id: str) -> str | None:
 def run_round_pipeline(
     session_factory, settings: Settings, *, round_id: str, llm
 ) -> None:
-    """Background driver for one round. Two phases with separate commits so a
-    crash between them stays recoverable (reconciler, task 11). Idempotent:
-    safe to call repeatedly for the same round."""
+    """唯一后台驱动入口（M2 签名不变）。M3 起内部经 LangGraph tick 驱动：
+    round_id 解析出 matter_id 后交给 drive_matter_tick；图的相位节点与 M2
+    相位函数一一对应，幂等语义不变。"""
     with session_factory() as session:
         rnd = session.get(Round, round_id)
-        if rnd is not None and rnd.status == "generating" and not rnd.questions:
-            _generate_first_round_phase(session, rnd, llm)
-        elif rnd is not None and rnd.status == "awaiting_summary":
-            _summarize_phase(session, rnd, llm)
-        session.commit()
-    with session_factory() as session:
-        rnd = session.get(Round, round_id)
-        if rnd is not None:
-            _branch_phase(session, rnd, llm)
-            matter = session.get(Matter, rnd.matter_id)
-            if matter is not None:
-                session.refresh(matter)
-                _draft_resolution_phase(session, matter, llm)
-        session.commit()
+        matter_id = rnd.matter_id if rnd is not None else None
+    if matter_id is None:
+        return
+    from hub.graph.matter_graph import drive_matter_tick
+
+    drive_matter_tick(session_factory, settings, matter_id=matter_id, llm=llm)
 
 
 def _block_matter(session: Session, matter: Matter, reason: str) -> None:
