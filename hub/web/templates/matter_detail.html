@@ -12,6 +12,9 @@
 {% if matter.status == "in_progress" and round_views and round_views[0].round.status == "generating" %}
 <p><strong>正在生成第一轮问题（平台大模型处理中，请稍后刷新）。</strong></p>
 {% endif %}
+{% if draft_pending_generation %}
+<p><strong>平台正在生成决议草案（处理中），请稍后刷新。</strong></p>
+{% endif %}
 {% if matter.status == "blocked" %}
 <p class="error">事项已阻塞：{{ matter.blocked_reason or "原因未记录" }}</p>
 {% endif %}
@@ -38,7 +41,7 @@
 {% endif %}
 {% if can_continue %}
 <form method="post" action="/matters/{{ matter.id }}/continue">
-  <button type="submit">继续（+1 轮）</button>
+  <button type="submit">{{ continue_label }}</button>
 </form>
 {% endif %}
 {% if can_draft_from_blocked %}

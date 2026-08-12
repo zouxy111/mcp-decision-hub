@@ -16,7 +16,10 @@ from hub.api.audit_query import (
     query_audit_events,
 )
 from hub.api.errors import ApiError
-from hub.api.pipeline import BLOCKED_REASON_ROUND_LIMIT
+from hub.api.pipeline import (
+    BLOCKED_REASON_DRAFT_FAILED,
+    BLOCKED_REASON_ROUND_LIMIT,
+)
 from hub.api.resolutions import draft_resolution_from_blocked, get_latest_resolution
 from hub.config import Settings
 from hub.db.models import Matter, Output, Round, RoundSummary, Task, User
@@ -158,7 +161,23 @@ def _build_detail(db: Session, matter: Matter, user: User, settings: Settings) -
         "can_continue": (
             is_initiator
             and matter.status == "blocked"
-            and matter.blocked_reason == BLOCKED_REASON_ROUND_LIMIT
+            and (
+                matter.blocked_reason == BLOCKED_REASON_ROUND_LIMIT
+                or (matter.blocked_reason or "").startswith(
+                    BLOCKED_REASON_DRAFT_FAILED
+                )
+            )
+        ),
+        "continue_label": (
+            "重试生成草案"
+            if matter.blocked_reason
+            and BLOCKED_REASON_DRAFT_FAILED in matter.blocked_reason
+            else "继续（+1 轮）"
+        ),
+        "draft_pending_generation": (
+            matter.status == "in_progress"
+            and get_latest_resolution(db, matter_id=matter.id) is None
+            and _latest_round_closed_ready(db, matter)
         ),
         "can_draft_from_blocked": (
             is_initiator
@@ -177,6 +196,22 @@ def _build_detail(db: Session, matter: Matter, user: User, settings: Settings) -
             if is_initiator else {}
         ),
     }
+
+
+def _latest_round_closed_ready(db: Session, matter: Matter) -> bool:
+    rnd = db.scalar(
+        select(Round).where(Round.matter_id == matter.id)
+        .order_by(Round.round_number.desc()).limit(1)
+    )
+    if rnd is None or rnd.status != "closed":
+        return False
+    summary = db.scalar(
+        select(RoundSummary).where(RoundSummary.round_id == rnd.id,
+                                   RoundSummary.generation_status == "ok")
+    )
+    return summary is not None and summary.convergence in (
+        "provisionally_ready", "converged",
+    )
 
 
 def _resolution_convergence(db: Session, matter: Matter) -> str | None:
