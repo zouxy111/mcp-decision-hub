@@ -5561,9 +5561,9 @@ git commit -m "feat: show resolution processing, failure retry and read-only sta
 **文件：**
 - 测试：`tests/integration/test_resolution_e2e.py`（新建）
 
-语义说明：把 PRD §13 的 M3 相关验收场景串成进程级集成测试。驱动方式混合：事项/提交走服务与 MCP 方法函数（确定性），图驱动直接调 `run_round_pipeline` / `resume_matter_gate`（同步、确定性），Web 层走 `client` fixture。全部 FakeLLM，零真实 API。已有单测覆盖的细则（版本锁、权限、分页）不重复，这里验证**跨层闭环叙事**。
+语义说明：把 PRD §13 的 M3 相关验收场景串成进程级集成测试。驱动方式混合：事项/提交走服务与 MCP 方法函数（确定性），图驱动直接调 `run_round_pipeline` / `resume_matter_gate`（同步、确定性），Web 层（场景 24）在全部同步驱动完成后本地建 `TestClient`。全部 FakeLLM，零真实 API。已有单测覆盖的细则（版本锁、权限、分页）不重复，这里验证**跨层闭环叙事**。
 
-驱动链注意（实证）：`mcp_submit_output`（methods.py 服务层）**不翻转轮次状态**——`open→awaiting_summary` 只在 MCP 工具包装层（tools.py）的 `pipeline.maybe_drive_round` 里发生。本文件直接调服务层，因此每次 submit 后必须显式补 `maybe_drive_round(db_session, task_id=task.id)`，否则轮次永远停在 `open`，后续管线断言必红。另：`client` fixture 建 app 时 lifespan reconciler 会拾起场景 seed 的空 `generating` 轮次，本文件顶部用 `app_llm` fixture 注入脚本化 FakeLLM（M2 既有模式），避免 `app_llm=None` 让 create_app 构造真实 DeepSeekClient 导致 LLM_NOT_CONFIGURED 污染场景。
+驱动链注意（实证）：`mcp_submit_output`（methods.py 服务层）**不翻转轮次状态**——`open→awaiting_summary` 只在 MCP 工具包装层（tools.py）的 `pipeline.maybe_drive_round` 里发生。本文件直接调服务层，因此每次 submit 后必须显式补 `maybe_drive_round(db_session, task_id=task.id)`，否则轮次永远停在 `open`，后续管线断言必红。另：scenario seed 的空 `generating` 轮次会被建 app 时的 lifespan reconciler 拾起投给后台 worker，与测试体内的 `run_round_pipeline` **并发驱动同一轮次**（实测间歇 `UNIQUE constraint failed: round_summaries.round_id`），因此场景 24 **不用 `client` fixture**，改为同步驱动全部完成后再 `with TestClient(create_app(settings, llm=make_fake_llm()))`（此时无 generating 轮次，reconciler 无东西可拾起）；同时传入 FakeLLM 避免 `llm=None` 让 create_app 构造真实 DeepSeekClient。并发用例（场景 9/17）进线程前必须物化标量 id——跨线程访问绑定主线程 session 的 ORM 对象会触发惰性加载（session 非线程安全），实测间歇异常导致计数丢失。
 
 - [ ] **步骤 1：编写失败的测试**
 
@@ -5580,7 +5580,7 @@ from hub.api import matters as matter_svc
 from hub.api.errors import ApiError
 from hub.api.pipeline import maybe_drive_round, run_round_pipeline
 from hub.api.resolutions import decide_resolution
-from hub.db.models import AuditEvent, Matter, Output, Resolution, Round, Task
+from hub.db.models import AuditEvent, Matter, Resolution, Round, Task, User
 from hub.domain.digest import compute_content_digest
 from hub.domain.timeutil import iso_z, utcnow
 from hub.graph.matter_graph import resume_matter_gate
@@ -5619,16 +5619,6 @@ def scenario(db_session):
     matter_svc.start_matter(db_session, matter_id=matter.id, actor=init)
     db_session.commit()
     return {"matter": matter, "init": init, "alice": alice, "bob": bob}
-
-
-@pytest.fixture()
-def app_llm(make_fake_llm):
-    """client fixture 建 app 时 lifespan reconciler 会拾起场景 seed 的空
-    generating 轮次；app_llm 默认 None 会让 create_app 构造真实
-    DeepSeekClient(api_key=None) → LLM_NOT_CONFIGURED 污染场景。注入脚本化
-    FakeLLM 绕开（M2 既有模式，参照 tests/web/test_matter_detail_summaries.py
-    顶部）。"""
-    return make_fake_llm([{"questions": ["兜底追问？"]}])
 
 
 def _run_first_round(db_session, session_factory, settings, scenario, llm):
@@ -5772,10 +5762,11 @@ def test_scenario7_reject_creates_new_round(
     round2 = db_session.scalar(select(Round).where(Round.round_number == 2))
     assert round2.status == "open"
     assert [q["content"] for q in round2.questions] == ["成本口径请对齐？"]
-    old = db_session.scalar(
-        select(Resolution).where(Resolution.version == 1)
-    )
+    # decide_resolution 原地拍板并 version+1（同场景 1 的 version==2），
+    # 旧草案按 version==1 查不到；本场景仅一行决议，直接取并锁定版本
+    old = db_session.scalar(select(Resolution))
     assert old.status == "rejected"
+    assert old.version == 2
     assert old.decision_rationale == "成本口径未闭合"
     # 新一轮任务可提交
     tasks = db_session.scalars(
@@ -5793,12 +5784,16 @@ def test_scenario9_17_concurrent_and_stale_version(
     rnd = _run_first_round(db_session, session_factory, settings, scenario, llm)
     run_round_pipeline(session_factory, settings, round_id=rnd.id, llm=llm)
     results = {"ok": 0, "conflict": 0}
+    # 跨线程只传标量：scenario 里的 ORM 对象绑定主线程 session，子线程访问
+    # 其属性会触发惰性加载（session 非线程安全）→ 间歇异常、计数丢失
+    init_id = scenario["init"].id
+    matter_id = scenario["matter"].id
 
     def worker(decision):
         with session_factory() as s:
-            init = s.get(type(scenario["init"]), scenario["init"].id)
+            init = s.get(User, init_id)
             try:
-                decide_resolution(s, matter_id=scenario["matter"].id,
+                decide_resolution(s, matter_id=matter_id,
                                   actor=init, decision=decision,
                                   expected_version=1,
                                   rationale="理由" if decision != "approved"
@@ -5887,7 +5882,7 @@ def test_scenario16_injection_cannot_rewrite_resolution(
 
 
 def test_scenario24_audit_queryable(
-    db_session, session_factory, settings, scenario, make_fake_llm, client
+    db_session, session_factory, settings, scenario, make_fake_llm
 ):
     """场景 24：管理员筛选、发起人查本事项、参与人 403、无敏感正文。"""
     llm = make_fake_llm([QUESTIONS, SUMMARY_CONVERGED, DRAFT])
@@ -5901,29 +5896,39 @@ def test_scenario24_audit_queryable(
                        matter_id=scenario["matter"].id, action="decide",
                        llm=make_fake_llm())
 
-    def login(username):
-        client.cookies.clear()
-        client.post("/login",
-                    data={"username": username, "password": "pw-123456"},
-                    follow_redirects=False)
+    # 不用 client fixture：scenario seed 的空 generating 轮次会被建 app 时的
+    # lifespan reconciler 拾起投给后台 worker，与上面的同步驱动并发抢同一
+    # 轮次（间歇 UNIQUE round_summaries.round_id）。全部同步驱动完成后再建
+    # app，此时无 generating 轮次，reconciler 无东西可拾起
+    from fastapi.testclient import TestClient
 
-    admin = make_user(db_session, "admin_u", password="pw-123456",
-                      is_admin=True)
-    db_session.commit()
-    login("admin_u")
-    resp = client.get("/admin/audit",
-                      params={"matter_id": scenario["matter"].id,
-                              "event_type": "resolution_decided"})
-    assert resp.status_code == 200
-    assert "resolution_decided" in resp.text
-    login("init")
-    resp = client.get(f"/matters/{scenario['matter'].id}/audit")
-    assert resp.status_code == 200
-    assert "resolution_drafted" in resp.text
-    assert "matter_completed" in resp.text
-    login("alice")
-    resp = client.get(f"/matters/{scenario['matter'].id}/audit")
-    assert resp.status_code == 403
+    from hub.main import create_app
+
+    with TestClient(
+        create_app(settings, llm=make_fake_llm())
+    ) as web_client:
+        def login(username):
+            web_client.cookies.clear()
+            web_client.post("/login",
+                            data={"username": username, "password": "pw-123456"},
+                            follow_redirects=False)
+
+        make_user(db_session, "admin_u", password="pw-123456", is_admin=True)
+        db_session.commit()
+        login("admin_u")
+        resp = web_client.get("/admin/audit",
+                              params={"matter_id": scenario["matter"].id,
+                                      "event_type": "resolution_decided"})
+        assert resp.status_code == 200
+        assert "resolution_decided" in resp.text
+        login("init")
+        resp = web_client.get(f"/matters/{scenario['matter'].id}/audit")
+        assert resp.status_code == 200
+        assert "resolution_drafted" in resp.text
+        assert "matter_completed" in resp.text
+        login("alice")
+        resp = web_client.get(f"/matters/{scenario['matter'].id}/audit")
+        assert resp.status_code == 403
     # 审计不含提交正文与敏感信息
     rows = db_session.scalars(select(AuditEvent)).all()
     for row in rows:
