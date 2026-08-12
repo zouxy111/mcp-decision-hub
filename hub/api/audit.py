@@ -29,6 +29,9 @@ RESOLUTION_DECIDED = "resolution_decided"
 MATTER_COMPLETED = "matter_completed"
 MATTER_AWAITING_DECISION = "matter_awaiting_decision"
 
+# Max chars of a decision rationale stored in audit detail (design decision 12).
+AUDIT_RATIONALE_MAX = 500
+
 
 def record_audit(
     session: Session,
