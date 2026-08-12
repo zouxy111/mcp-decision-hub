@@ -10,7 +10,13 @@ from hub.background import drive_worker, resume_worker
 from hub.config import Settings, load_settings
 from hub.db.session import init_db, make_engine, make_session_factory
 from hub.llm.client import DeepSeekClient
-from hub.web import routes_admin, routes_agents, routes_auth, routes_matters
+from hub.web import (
+    routes_admin,
+    routes_agents,
+    routes_auth,
+    routes_decision,
+    routes_matters,
+)
 
 try:
     from hub.mcp_server.app import create_mcp_asgi
@@ -92,6 +98,7 @@ def create_app(settings: Settings | None = None, *, llm=None) -> FastAPI:
     app.state.resume_queue = resume_queue
     app.include_router(routes_auth.router)
     app.include_router(routes_matters.router)
+    app.include_router(routes_decision.router)
     app.include_router(routes_agents.router)
     app.include_router(routes_admin.router)
     if mcp_asgi is not None:

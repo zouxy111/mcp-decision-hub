@@ -15,8 +15,26 @@
 {% if matter.status == "blocked" %}
 <p class="error">事项已阻塞：{{ matter.blocked_reason or "原因未记录" }}</p>
 {% endif %}
-{% if matter.status == "awaiting_decision" %}
-<p><strong>等待决议（下一阶段开放拍板）。</strong></p>
+{% if resolution and resolution.status == "pending_review" %}
+<h2>决议草案（版本 {{ resolution.version }}）</h2>
+<p><strong>建议：</strong>{{ resolution.recommendation }}</p>
+{% if is_initiator %}
+  {% if matter.status == "awaiting_decision" %}
+  <p><strong><a href="/matters/{{ matter.id }}/decision">前往拍板（通过 / 修改通过 / 驳回）</a></strong></p>
+  {% elif matter.status == "in_progress" %}
+  <p><strong>决议草案已生成（暂定收敛）。<a href="/matters/{{ matter.id }}/decision">请选择继续追问或进入拍板</a></strong></p>
+  {% endif %}
+{% else %}
+<p>决议草案已生成，等待发起人拍板。<a href="/matters/{{ matter.id }}/decision">查看草案（只读）</a></p>
+{% endif %}
+{% elif matter.status == "awaiting_decision" %}
+<p><strong>等待发起人对决议拍板。</strong></p>
+{% endif %}
+{% if matter.status == "completed" and resolution %}
+<h2>最终决议（{{ resolution.status }}）</h2>
+<p style="white-space: pre-wrap">{{ resolution.final_text }}</p>
+{% if resolution.decision_rationale %}<p>拍板理由：{{ resolution.decision_rationale }}</p>{% endif %}
+<p>拍板时间(UTC)：{{ resolution.decided_at.strftime("%Y-%m-%dT%H:%M:%SZ") if resolution.decided_at else "-" }}</p>
 {% endif %}
 {% if can_continue %}
 <form method="post" action="/matters/{{ matter.id }}/continue">

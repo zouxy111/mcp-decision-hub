@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from hub.api import matters as matter_svc
 from hub.api.errors import ApiError
 from hub.api.pipeline import BLOCKED_REASON_ROUND_LIMIT
-from hub.api.resolutions import draft_resolution_from_blocked
+from hub.api.resolutions import draft_resolution_from_blocked, get_latest_resolution
 from hub.config import Settings
 from hub.db.models import Matter, Output, Round, RoundSummary, Task, User
 from hub.web.deps import get_current_user, get_db, get_settings
@@ -159,7 +159,22 @@ def _build_detail(db: Session, matter: Matter, user: User, settings: Settings) -
             and matter.status == "blocked"
             and (matter.blocked_reason or "").startswith(BLOCKED_REASON_ROUND_LIMIT)
         ),
+        "resolution": get_latest_resolution(db, matter_id=matter.id),
+        "resolution_convergence": _resolution_convergence(db, matter),
     }
+
+
+def _resolution_convergence(db: Session, matter: Matter) -> str | None:
+    resolution = get_latest_resolution(db, matter_id=matter.id)
+    if resolution is None:
+        return None
+    summary = db.scalar(
+        select(RoundSummary).where(
+            RoundSummary.round_id == resolution.source_round_id,
+            RoundSummary.generation_status == "ok",
+        )
+    )
+    return summary.convergence if summary else None
 
 
 @router.get("/matters/{matter_id}", response_class=HTMLResponse)

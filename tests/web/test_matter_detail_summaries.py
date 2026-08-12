@@ -124,7 +124,8 @@ def test_awaiting_decision_shows_placeholder(client, db_session, matter):
     db_session.commit()
     _login(client, "init")
     resp = client.get(f"/matters/{matter.id}")
-    assert "等待决议（下一阶段开放拍板）" in resp.text
+    assert "下一阶段开放拍板" not in resp.text
+    assert "决议" in resp.text
 
 
 def test_continue_button_only_for_initiator_at_round_limit(

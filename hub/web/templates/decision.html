@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}决议拍板 - {{ matter.title }}{% endblock %}
+{% block content %}
+<h1>决议草案 — {{ matter.title }}</h1>
+<p>状态：<strong>{{ matter.status }}</strong> ｜ 决议状态：{{ resolution.status }} ｜ 版本：{{ resolution.version }}</p>
+{% if error %}<p class="error">{{ error }}</p>{% endif %}
+<h2>建议</h2>
+<p>{{ resolution.recommendation }}</p>
+<h2>依据</h2>
+<p>{{ resolution.rationale }}</p>
+<h2>风险</h2>
+<ul>{% for item in resolution.risks %}<li>{{ item }}</li>{% endfor %}</ul>
+<h2>分歧</h2>
+<ul>{% for item in resolution.divergences %}<li>{{ item }}</li>{% endfor %}</ul>
+<p>引用轮次：{% for n in resolution.cited_rounds %}第 {{ n }} 轮 {% endfor %}</p>
+<p><a href="/matters/{{ matter.id }}">返回事项详情（查看各轮证据）</a></p>
+{% if resolution.final_text %}
+<h2>最终决议（{{ resolution.status }}）</h2>
+<p style="white-space: pre-wrap">{{ resolution.final_text }}</p>
+{% if resolution.decision_rationale %}<p>拍板理由：{{ resolution.decision_rationale }}</p>{% endif %}
+{% endif %}
+{% if can_decide %}
+<h2>拍板</h2>
+<form method="post" action="/matters/{{ matter.id }}/decision">
+  <input type="hidden" name="action" value="decide">
+  <input type="hidden" name="version" value="{{ resolution.version }}">
+  <label><input type="radio" name="decision" value="approved" checked> 通过</label>
+  <label><input type="radio" name="decision" value="modified"> 修改通过</label>
+  <label><input type="radio" name="decision" value="rejected"> 驳回</label>
+  <p><label>最终文本（修改通过必填）：<br>
+    <textarea name="final_text" rows="6" cols="80"></textarea></label></p>
+  <p><label>理由（修改通过/驳回必填）：<br>
+    <textarea name="rationale" rows="3" cols="80"></textarea></label></p>
+  <button type="submit">提交拍板</button>
+</form>
+{% elif provisional_choice %}
+<h2>暂定收敛：请选择下一步</h2>
+<form method="post" action="/matters/{{ matter.id }}/decision" style="display:inline">
+  <input type="hidden" name="action" value="continue_probing">
+  <input type="hidden" name="version" value="{{ resolution.version }}">
+  <button type="submit">继续追问（开启新一轮）</button>
+</form>
+<form method="post" action="/matters/{{ matter.id }}/decision" style="display:inline">
+  <input type="hidden" name="action" value="accept">
+  <input type="hidden" name="version" value="{{ resolution.version }}">
+  <button type="submit">进入拍板</button>
+</form>
+{% else %}
+<p>决议当前为只读状态。</p>
+{% endif %}
+{% endblock %}
