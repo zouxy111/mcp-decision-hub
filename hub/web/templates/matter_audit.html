@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}事项审计 - {{ matter.title }}{% endblock %}
+{% block content %}
+<h1>本事项审计 — {{ matter.title }}</h1>
+<p><a href="/matters/{{ matter.id }}">返回事项详情</a> ｜ 审计记录为只读。</p>
+{% if rows %}
+<table>
+  <tr><th>时间(UTC)</th><th>账号</th><th>事件类型</th><th>详情</th></tr>
+  {% for row in rows %}
+  <tr>
+    <td>{{ row.created_at.strftime("%Y-%m-%dT%H:%M:%SZ") }}</td>
+    <td>{{ usernames.get(row.actor_user_id, "-") }}</td>
+    <td><code>{{ row.event_type }}</code></td>
+    <td><code>{{ row.detail | tojson if row.detail else "-" }}</code></td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<p>无匹配审计记录。</p>
+{% endif %}
+{% endblock %}

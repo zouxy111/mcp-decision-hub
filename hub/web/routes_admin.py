@@ -1,4 +1,7 @@
-"""Admin invitation page (PRD 3.1, M1 basic scope: create/resend/revoke)."""
+"""Admin invitation page (PRD 3.1, M1 basic scope: create/resend/revoke)
+and read-only audit query page (FR-23b)."""
+
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -7,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from hub.api import accounts
+from hub.api.audit_query import query_audit_events
 from hub.api.errors import ApiError
 from hub.config import Settings
 from hub.db.models import User
@@ -76,3 +80,70 @@ def invitations_revoke(user_id: int, db: Session = Depends(get_db),
         pass
     db.commit()
     return RedirectResponse("/admin/invitations", status_code=303)
+
+
+def _parse_date(value: str | None, *, end_of_day: bool = False):
+    if not value:
+        return None
+    try:
+        parsed = datetime.strptime(value, "%Y-%m-%d")
+    except ValueError:
+        raise ApiError(422, "VALIDATION_FAILED",
+                       "日期格式应为 YYYY-MM-DD") from None
+    return parsed + timedelta(days=1) if end_of_day else parsed
+
+
+@router.get("/admin/audit", response_class=HTMLResponse)
+def admin_audit_page(
+    request: Request,
+    actor: str = "",
+    matter_id: str = "",
+    event_type: str = "",
+    since: str = "",
+    until: str = "",
+    offset: int = 0,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    error = None
+    try:
+        since_dt = _parse_date(since or None)
+        until_dt = _parse_date(until or None, end_of_day=True)
+    except ApiError as e:
+        error = e.message
+        since_dt = until_dt = None
+    actor_user_id = None
+    if actor.strip():
+        found = db.scalar(select(User.id).where(User.username == actor.strip()))
+        actor_user_id = found if found is not None else -1  # 未知账号 → 空结果
+    rows, has_more = ([], False)
+    if error is None:
+        rows, has_more = query_audit_events(
+            db, actor_user_id=actor_user_id, matter_id=matter_id.strip() or None,
+            event_type=event_type.strip() or None,
+            since=since_dt, until=until_dt, offset=max(0, offset),
+        )
+    usernames = {
+        u.id: u.username
+        for u in db.scalars(
+            select(User).where(
+                User.id.in_([r.actor_user_id for r in rows
+                             if r.actor_user_id is not None] or [0])
+            )
+        ).all()
+    }
+    return templates.TemplateResponse(
+        request,
+        "admin_audit.html",
+        {
+            "rows": rows,
+            "usernames": usernames,
+            "has_more": has_more,
+            "offset": max(0, offset),
+            "filters": {"actor": actor, "matter_id": matter_id,
+                        "event_type": event_type, "since": since,
+                        "until": until},
+            "error": error,
+            "current_user_is_admin": True,
+        },
+    )

@@ -8,7 +8,13 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from hub.api import audit as audit_svc
 from hub.api import matters as matter_svc
+from hub.api.audit_query import (
+    DETAIL_AUDIT_PREVIEW,
+    MATTER_AUDIT_MAX,
+    query_audit_events,
+)
 from hub.api.errors import ApiError
 from hub.api.pipeline import BLOCKED_REASON_ROUND_LIMIT
 from hub.api.resolutions import draft_resolution_from_blocked, get_latest_resolution
@@ -161,6 +167,15 @@ def _build_detail(db: Session, matter: Matter, user: User, settings: Settings) -
         ),
         "resolution": get_latest_resolution(db, matter_id=matter.id),
         "resolution_convergence": _resolution_convergence(db, matter),
+        "audit_preview": (
+            query_audit_events(db, matter_id=matter.id,
+                               limit=DETAIL_AUDIT_PREVIEW)[0]
+            if is_initiator else []
+        ),
+        "audit_usernames": (
+            {u.id: u.username for u in db.scalars(select(User)).all()}
+            if is_initiator else {}
+        ),
     }
 
 
@@ -278,3 +293,37 @@ async def matter_draft_resolution(
     # 驱动图推进（任务 10 加入闸门后停在闸门等拍板；此前为幂等空转）
     request.app.state.drive_queue.put_nowait(resolution.source_round_id)
     return RedirectResponse(f"/matters/{matter_id}", status_code=303)
+
+
+@router.get("/matters/{matter_id}/audit", response_class=HTMLResponse)
+def matter_audit_page(
+    request: Request,
+    matter_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    matter = matter_svc.get_matter_for_user(db, matter_id=matter_id, user=user)
+    if matter is None:
+        raise HTTPException(status_code=404, detail="事项不存在或不可见")
+    if matter.initiator_id != user.id:
+        audit_svc.record_audit(db, audit_svc.FORBIDDEN_DENIED,
+                               actor_user_id=user.id, matter_id=matter_id,
+                               detail={"action": "view_matter_audit"})
+        db.commit()
+        raise HTTPException(status_code=403, detail="仅发起人可查看本事项审计")
+    rows, _ = query_audit_events(db, matter_id=matter_id,
+                                 limit=MATTER_AUDIT_MAX)
+    usernames = {
+        u.id: u.username
+        for u in db.scalars(
+            select(User).where(
+                User.id.in_([r.actor_user_id for r in rows
+                             if r.actor_user_id is not None] or [0])
+        )
+        ).all()
+    }
+    return templates.TemplateResponse(
+        request, "matter_audit.html",
+        {"matter": matter, "rows": rows, "usernames": usernames,
+         "current_user_is_admin": user.is_admin},
+    )
