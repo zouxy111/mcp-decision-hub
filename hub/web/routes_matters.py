@@ -1,5 +1,7 @@
 """Matter pages: dashboard, create form, detail, start action."""
 
+import asyncio
+
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
@@ -9,6 +11,7 @@ from sqlalchemy.orm import Session
 from hub.api import matters as matter_svc
 from hub.api.errors import ApiError
 from hub.api.pipeline import BLOCKED_REASON_ROUND_LIMIT
+from hub.api.resolutions import draft_resolution_from_blocked
 from hub.config import Settings
 from hub.db.models import Matter, Output, Round, RoundSummary, Task, User
 from hub.web.deps import get_current_user, get_db, get_settings
@@ -151,6 +154,11 @@ def _build_detail(db: Session, matter: Matter, user: User, settings: Settings) -
             and matter.status == "blocked"
             and matter.blocked_reason == BLOCKED_REASON_ROUND_LIMIT
         ),
+        "can_draft_from_blocked": (
+            is_initiator
+            and matter.status == "blocked"
+            and (matter.blocked_reason or "").startswith(BLOCKED_REASON_ROUND_LIMIT)
+        ),
     }
 
 
@@ -223,4 +231,35 @@ def matter_continue(
                                           status_code=e.status_code)
     db.commit()
     request.app.state.drive_queue.put_nowait(round_id)
+    return RedirectResponse(f"/matters/{matter_id}", status_code=303)
+
+
+@router.post("/matters/{matter_id}/draft-resolution", response_class=HTMLResponse)
+async def matter_draft_resolution(
+    request: Request,
+    matter_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+    settings: Settings = Depends(get_settings),
+):
+    """PRD 7.5：轮次上限 blocked 时发起人直接要求生成决议草案。LLM 调用经
+    asyncio.to_thread 执行（约束 10）；失败保持 blocked，错误渲染回详情页。"""
+    matter = matter_svc.get_matter_for_user(db, matter_id=matter_id, user=user)
+    if matter is None:
+        raise HTTPException(status_code=404, detail="事项不存在或不可见")
+    try:
+        resolution = await asyncio.to_thread(
+            draft_resolution_from_blocked,
+            db, matter_id=matter_id, actor=user, llm=request.app.state.llm,
+        )
+    except ApiError as e:
+        db.commit()  # persist forbidden/invalid-state/llm_failed audit
+        context = _build_detail(db, matter, user, settings)
+        context["current_user_is_admin"] = user.is_admin
+        context["error"] = e.message
+        return templates.TemplateResponse(request, "matter_detail.html", context,
+                                          status_code=e.status_code)
+    db.commit()
+    # 驱动图推进（任务 10 加入闸门后停在闸门等拍板；此前为幂等空转）
+    request.app.state.drive_queue.put_nowait(resolution.source_round_id)
     return RedirectResponse(f"/matters/{matter_id}", status_code=303)

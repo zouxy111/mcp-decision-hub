@@ -13,7 +13,13 @@ from sqlalchemy.orm import Session
 
 from hub.api import audit
 from hub.api.errors import ApiError
-from hub.db.models import Matter, Resolution, RoundSummary, User
+from hub.api.pipeline import (
+    BLOCKED_REASON_DRAFT_FAILED,
+    BLOCKED_REASON_ROUND_LIMIT,
+    _all_summaries_for_draft,
+    _next_resolution_version,
+)
+from hub.db.models import Matter, Resolution, Round, RoundSummary, User
 from hub.domain.convergence import CONVERGENCE_PROVISIONALLY_READY
 from hub.domain.resolution import (
     DECISION_MODIFIED,
@@ -23,7 +29,10 @@ from hub.domain.resolution import (
     compose_draft_text,
     validate_decision_payload,
 )
+from hub.domain.state import assert_matter_transition
 from hub.domain.timeutil import utcnow
+from hub.llm.client import LLMError
+from hub.llm.prompts import build_resolution_draft_prompt
 
 
 def get_latest_resolution(
@@ -206,3 +215,87 @@ def continue_probing(session: Session, *, matter_id: str,
     _require_provisional_pause(
         session, matter_id=matter_id, actor=actor, action="continue_probing"
     )
+
+
+def draft_resolution_from_blocked(session: Session, *, matter_id: str,
+                                  actor: User, llm) -> Resolution:
+    """PRD 7.5 "直接要求生成决议草案"：仅发起人、仅轮次上限 blocked 可触发。
+    成功：pending_review 草案落库 + matter blocked→awaiting_decision。
+    失败（LLM 重试耗尽）：保持 blocked（blocked_reason 不变，重试入口不受
+    影响），llm_failed 审计 + 503 SERVICE_UNAVAILABLE（错误码/重试次数随
+    message 渲染回详情页）。幂等：成功后 matter 已非 blocked，重复触发被
+    守卫 409；并发双击由 source_round_id 唯一约束兜底。"""
+    matter = session.get(Matter, matter_id)
+    if matter is None:
+        raise ApiError(404, "RESOURCE_NOT_FOUND", "事项不存在")
+    session.refresh(matter)  # 避免 identity map 陈旧状态
+    if matter.initiator_id != actor.id:
+        audit.record_audit(session, audit.FORBIDDEN_DENIED,
+                           actor_user_id=actor.id, matter_id=matter_id,
+                           detail={"action": "draft_resolution_from_blocked"})
+        raise ApiError(403, "FORBIDDEN_SCOPE", "仅发起人可要求生成决议草案")
+    if matter.status != "blocked" or not (matter.blocked_reason or "").startswith(
+        BLOCKED_REASON_ROUND_LIMIT
+    ):
+        audit.record_audit(session, audit.INVALID_STATE_TRANSITION,
+                           actor_user_id=actor.id, matter_id=matter_id,
+                           detail={"action": "draft_resolution_from_blocked",
+                                   "current": matter.status,
+                                   "blocked_reason": matter.blocked_reason})
+        raise ApiError(409, "INVALID_STATE_TRANSITION",
+                       "仅达到轮次上限的阻塞可直接生成决议草案")
+    latest = session.scalar(
+        select(Round).where(Round.matter_id == matter_id)
+        .order_by(Round.round_number.desc()).limit(1)
+    )
+    system_prompt, user_prompt = build_resolution_draft_prompt(
+        title=matter.title, goal=matter.goal, background=matter.background,
+        summaries=_all_summaries_for_draft(session, matter_id),
+    )
+    try:
+        data = llm.complete_json(system_prompt, user_prompt,
+                                 schema_name="resolution_draft")
+    except LLMError as e:
+        audit.record_audit(session, audit.LLM_FAILED, matter_id=matter_id,
+                           detail={"stage": "resolution_draft",
+                                   "trigger": "manual_from_blocked",
+                                   "error_code": e.error_code,
+                                   "retry_count": e.retry_count})
+        raise ApiError(
+            503, "SERVICE_UNAVAILABLE",
+            f"{BLOCKED_REASON_DRAFT_FAILED}：{e.error_code}"
+            f"（已重试 {e.retry_count} 次）",
+        ) from e
+    resolution = Resolution(
+        matter_id=matter.id, source_round_id=latest.id,
+        version=_next_resolution_version(session, matter_id),
+        status="pending_review",
+        recommendation=data["recommendation"], rationale=data["rationale"],
+        risks=data["risks"], divergences=data["divergences"],
+        cited_rounds=data["cited_rounds"],
+    )
+    session.add(resolution)
+    session.flush()
+    assert_matter_transition("blocked", "awaiting_decision")  # PRD 7.5 矩阵扩展
+    result = session.execute(
+        update(Matter)
+        .where(Matter.id == matter.id, Matter.status == "blocked")
+        .values(status="awaiting_decision", blocked_reason=None,
+                updated_at=utcnow())
+    )
+    if result.rowcount != 1:
+        raise ApiError(409, "INVALID_STATE_TRANSITION",
+                       "事项状态已变化，请刷新后重试")
+    audit.record_audit(session, audit.RESOLUTION_DRAFTED, matter_id=matter.id,
+                       detail={"resolution_id": resolution.id,
+                               "version": resolution.version,
+                               "source_round_id": latest.id,
+                               "trigger": "manual_from_blocked",
+                               "cited_rounds": data["cited_rounds"]})
+    audit.record_audit(session, audit.MATTER_AWAITING_DECISION,
+                       matter_id=matter.id,
+                       detail={"resolution_id": resolution.id,
+                               "version": resolution.version,
+                               "mode": "manual_from_blocked"})
+    session.flush()
+    return resolution

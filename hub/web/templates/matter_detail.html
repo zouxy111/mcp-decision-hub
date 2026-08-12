@@ -23,6 +23,11 @@
   <button type="submit">继续（+1 轮）</button>
 </form>
 {% endif %}
+{% if can_draft_from_blocked %}
+<form method="post" action="/matters/{{ matter.id }}/draft-resolution" style="display:inline">
+  <button type="submit">直接生成决议草案</button>
+</form>
+{% endif %}
 {% if is_initiator and matter.status == "draft" %}
 <form method="post" action="/matters/{{ matter.id }}/start">
   <button type="submit">开始事项（生成第一轮任务）</button>

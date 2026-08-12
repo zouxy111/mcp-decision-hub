@@ -5,7 +5,7 @@ MATTER_TRANSITIONS: dict[str, frozenset[str]] = {
     "in_progress": frozenset({"collecting", "awaiting_decision", "blocked", "cancelled"}),
     "collecting": frozenset({"in_progress", "collecting", "cancelled"}),
     "awaiting_decision": frozenset({"in_progress", "completed", "cancelled"}),
-    "blocked": frozenset({"in_progress", "collecting", "cancelled"}),
+    "blocked": frozenset({"in_progress", "collecting", "awaiting_decision", "cancelled"}),
     "completed": frozenset(),
     "cancelled": frozenset(),
 }
