@@ -29,7 +29,12 @@ from hub.domain.convergence import (
     CONVERGENCE_CONVERGED,
     CONVERGENCE_PROVISIONALLY_READY,
 )
-from hub.domain.credits import can_auto_advance
+from hub.domain.credits import CREDIT_GRANT_PER_CONTINUE, can_auto_advance
+from hub.domain.resolution import (
+    RESOLUTION_STATUS_APPROVED,
+    RESOLUTION_STATUS_MODIFIED,
+    RESOLUTION_TERMINAL_STATUSES,
+)
 from hub.domain.timeutil import utcnow
 from hub.llm.client import MAX_RETRIES, LLMError
 from hub.llm.prompts import (
@@ -255,12 +260,21 @@ def _branch_phase(session: Session, rnd: Round, llm) -> None:
     ):
         _block_matter(session, matter, BLOCKED_REASON_ROUND_LIMIT)
         return
+    _open_followup_round(session, matter, rnd, summary, llm)
+
+
+def _open_followup_round(session: Session, matter: Matter, rnd: Round,
+                         summary: RoundSummary, llm) -> bool:
+    """Generate targeted follow-up questions and open round_number+1 (FR-17).
+    Caller guarantees credit. Idempotent: never creates the next round twice.
+    Returns True iff a new round was created. On LLM failure the matter is
+    blocked (followup reason) and False is returned."""
     exists_next = session.scalar(
         select(Round.id).where(Round.matter_id == matter.id,
                                Round.round_number == rnd.round_number + 1)
     )
     if exists_next is not None:
-        return
+        return False
     system_prompt, user_prompt = build_followup_questions_prompt(
         title=matter.title, goal=matter.goal, background=matter.background,
         summary=_summary_to_dict(summary),
@@ -279,7 +293,7 @@ def _branch_phase(session: Session, rnd: Round, llm) -> None:
                                    "round_id": rnd.id,
                                    "error_code": e.error_code,
                                    "retry_count": e.retry_count})
-        return
+        return False
     # question_id is a server-side identifier; the LLM only provides content
     # (PRD 9.1).
     questions = [
@@ -312,6 +326,84 @@ def _branch_phase(session: Session, rnd: Round, llm) -> None:
                        detail={"round_id": new_round.id,
                                "round_number": new_round.round_number,
                                "task_count": len(participant_ids)})
+    return True
+
+
+def apply_resolution_decision(session: Session, matter: Matter, llm) -> None:
+    """Post-decision downstream propagation (PRD 7.4/7.5). Idempotent: every
+    write is conditional or existence-guarded, safe to replay after a crash.
+
+    approved/modified → archive (awaiting_decision → completed).
+    rejected → implicit +1 credit iff at the round limit (7.5), then open the
+    next round via the shared follow-up helper."""
+    resolution = session.scalar(
+        select(Resolution).where(Resolution.matter_id == matter.id)
+        .order_by(Resolution.version.desc()).limit(1)
+    )
+    if resolution is None or resolution.status not in RESOLUTION_TERMINAL_STATUSES:
+        return
+    if resolution.status in (RESOLUTION_STATUS_APPROVED,
+                             RESOLUTION_STATUS_MODIFIED):
+        result = session.execute(
+            update(Matter)
+            .where(Matter.id == matter.id, Matter.status == "awaiting_decision")
+            .values(status="completed", blocked_reason=None,
+                    updated_at=utcnow())
+        )
+        if result.rowcount == 1:
+            audit.record_audit(session, audit.MATTER_COMPLETED,
+                               matter_id=matter.id,
+                               detail={"resolution_id": resolution.id,
+                                       "version": resolution.version,
+                                       "decision": resolution.status})
+        return
+    # rejected → 驳回并创建新一轮（矩阵 awaiting_decision→in_progress 合法）
+    source_round = session.get(Round, resolution.source_round_id)
+    exists_next = session.scalar(
+        select(Round.id).where(Round.matter_id == matter.id,
+                               Round.round_number == source_round.round_number + 1)
+    )
+    if exists_next is not None:
+        return
+    if matter.status == "awaiting_decision":
+        result = session.execute(
+            update(Matter)
+            .where(Matter.id == matter.id,
+                   Matter.status == "awaiting_decision")
+            .values(status="in_progress", updated_at=utcnow())
+        )
+        if result.rowcount != 1:
+            return
+        session.refresh(matter)
+    if matter.status != "in_progress":
+        return  # 异常状态（如并发取消）fail closed，不再推进
+    if not can_auto_advance(
+        current_round_number=source_round.round_number,
+        max_rounds=matter.max_rounds,
+        granted_extra_rounds=matter.granted_extra_rounds,
+    ):
+        granted_after = matter.granted_extra_rounds + CREDIT_GRANT_PER_CONTINUE
+        session.execute(
+            update(Matter)
+            .where(Matter.id == matter.id)
+            .values(granted_extra_rounds=granted_after, updated_at=utcnow())
+        )
+        session.refresh(matter)
+        audit.record_audit(session, audit.MATTER_CONTINUED,
+                           matter_id=matter.id,
+                           detail={"mode": "reject_grant",
+                                   "granted_extra_rounds": granted_after,
+                                   "resolution_id": resolution.id,
+                                   "rationale": (
+                                       (resolution.decision_rationale or "")
+                                       [:audit.AUDIT_RATIONALE_MAX] or None
+                                   )})
+    summary = session.scalar(
+        select(RoundSummary).where(RoundSummary.round_id == source_round.id,
+                                   RoundSummary.generation_status == "ok")
+    )
+    if summary is not None:
+        _open_followup_round(session, matter, source_round, summary, llm)
 
 
 def _next_resolution_version(session: Session, matter_id: str) -> int:

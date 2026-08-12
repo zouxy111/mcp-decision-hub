@@ -151,11 +151,11 @@ def test_tick_summarizes_and_continues(
     assert db_session.scalar(select(func.count()).select_from(Round)) == 2
 
 
-def test_tick_converged_drafts_and_stops_at_end(
+def test_tick_converged_drafts_and_pauses_at_decision_gate(
     db_session, session_factory, settings, scenario, make_fake_llm
 ):
-    """本任务图尚无闸门节点：converged → 草案 + awaiting_decision，图到
-    END（不挂起）。任务 10 会把这里演进为挂 decision_gate。"""
+    """任务 10 闸门语义：converged → 草案 + awaiting_decision，图挂在
+    decision_gate（不直接到 END）。"""
     _close_round_with_summary(db_session, scenario, "converged")
     llm = make_fake_llm([DRAFT_PAYLOAD])
     drive_matter_tick(session_factory, settings,
@@ -166,8 +166,8 @@ def test_tick_converged_drafts_and_stops_at_end(
     next_nodes, interrupts = _pending_node(
         session_factory, settings, scenario["matter"].id
     )
-    assert next_nodes == ()
-    assert interrupts == []
+    assert next_nodes == ("decision_gate",)
+    assert len(interrupts) == 1
 
 
 def test_tick_provisional_drafts_and_stays_in_progress(
