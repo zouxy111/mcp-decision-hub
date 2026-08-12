@@ -339,7 +339,8 @@ def test_sequential_gates_pause_in_order(tmp_path):
         return {"done": payload["decision"]}
 
     def archive(state):
-        return {"done": "archived"}
+        # NOTE: must not write "done" — it would overwrite the gate's result.
+        return {"route": "archived"}
 
     g = StateGraph(_State)
     g.add_node("draft", draft)
@@ -361,6 +362,7 @@ def test_sequential_gates_pause_in_order(tmp_path):
     assert graph.get_state(config).next == ("decision_gate",)
     result = graph.invoke(Command(resume={"decision": "approved"}), config)
     assert result["done"] == "approved"
+    assert result["route"] == "archived"  # archive ran after decision_gate
     assert graph.get_state(config).next == ()
 ```
 
