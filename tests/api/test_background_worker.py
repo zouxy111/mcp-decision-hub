@@ -128,3 +128,53 @@ def test_create_app_default_llm_uses_settings(settings):
     app = create_app(settings)
     assert isinstance(app.state.llm, DeepSeekClient)
     assert app.state.drive_queue is not None
+
+
+def test_resume_worker_processes_enqueued_action(
+    db_session, session_factory, settings, make_fake_llm
+):
+    """resume_queue 元素是 (matter_id, action)；worker 调用
+    resume_matter_gate 完成已决决议的传播。"""
+    from hub.background import resume_worker
+    from hub.db.models import Resolution
+
+    init = make_user(db_session, "init_w")
+    alice = make_user(db_session, "alice_w")
+    bob = make_user(db_session, "bob_w")
+    matter = matter_svc.create_matter(
+        db_session, initiator=init, title="T", goal="G", background="B",
+        participant_ids=[alice.id, bob.id], initiator_participates=False,
+        timeout_seconds=3600, max_rounds=10, draft_questions=["Q1?"],
+    )
+    matter_svc.start_matter(db_session, matter_id=matter.id, actor=init)
+    rnd = db_session.scalar(select(Round))
+    db_session.execute(
+        update(Round).where(Round.id == rnd.id).values(status="closed")
+    )
+    db_session.add(
+        Resolution(
+            matter_id=matter.id, source_round_id=rnd.id, version=1,
+            status="approved", recommendation="R", rationale="J",
+            risks=[], divergences=[], cited_rounds=[1], final_text="R",
+        )
+    )
+    db_session.execute(
+        update(Matter).where(Matter.id == matter.id)
+        .values(status="awaiting_decision")
+    )
+    db_session.commit()
+    queue: asyncio.Queue = asyncio.Queue()
+    queue.put_nowait((matter.id, "decide"))
+
+    async def main():
+        worker = asyncio.create_task(
+            resume_worker(queue, session_factory, settings, make_fake_llm())
+        )
+        try:
+            await asyncio.wait_for(queue.join(), timeout=10)
+        finally:
+            worker.cancel()
+
+    asyncio.run(main())
+    with session_factory() as s:
+        assert s.get(Matter, matter.id).status == "completed"

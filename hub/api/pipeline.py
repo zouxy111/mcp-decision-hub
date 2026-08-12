@@ -555,7 +555,13 @@ def find_interrupted_round_ids(session: Session) -> list[str]:
             .order_by(Round.round_number.desc()).limit(1)
         )
         if latest is not None:
-            ids.append(latest.id)
+            # M3：最新轮已有决议草案（pending 或终态）说明事项停在决议闸门
+            # 或已完成传播，不是分支阶段中断，不重新 tick
+            has_resolution = session.scalar(
+                select(Resolution.id).where(Resolution.source_round_id == latest.id)
+            )
+            if has_resolution is None:
+                ids.append(latest.id)
     return list(dict.fromkeys(ids))
 
 
@@ -624,3 +630,26 @@ def _generate_first_round_phase(session: Session, rnd: Round, llm) -> None:
                                "round_number": rnd.round_number,
                                "task_count": len(participant_ids),
                                "mode": "llm_generate"})
+
+
+
+def find_interrupted_resolution_matter_ids(session: Session) -> list[str]:
+    """Startup recovery (FR-24, M3): matters whose latest resolution is
+    decided but whose status never reached the post-decision state (the
+    resume was lost). Re-resuming is idempotent. Matters paused at a gate
+    waiting for the initiator (pending_review) are NOT returned."""
+    ids: list[str] = []
+    matters = list(
+        session.scalars(
+            select(Matter).where(Matter.status == "awaiting_decision")
+        ).all()
+    )
+    for matter in matters:
+        latest = session.scalar(
+            select(Resolution)
+            .where(Resolution.matter_id == matter.id)
+            .order_by(Resolution.version.desc()).limit(1)
+        )
+        if latest is not None and latest.status in RESOLUTION_TERMINAL_STATUSES:
+            ids.append(matter.id)
+    return ids

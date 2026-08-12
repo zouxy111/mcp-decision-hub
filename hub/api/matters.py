@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from hub.api import audit
 from hub.api.errors import ApiError
-from hub.api.pipeline import BLOCKED_REASON_ROUND_LIMIT
+from hub.api.pipeline import BLOCKED_REASON_DRAFT_FAILED, BLOCKED_REASON_ROUND_LIMIT
 from hub.db.models import Matter, MatterParticipant, Round, Task, User
 from hub.domain.credits import CREDIT_GRANT_PER_CONTINUE
 from hub.domain.participants import ParticipantValidationError, validate_participants
@@ -195,9 +195,10 @@ def list_matters_for_user(session: Session, *, user: User) -> list[Matter]:
 
 
 def continue_matter(session: Session, *, matter_id: str, actor: User) -> str:
-    """Grant +1 round credit and resume driving (PRD 7.5). Only the initiator,
-    only when blocked on the round limit. Returns the latest round_id so the
-    caller can enqueue a re-drive; the branch phase is idempotent."""
+    """Resume a blocked matter (PRD 7.5 / 7.1). Only the initiator. Round-limit
+    blocks get +1 credit; draft-failure blocks retry the draft phase with no
+    credit granted. Returns the latest round_id so the caller can enqueue a
+    re-drive; the branch/draft phases are idempotent."""
     matter = session.get(Matter, matter_id)
     if matter is None:
         raise ApiError(404, "RESOURCE_NOT_FOUND", "事项不存在")
@@ -207,25 +208,31 @@ def continue_matter(session: Session, *, matter_id: str, actor: User) -> str:
                            actor_user_id=actor.id, matter_id=matter_id,
                            detail={"action": "continue_matter"})
         raise ApiError(403, "FORBIDDEN_SCOPE", "仅发起人可继续事项")
-    if (matter.status != "blocked"
-            or matter.blocked_reason != BLOCKED_REASON_ROUND_LIMIT):
+    is_draft_retry = (matter.blocked_reason or "").startswith(
+        BLOCKED_REASON_DRAFT_FAILED
+    )  # 草案失败原因带 error_code/重试次数后缀，用前缀匹配
+    if matter.status != "blocked" or not (
+        matter.blocked_reason == BLOCKED_REASON_ROUND_LIMIT or is_draft_retry
+    ):
         audit.record_audit(session, audit.INVALID_STATE_TRANSITION,
                            actor_user_id=actor.id, matter_id=matter_id,
                            detail={"action": "continue_matter",
                                    "current": matter.status,
                                    "blocked_reason": matter.blocked_reason})
         raise ApiError(409, "INVALID_STATE_TRANSITION",
-                       "当前状态不允许继续（仅达到轮次上限的阻塞可授予额度）")
+                       "当前状态不允许继续（仅达到轮次上限或草案生成失败的阻塞可继续）")
     assert_matter_transition(matter.status, "in_progress")
-    granted_after = matter.granted_extra_rounds + CREDIT_GRANT_PER_CONTINUE
+    granted_after = (
+        matter.granted_extra_rounds
+        if is_draft_retry
+        else matter.granted_extra_rounds + CREDIT_GRANT_PER_CONTINUE
+    )
     result = session.execute(
         update(Matter)
         .where(Matter.id == matter_id, Matter.status == "blocked",
-               Matter.blocked_reason == BLOCKED_REASON_ROUND_LIMIT)
+               Matter.blocked_reason == matter.blocked_reason)
         .values(status="in_progress", blocked_reason=None,
-                granted_extra_rounds=(
-                    Matter.granted_extra_rounds + CREDIT_GRANT_PER_CONTINUE
-                ),
+                granted_extra_rounds=granted_after,
                 updated_at=utcnow())
     )
     if result.rowcount != 1:
@@ -237,7 +244,9 @@ def continue_matter(session: Session, *, matter_id: str, actor: User) -> str:
     )
     audit.record_audit(session, audit.MATTER_CONTINUED, actor_user_id=actor.id,
                        matter_id=matter_id,
-                       detail={"granted_extra_rounds": granted_after,
+                       detail={"mode": ("retry_draft" if is_draft_retry
+                                        else "round_limit"),
+                               "granted_extra_rounds": granted_after,
                                "resume_round_id": latest.id})
     session.flush()
     return latest.id

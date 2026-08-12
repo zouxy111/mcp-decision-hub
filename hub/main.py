@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from hub.api.accounts import seed_admin
-from hub.background import drive_worker
+from hub.background import drive_worker, resume_worker
 from hub.config import Settings, load_settings
 from hub.db.session import init_db, make_engine, make_session_factory
 from hub.llm.client import DeepSeekClient
@@ -34,6 +34,13 @@ def _find_interrupted(session_factory) -> list[str]:
         return find_interrupted_round_ids(session)
 
 
+def _find_interrupted_resolutions(session_factory) -> list[str]:
+    from hub.api.pipeline import find_interrupted_resolution_matter_ids
+
+    with session_factory() as session:
+        return find_interrupted_resolution_matter_ids(session)
+
+
 def create_app(settings: Settings | None = None, *, llm=None) -> FastAPI:
     settings = settings or load_settings()
     engine = make_engine(settings.database_url)
@@ -42,6 +49,7 @@ def create_app(settings: Settings | None = None, *, llm=None) -> FastAPI:
     if llm is None:
         llm = _make_llm(settings)
     drive_queue: asyncio.Queue[str] = asyncio.Queue()
+    resume_queue: asyncio.Queue[tuple[str, str]] = asyncio.Queue()
 
     mcp_asgi = None
     mcp_inner_lifespan = None
@@ -57,8 +65,14 @@ def create_app(settings: Settings | None = None, *, llm=None) -> FastAPI:
             session.commit()
         for round_id in await asyncio.to_thread(_find_interrupted, session_factory):
             drive_queue.put_nowait(round_id)
+        for matter_id in await asyncio.to_thread(_find_interrupted_resolutions,
+                                                 session_factory):
+            resume_queue.put_nowait((matter_id, "decide"))
         worker = asyncio.create_task(
             drive_worker(drive_queue, session_factory, settings, llm)
+        )
+        gate_worker = asyncio.create_task(
+            resume_worker(resume_queue, session_factory, settings, llm)
         )
         try:
             if mcp_inner_lifespan is not None:
@@ -68,12 +82,14 @@ def create_app(settings: Settings | None = None, *, llm=None) -> FastAPI:
                 yield
         finally:
             worker.cancel()
+            gate_worker.cancel()
 
     app = FastAPI(title="mcp-decision-hub", lifespan=lifespan)
     app.state.settings = settings
     app.state.session_factory = session_factory
     app.state.llm = llm
     app.state.drive_queue = drive_queue
+    app.state.resume_queue = resume_queue
     app.include_router(routes_auth.router)
     app.include_router(routes_matters.router)
     app.include_router(routes_agents.router)
