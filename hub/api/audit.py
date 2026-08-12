@@ -28,6 +28,8 @@ RESOLUTION_DRAFTED = "resolution_drafted"
 RESOLUTION_DECIDED = "resolution_decided"
 MATTER_COMPLETED = "matter_completed"
 MATTER_AWAITING_DECISION = "matter_awaiting_decision"
+TASK_TIMEOUT = "task_timeout"
+TASK_REASSIGNED = "task_reassigned"
 
 # Max chars of a decision rationale stored in audit detail (design decision 12).
 AUDIT_RATIONALE_MAX = 500

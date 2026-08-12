@@ -9,10 +9,16 @@ queue.put_nowait() from worker threads, which does not reliably wake the
 event loop. The poll bounds the wakeup delay and avoids cross-thread
 loop.call_soon entirely. Deliberate simplification for the single-process
 SQLite deployment.
+
+timeout_worker (FR-14b / PRD 10.4): periodic deadline scan. 重建不依赖内存
+定时器——lifespan 启动即无条件创建本协程；扫描完全基于 DB ``deadline_at``，
+任意时刻重启最坏延迟一个扫描周期即恢复超时判定（场景 13）。先扫后睡，
+启动后立即扫一次。
 """
 
 import asyncio
 import logging
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -71,3 +77,42 @@ def _resume_safe(session_factory, settings, item, llm) -> None:
     except Exception:
         logger.exception("gate resume crashed matter_id=%s action=%s",
                          matter_id, action)
+
+
+async def timeout_worker(session_factory, settings, drive_queue) -> None:
+    """FR-14b: periodic deadline scan. Rebuilt unconditionally at startup;
+    scans are DB-driven so restarts never lose timeout detection. 先扫后睡：
+    启动后立即扫一次，重启恢复最坏延迟一个周期以内。"""
+    while True:
+        try:
+            await asyncio.to_thread(_scan_safe, session_factory, settings,
+                                    drive_queue)
+        except Exception:
+            logger.exception("timeout scan crashed")
+        await asyncio.sleep(settings.timeout_scan_interval_seconds)
+
+
+def _scan_safe(session_factory, settings, drive_queue) -> int:
+    """计时调 scan_once 并更新 SCHEDULER_STATE；异常不抛出（由本函数记状态
+    与日志），返回本次处理条数。"""
+    from hub.api import scheduler
+    from hub.domain.timeutil import utcnow
+
+    state = scheduler.SCHEDULER_STATE
+    start = time.monotonic()
+    try:
+        processed = scheduler.scan_once(session_factory, settings,
+                                        drive_queue=drive_queue)
+    except Exception:
+        logger.exception("timeout scan failed")
+        state.last_run_at = utcnow()
+        state.last_processed = 0
+        state.last_duration_ms = int((time.monotonic() - start) * 1000)
+        state.consecutive_failures += 1
+        return 0
+    state.last_run_at = utcnow()
+    state.last_processed = processed
+    state.last_duration_ms = int((time.monotonic() - start) * 1000)
+    state.consecutive_failures = 0
+    state.total_timeouts += processed
+    return processed

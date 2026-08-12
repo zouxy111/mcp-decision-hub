@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from hub.api.accounts import seed_admin
-from hub.background import drive_worker, resume_worker
+from hub.background import drive_worker, resume_worker, timeout_worker
 from hub.config import Settings, load_settings
 from hub.db.session import init_db, make_engine, make_session_factory
 from hub.llm.client import DeepSeekClient
@@ -80,6 +80,9 @@ def create_app(settings: Settings | None = None, *, llm=None) -> FastAPI:
         gate_worker = asyncio.create_task(
             resume_worker(resume_queue, session_factory, settings, llm)
         )
+        timeout_scan_task = asyncio.create_task(
+            timeout_worker(session_factory, settings, drive_queue)
+        )
         try:
             if mcp_inner_lifespan is not None:
                 async with mcp_inner_lifespan(app):
@@ -89,6 +92,7 @@ def create_app(settings: Settings | None = None, *, llm=None) -> FastAPI:
         finally:
             worker.cancel()
             gate_worker.cancel()
+            timeout_scan_task.cancel()
 
     app = FastAPI(title="mcp-decision-hub", lifespan=lifespan)
     app.state.settings = settings
