@@ -13,7 +13,8 @@ from sqlalchemy.orm import Session
 
 from hub.api import audit
 from hub.api.errors import ApiError
-from hub.db.models import Matter, Resolution, User
+from hub.db.models import Matter, Resolution, RoundSummary, User
+from hub.domain.convergence import CONVERGENCE_PROVISIONALLY_READY
 from hub.domain.resolution import (
     DECISION_MODIFIED,
     DECISION_REJECT,
@@ -132,3 +133,76 @@ def decide_resolution(
     session.flush()
     session.expire(resolution)
     return session.get(Resolution, resolution.id)
+
+
+def _require_provisional_pause(session: Session, *, matter_id: str,
+                               actor: User, action: str) -> tuple[Matter, Resolution]:
+    """Shared guards for the two provisional-pause choices (PRD 7.6)."""
+    matter = session.get(Matter, matter_id)
+    if matter is None:
+        raise ApiError(404, "RESOURCE_NOT_FOUND", "事项不存在")
+    session.refresh(matter)
+    if matter.initiator_id != actor.id:
+        audit.record_audit(session, audit.FORBIDDEN_DENIED,
+                           actor_user_id=actor.id, matter_id=matter_id,
+                           detail={"action": action})
+        raise ApiError(403, "FORBIDDEN_SCOPE", "仅发起人可处理决议草案")
+    resolution = get_latest_resolution(session, matter_id=matter_id)
+    latest_summary = None
+    if resolution is not None:
+        latest_summary = session.scalar(
+            select(RoundSummary).where(
+                RoundSummary.round_id == resolution.source_round_id,
+                RoundSummary.generation_status == "ok",
+            )
+        )
+    valid = (
+        matter.status == "in_progress"
+        and resolution is not None
+        and resolution.status == RESOLUTION_STATUS_PENDING_REVIEW
+        and latest_summary is not None
+        and latest_summary.convergence == CONVERGENCE_PROVISIONALLY_READY
+    )
+    if not valid:
+        audit.record_audit(session, audit.INVALID_STATE_TRANSITION,
+                           actor_user_id=actor.id, matter_id=matter_id,
+                           detail={"action": action,
+                                   "current": matter.status,
+                                   "resolution_status": (
+                                       resolution.status if resolution else None
+                                   )})
+        raise ApiError(409, "INVALID_STATE_TRANSITION",
+                       "当前状态不允许该操作（仅暂定收敛的草案可选择）")
+    return matter, resolution
+
+
+def accept_provisional(session: Session, *, matter_id: str,
+                       actor: User) -> None:
+    """进入拍板：in_progress → awaiting_decision（PRD 7.1/7.6）。图节点的
+    resume 路径会做同样的条件 UPDATE 兜底（幂等）。"""
+    matter, resolution = _require_provisional_pause(
+        session, matter_id=matter_id, actor=actor, action="accept_provisional"
+    )
+    result = session.execute(
+        update(Matter)
+        .where(Matter.id == matter_id, Matter.status == "in_progress")
+        .values(status="awaiting_decision", updated_at=utcnow())
+    )
+    if result.rowcount != 1:
+        raise ApiError(409, "INVALID_STATE_TRANSITION",
+                       "事项状态已变化，请刷新后重试")
+    audit.record_audit(session, audit.MATTER_AWAITING_DECISION,
+                       actor_user_id=actor.id, matter_id=matter_id,
+                       detail={"mode": "accept_provisional",
+                               "resolution_id": resolution.id,
+                               "version": resolution.version})
+    session.flush()
+
+
+def continue_probing(session: Session, *, matter_id: str,
+                     actor: User) -> None:
+    """继续追问（PRD 7.6）。只校验不改库：额度授予与新轮创建都在图的
+    gate_followup 节点内幂等完成（避免 API 与节点双重授信）。"""
+    _require_provisional_pause(
+        session, matter_id=matter_id, actor=actor, action="continue_probing"
+    )
