@@ -147,3 +147,32 @@ class RoundSummary(Base):
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     retry_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(default=utcnow, nullable=False)
+
+
+class Resolution(Base):
+    __tablename__ = "resolutions"
+    __table_args__ = (
+        UniqueConstraint("matter_id", "version"),
+        UniqueConstraint("source_round_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(48), primary_key=True,
+                                    default=lambda: new_id("res"))
+    matter_id: Mapped[str] = mapped_column(ForeignKey("matters.id"), nullable=False,
+                                           index=True)
+    source_round_id: Mapped[str] = mapped_column(ForeignKey("rounds.id"),
+                                                 nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="pending_review",
+                                        nullable=False)
+    recommendation: Mapped[str] = mapped_column(Text, nullable=False)
+    rationale: Mapped[str] = mapped_column(Text, nullable=False)
+    risks: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    divergences: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    cited_rounds: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    final_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    decision_rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
+    decided_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"),
+                                                   nullable=True)
+    decided_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    created_at: Mapped[datetime] = mapped_column(default=utcnow, nullable=False)
