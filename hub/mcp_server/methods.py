@@ -17,6 +17,7 @@ from hub.db.models import (
     IdempotencyRecord,
     Matter,
     Output,
+    Resolution,
     Round,
     RoundSummary,
     Task,
@@ -372,7 +373,7 @@ def mcp_get_matter_status(
         "status": matter.status,
         "rounds_total": len(all_rounds),
         "recent_rounds": round_views,
-        "resolution": None,  # M1: resolutions land in M3
+        "resolution": _resolution_view(session, matter.id),
     }
     if matter.initiator_id == user_id and round_views:
         latest = round_views[0]
@@ -419,6 +420,28 @@ def _previous_summary_view(session: Session, rnd: Round) -> dict | None:
     if prev is None:
         return None
     return {"round_number": prev_round.round_number, **_summary_payload(prev)}
+
+
+def _resolution_view(session: Session, matter_id: str) -> dict | None:
+    """Resolution stage and version for get_matter_status (PRD 9.2). Same
+    view for initiator and participants; draft/final bodies stay on the web
+    decision page. None when no resolution exists."""
+    res = session.scalar(
+        select(Resolution)
+        .where(Resolution.matter_id == matter_id)
+        .order_by(Resolution.version.desc())
+        .limit(1)
+    )
+    if res is None:
+        return None
+    return {
+        "resolution_id": res.id,
+        "status": res.status,
+        "version": res.version,
+        "cited_rounds": res.cited_rounds,
+        "created_at": iso_z(res.created_at),
+        "decided_at": iso_z(res.decided_at) if res.decided_at else None,
+    }
 
 
 def _round_summaries_view(session: Session, round_id: str) -> list[dict]:
