@@ -1742,12 +1742,19 @@ def _compute_branch_route(session, matter: Matter) -> str:
     truth — the route is recomputed from the DB on every tick."""
     if matter.status not in ("in_progress", "awaiting_decision"):
         return "done"
-    latest_res = _latest_resolution(session, matter.id)
-    if latest_res is not None and latest_res.status in RESOLUTION_TERMINAL_STATUSES:
-        return "propagate"  # 已拍板但下游未传播（崩溃恢复；任务 10 接线）
     rnd = _latest_round(session, matter.id)
     if rnd is None or rnd.status != "closed":
         return "done"
+    latest_res = _latest_resolution(session, matter.id)
+    if (
+        latest_res is not None
+        and latest_res.status in RESOLUTION_TERMINAL_STATUSES
+        and latest_res.source_round_id == rnd.id
+    ):
+        # 已拍板但下游未传播（崩溃恢复；任务 10 接线）。终态决议必须属于
+        # 最新轮——驳回（rejected 也是终态）后产生新轮次时，旧决议是历史，
+        # 仍须按最新轮摘要正常评估是否出下一版草案（FR-21b）。
+        return "propagate"
     summary = session.scalar(
         select(RoundSummary).where(RoundSummary.round_id == rnd.id,
                                    RoundSummary.generation_status == "ok")
