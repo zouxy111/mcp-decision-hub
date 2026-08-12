@@ -2,7 +2,7 @@
 
 > **面向 AI 代理的工作者：** 必需子技能：使用 superpowers:subagent-driven-development（推荐）或 superpowers:executing-plans 逐任务实现此计划。步骤使用复选框（`- [ ]`）语法来跟踪进度。
 
-**目标：** 在 M2 管线之上落地决议 P0 闭环：把事项编排迁入 LangGraph（`thread_id = matter_id`，SqliteSaver 与业务表共用同一 SQLite 文件），收敛为 ready 二态时生成决议草案（建议/依据/风险/分歧/引用轮次，`pending_review`），决议闸门用 `interrupt()` 挂起、Web 拍板后 `Command(resume=...)` 恢复；拍板走版本+状态双条件乐观锁（`RESOLUTION_VERSION_CONFLICT` / `INVALID_STATE_TRANSITION` 双码），驳回隐含授信并创建新轮；配套 FR-23b 审计查询、FR-26 异步状态展示、FR-24 checkpoint 与业务表一致性恢复。M2 的 257 个测试全程保持绿色（仅登记的 2 处断言按 M3 语义演进，见"M2 测试演进登记"）。
+**目标：** 在 M2 管线之上落地决议 P0 闭环：把事项编排迁入 LangGraph（`thread_id = matter_id`，SqliteSaver 与业务表共用同一 SQLite 文件），收敛为 ready 二态时生成决议草案（建议/依据/风险/分歧/引用轮次，`pending_review`），决议闸门用 `interrupt()` 挂起、Web 拍板后 `Command(resume=...)` 恢复；拍板走版本+状态双条件乐观锁（`RESOLUTION_VERSION_CONFLICT` / `INVALID_STATE_TRANSITION` 双码），驳回隐含授信并创建新轮；配套 FR-23b 审计查询、FR-26 异步状态展示、FR-24 checkpoint 与业务表一致性恢复。M2 的 257 个测试全程保持绿色（M2 测试仅登记的 2 处断言按 M3 语义演进；另有 1 处 M3 内部演进——任务 6 的过渡用例在任务 10 改名并加强；均见"M2 测试演进登记"）。
 
 **架构：** 沿用 M2 的 FastAPI + FastMCP 单进程、同步 SQLAlchemy + SQLite（WAL）、`asyncio.Queue` + worker 后台驱动。新增 `hub/graph/matter_graph.py`（LangGraph 图，节点是 `hub/api/pipeline.py` 既有相位函数的薄封装）、`hub/domain/resolution.py`（决议状态机与拍板载荷校验）、`hub/api/resolutions.py`（拍板/暂定二选一服务）、`hub/api/audit_query.py`（审计筛选查询）、`hub/web/routes_decision.py`（拍板页）。**驱动模型：图按 matter 一个线程长存，事件按次驱动（tick）**：每次驱动 = 编译图（节点闭包绑定 session_factory/settings/llm）→ 按 checkpoint 状态选择 `invoke({"matter_id": ...})`（新跑）/ `invoke(None, ...)`（崩溃续跑）/ 跳过（闸门挂起中）；Web 拍板先写业务表（版本锁 UPDATE），再把 `(matter_id, action)` 入 `resume_queue`，worker 用 `Command(resume=...)` 恢复图做下游传播（归档或驳回开新轮）。业务表永远是单一事实源；checkpoint 只表达"挂在哪个闸门"。
 
@@ -22,11 +22,11 @@
 以下结论全部在隔离 venv 与项目 venv 中跑通（Python 3.13.12，langgraph 1.2.11 + langgraph-checkpoint-sqlite 3.1.1）：
 
 1. **Import 路径**：`from langgraph.graph import StateGraph, START, END`；`from langgraph.types import interrupt, Command`；`from langgraph.checkpoint.sqlite import SqliteSaver`。
-2. **SqliteSaver**：`SqliteSaver(conn: sqlite3.Connection)`（构造必须传 `sqlite3.connect(path, check_same_thread=False)` 的连接）；`saver.setup()` 建表（幂等，CREATE IF NOT EXISTS）；表为 `checkpoints` 与 `writes`，**与业务表共用同一 SQLite 文件已验证可行**（PRD 10.3）。`SqliteSaver.from_conn_string(path)` 是 contextmanager，每次 tick 用它开短连接即可。
+2. **SqliteSaver**：`SqliteSaver(conn: sqlite3.Connection)`；`saver.setup()` 建表（幂等，CREATE IF NOT EXISTS）；表为 `checkpoints` 与 `writes`，**与业务表共用同一 SQLite 文件已验证可行**（PRD 10.3）。**不要用 `SqliteSaver.from_conn_string(path)`**：它只 `sqlite3.connect(path, check_same_thread=False)`，**不设 busy_timeout**（`PRAGMA busy_timeout` 是连接级属性，每根连接各自生效；WAL 是文件级，不受影响）。PRD 10.3 强制 busy_timeout，因此一律自建连接：`sqlite3.connect(path, check_same_thread=False)` + `PRAGMA busy_timeout=5000` 后传 `SqliteSaver(conn)`——统一封装为 `open_checkpointer(path)`（任务 6，附录 B），调用方负责 `saver.conn.close()`。
 3. **interrupt**：节点内 `payload = interrupt(value)`；invoke 返回值带 `__interrupt__` 键（`Interrupt(value=..., id=...)`），`graph.get_state(config).next == ("<节点名>",)`；**恢复时节点函数从头重跑，`interrupt()` 返回 resume 值**。
 4. **resume**：`graph.invoke(Command(resume=<任意可序列化对象>), config)`。
 5. **顺序双闸门可行**：`provisional_gate` 里 resume 后若路由到 `decision_gate`，同一 invoke 内 `decision_gate` 的 `interrupt()` 再次挂起——已实证。
-6. **坑 1（必须防）**：线程挂起在 interrupt 时，`graph.invoke(普通输入, config)` **会从 START 重跑整张图**（旧 interrupt 被丢弃并重挂）。所以 tick 前必须检查 `get_state().next`，挂起中一律跳过。
+6. **坑 1（必须防）**：线程挂起在 interrupt 时，`graph.invoke(普通输入, config)` **会从 START 重跑整张图**（旧 interrupt 被丢弃并重挂），**且输入会覆盖 state 通道值**——状态污染坑，一并锁定：实证两次 `invoke({"n": 0}, config)` 后 `result["n"] == 1`（通道被输入重置为 0 再由 node 自增到 1），**不是**累加成的 2。所以 tick 前必须检查 `get_state().next`，挂起中一律跳过。
 7. **坑 2（必须防）**：`Command(resume=...)` 在非挂起线程上 invoke 是**静默 no-op**（不报错、不执行）。resume 前必须检查 pending 节点名。
 8. **崩溃续跑**：线程有 pending 节点但无 interrupt 时（进程死在节点之间），`graph.invoke(None, config)` **从 pending 节点继续**（不重跑已完成节点）；`invoke(普通输入)` 则从 START 重跑。`invoke(None, config)` 作用于 interrupt 挂起线程 = 重新触发 interrupt（安全 no-op）。
 9. **挂起状态读取**：`snapshot = graph.get_state(config)`；`snapshot.next` 为 pending 节点元组；`[i for t in snapshot.tasks for i in t.interrupts]` 列出 pending interrupts（区分"挂在闸门"与"崩溃在节点之间"）。
@@ -45,7 +45,7 @@ START → generate_round → summarize → branch ──cond(branch)──┬─
 
 2. **驱动模型**：每次后台驱动 = 一次"tick"（`drive_matter_tick`）。`run_round_pipeline` 保持 M2 签名不变，内部改为解析 round→matter 后调 tick（仍是唯一驱动入口）。tick 前检查 checkpoint：挂起在闸门 → 跳过；挂在节点之间（崩溃）→ `invoke(None)` 续跑；无线程状态 → `invoke({"matter_id": ...})` 新跑。
 3. **收齐仍是外部事件**：MCP submit → `maybe_drive_round` → `drive_queue`（round_id 字符串，M2 不变）。新增 `resume_queue`（`(matter_id, action)` 元组，`action ∈ {"continue_probing", "accept", "decide"}`）+ `resume_worker`。图不为收集等待挂起——collecting 期间图线程停在 END，收齐后新 tick 重新从 START 跑（节点幂等）。
-4. **拍板写库在前、resume 在后**：`decide_resolution` 用版本+状态双条件 UPDATE 落库（并发唯一裁决点），成功后才入 `resume_queue`。resume 只携带 action 信号（"决议已落库，请传播"），版本/理由/最终文本都在业务表。下游节点（`after_decision`/`gate_followup`）全部幂等，崩溃由 reconciler 兜底重放。
+4. **拍板写库在前、resume 在后**：`decide_resolution` 用版本+状态双条件 UPDATE 落库（并发唯一裁决点），成功后才入 `resume_queue`。resume 只携带 action 信号（"决议已落库，请传播"），版本/理由/最终文本都在业务表。下游节点（`after_decision`/`gate_followup`）全部幂等，崩溃由 reconciler 兜底重放。（设计文档 §6"人审闸门"一句已同步本口径：其 `Command(resume={decision, rationale, version})` 的载荷形态以代码为准。）
 5. **决议表**：`resolutions(id, matter_id, source_round_id unique, version, status, recommendation, rationale, risks, divergences, cited_rounds, final_text, decision_rationale, decided_by, decided_at, created_at)`；`UniqueConstraint(matter_id, version)` + `source_round_id` 唯一（每轮至多一份草案，幂等锚点）。与 RoundSummary 的关系：`source_round_id` 指向触发草案的轮次；`cited_rounds` 是 LLM 声明的引用轮次编号列表。
 6. **版本锁 SQL**（FR-21b/7.4，精确形态）：
 
@@ -56,11 +56,14 @@ SET status=:decision, final_text=:final_text, decision_rationale=:rationale,
 WHERE id=:rid AND version=:expected_version AND status='pending_review'
 ```
 
-`rowcount == 0` 时重新读行区分：`version != expected` → 409 `RESOLUTION_VERSION_CONFLICT`（details 带 `current_version`/`current_status`）；否则（version 匹配但 status 已是终态）→ 409 `INVALID_STATE_TRANSITION`。**三种拍板终态写入都把 version +1**（PRD 7.4 只明文要求 modified 递增；一律递增是对 FR-21b"单调递增"与 9.5"并发拍板 → RESOLUTION_VERSION_CONFLICT"的统一满足：任何竞态败者/陈旧页面都因 version 不匹配而 409 冲突码，终态+当前 version 的重复拍板才返回 INVALID_STATE_TRANSITION）。驳回后新草案 version = 该事项 max(version)+1，全事项单调递增。
-7. **驳回授信**（7.5）：驳回的下游开新轮在 `after_decision` 节点内做：新轮已存在 → 跳过；`can_auto_advance` 为假 → `granted_extra_rounds += 1`（`CREDIT_GRANT_PER_CONTINUE`）+ `matter_continued` 审计（`mode="reject_grant"`）→ 复用 M2 追问开轮逻辑。即"隐含授予 +1"只在达上限时发生；未达上限时驳回直接开轮不授额度（额度只约束自动推进，驳回开轮本身就是人工动作）。`continue_probing`（暂定态继续追问）同样按需幂等授信（`mode="provisional_continue"`）。
+`rowcount == 0` 时重新读行区分：`version != expected` → 409 `RESOLUTION_VERSION_CONFLICT`（details 带 `current_version`/`current_status`）；否则（version 匹配但 status 已是终态）→ 409 `INVALID_STATE_TRANSITION`。**三种拍板终态写入都把 version +1**（PRD 7.4 只明文要求 modified 递增；一律递增是对 FR-21b"单调递增"与 9.5"并发拍板 → RESOLUTION_VERSION_CONFLICT"的统一满足：任何竞态败者/陈旧页面都因 version 不匹配而 409 冲突码，终态+当前 version 的重复拍板才返回 INVALID_STATE_TRANSITION）。驳回后新草案 version = 该事项 max(version)+1，全事项单调递增。（**用户已确认**：approved/modified/rejected 三种终态写入一律 version+1。）
+7. **驳回授信**（7.5）：驳回的下游开新轮在 `after_decision` 节点内做：新轮已存在 → 跳过；`can_auto_advance` 为假 → `granted_extra_rounds += 1`（`CREDIT_GRANT_PER_CONTINUE`）+ `matter_continued` 审计（`mode="reject_grant"`）→ 复用 M2 追问开轮逻辑。即"隐含授予 +1"只在达上限时发生；未达上限时驳回直接开轮不授额度（额度只约束自动推进，驳回开轮本身就是人工动作）。`continue_probing`（暂定态继续追问）同样按需幂等授信（`mode="provisional_continue"`）。（**用户已确认**：驳回的隐含 +1 授信仅发生在已达轮次上限时。）
 8. **审计新常量**（4 个，M2 风格）：`RESOLUTION_DRAFTED="resolution_drafted"`、`RESOLUTION_DECIDED="resolution_decided"`、`MATTER_COMPLETED="matter_completed"`、`MATTER_AWAITING_DECISION="matter_awaiting_decision"`（补 M2 遗留的 awaiting_decision 无审计缺口）。驳回/冲突/越权沿用 `INVALID_STATE_TRANSITION` / `FORBIDDEN_DENIED` 带 detail。
 9. **7.6 二态语义**：`converged` → 草案 + 同事务 matter `in_progress→awaiting_decision` → 挂 `decision_gate`；`provisionally_ready` → 草案、matter 停留 `in_progress`（PRD 7.1：awaiting_decision 只在"发起人接受 provisionally_ready"后进入）→ 挂 `provisional_gate`，发起人 resume `continue_probing`（开新轮）或 `accept`（翻 awaiting_decision 后流入 `decision_gate` 再挂起）。
 10. **FR-24 恢复口径**：reconciler 两部分——(a) 既有 `find_interrupted_round_ids` 的 rule (b) 增加排除：最新轮已有 `resolutions` 行的 matter 不算"分支中断"（它停在闸门，不是崩溃）；(b) 新增 `find_interrupted_resolution_matter_ids`：`awaiting_decision` 且最新决议已是终态 → 入 `resume_queue` 重放传播。草案生成失败 = 入 `blocked`（`BLOCKED_REASON_DRAFT_FAILED`），重试走 `continue_matter` 扩展（不授额度，`mode="retry_draft"`）；崩溃在"草案未落库"之前的由 rule (b) 重新 tick 重新生成。
+11. **轮次上限 blocked 的"直接生成决议草案"入口**（PRD 7.5 明文"直接要求生成决议草案"；**用户已拍板新增**，任务 9）：仅发起人、仅 matter `blocked` 且 `blocked_reason` 以 `BLOCKED_REASON_ROUND_LIMIT` 开头时可触发；复用 resolution_draft schema/prompt 基于全部轮次 ok 摘要生成草案，成功即 matter `blocked→awaiting_decision`（状态机矩阵扩展）+ 决议 `pending_review`，失败保持 blocked 且错误可见；后续拍板/驳回复用既有链路。
+12. **拍板/驳回理由入审计**（**用户已拍板**）：`resolution_decided` 与 `matter_continued`（`mode="reject_grant"`）的审计 detail 增加 `rationale` 文本，超长截断到 500 字符（`AUDIT_RATIONALE_MAX = 500`）。PRD 4.2 敏感数据边界核查：理由是发起人本人输入的文本（非他人原始回答、非密钥/Token），可入审计。
+13. **MCP 决议数据面（已定口径）**：`get_matter_status` 只返回决议阶段与版本等元数据（`resolution_id/status/version/cited_rounds/created_at/decided_at`），**不返回草案/最终正文**——正文由 Web 拍板页承载（PRD 9.2 字面口径，从严控制数据面）。
 
 ## 关键实现约束（每个任务都必须遵守）
 
@@ -93,14 +96,16 @@ M1 的 9 条与 M2 的 6 条（10–15）全部沿用，并补充 M3 的 6 条�
 - 超时调度器（FR-14b）、换人（FR-08b）、429 限流实计数、Web CSRF、登录限流（全部 M4）。
 - 取消事项、账号停用/恢复页面（维持 M1/M2 边界）。
 - 决议导出、删除、留存周期配置；审计导出（PRD：导出不可用提示即可）。
-- 真实 DeepSeek 自动化调用（仅任务 17 手工冒烟用真实 key）。
+- 真实 DeepSeek 自动化调用（仅任务 18 手工冒烟用真实 key）。
 - 多实例部署、PostgreSQL 迁移（P2）。
 - 超时任务触发的收齐驱动（M4 调度器）；M3 测试里 timeout 任务状态用直接改库构造。
 
-## M2 测试演进登记（仅这两处允许改，理由如下）
+## M2 测试演进登记（M2 测试仅这两处允许改，理由如下）
 
 1. `tests/api/test_pipeline_branch.py::test_ready_states_go_awaiting_decision`（2 个参数化用例，断言 ready 二态零 LLM 调用直接翻 `awaiting_decision`）：M2 明确是占位（"M2: both go to awaiting_decision; decision drafts land in M3"）。M3 语义：ready 二态必须生成决议草案（FR-19），且 `provisionally_ready` 按 PRD 7.1/7.6 停留 `in_progress` 等发起人选择。演进为任务 5 的 `tests/api/test_pipeline_draft.py` 中更强的断言（草案落库 + 状态正确 + LLM 调用恰好 1 次）。
-2. `tests/web/test_matter_detail_summaries.py::test_awaiting_decision_shows_placeholder`（断言占位文案"等待决议（下一阶段开放拍板）"）：占位文案就是为 M3 预留的。演进为任务 11 的真实拍板入口断言（决议草案卡片 + 版本号 + 拍板页链接）。
+2. `tests/web/test_matter_detail_summaries.py::test_awaiting_decision_shows_placeholder`（断言占位文案"等待决议（下一阶段开放拍板）"）：占位文案就是为 M3 预留的。演进为任务 12 的真实拍板入口断言（决议草案卡片 + 版本号 + 拍板页链接）。
+
+另含 1 处 M3 内部演进（非 M2 测试，不占本登记名额）：任务 6 的 `test_tick_converged_drafts_and_stops_at_end` 在任务 10 随闸门落地改名并加强断言（"图停在 END"→"挂 decision_gate"），见任务 10 步骤 4 的联动说明。
 
 ## 文件结构
 
@@ -116,28 +121,28 @@ mcp-decision-hub/
 │   │   └── prompts.py               # 任务 4：build_resolution_draft_prompt（注入防护）
 │   ├── api/
 │   │   ├── audit.py                 # 任务 5：4 个新事件常量
-│   │   ├── pipeline.py              # 任务 5/6/9/10：草案相位、_open_followup_round 抽取、
+│   │   ├── pipeline.py              # 任务 5/6/10/11：草案相位、_open_followup_round 抽取、
 │   │   │                            #   apply_resolution_decision、reconciler 扩展、run_round_pipeline 切 tick
-│   │   ├── resolutions.py           # 任务 7/8：decide_resolution / accept_provisional / continue_probing（新建）
-│   │   ├── audit_query.py           # 任务 13：审计筛选查询（新建）
-│   │   └── matters.py               # 任务 10：continue_matter 扩展草案失败重试
+│   │   ├── resolutions.py           # 任务 7/8/9：decide_resolution / accept_provisional / continue_probing / draft_resolution_from_blocked（新建）
+│   │   ├── audit_query.py           # 任务 14：审计筛选查询（新建）
+│   │   └── matters.py               # 任务 11：continue_matter 扩展草案失败重试
 │   ├── graph/
 │   │   ├── __init__.py              # 任务 6（新建空文件）
-│   │   └── matter_graph.py          # 任务 6/9：构图、drive_matter_tick、resume_matter_gate（新建）
-│   ├── background.py                # 任务 10：resume_worker
-│   ├── main.py                      # 任务 10/11：resume_queue + resume_worker + reconciler 扩展 + routes_decision
-│   ├── mcp_server/methods.py        # 任务 12：get_matter_status.resolution 接真实数据
+│   │   └── matter_graph.py          # 任务 6/10：构图、drive_matter_tick、resume_matter_gate（新建）
+│   ├── background.py                # 任务 11：resume_worker
+│   ├── main.py                      # 任务 11/12：resume_queue + resume_worker + reconciler 扩展 + routes_decision
+│   ├── mcp_server/methods.py        # 任务 13：get_matter_status.resolution 接真实数据
 │   └── web/
-│       ├── routes_matters.py        # 任务 11/13/14：_build_detail 决议上下文、/matters/{id}/audit、审计块
-│       ├── routes_admin.py          # 任务 13：/admin/audit
-│       ├── routes_decision.py       # 任务 11：拍板页 GET/POST（新建）
+│       ├── routes_matters.py        # 任务 9/12/14/15：_build_detail 决议上下文与草案入口、/matters/{id}/audit、审计块
+│       ├── routes_admin.py          # 任务 14：/admin/audit
+│       ├── routes_decision.py       # 任务 12：拍板页 GET/POST（新建）
 │       └── templates/
-│           ├── matter_detail.html   # 任务 11/13/14：决议区、审计块、状态展示
-│           ├── decision.html        # 任务 11（新建）
-│           ├── admin_audit.html     # 任务 13（新建）
-│           └── matter_audit.html    # 任务 13（新建）
+│           ├── matter_detail.html   # 任务 9/12/14/15：草案入口按钮、决议区、审计块、状态展示
+│           ├── decision.html        # 任务 12（新建）
+│           ├── admin_audit.html     # 任务 14（新建）
+│           └── matter_audit.html    # 任务 14（新建）
 ├── tests/
-│   ├── graph/                       # 任务 1/6/9（新建目录）
+│   ├── graph/                       # 任务 1/6/10（新建目录）
 │   │   ├── __init__.py
 │   │   ├── test_checkpointer.py
 │   │   ├── test_matter_graph_tick.py
@@ -148,15 +153,16 @@ mcp-decision-hub/
 │   ├── api/test_pipeline_draft.py   # 任务 5（新建；branch 两个 ready 用例演进至此）
 │   ├── api/test_resolution_decide.py    # 任务 7（新建）
 │   ├── api/test_provisional_choice.py   # 任务 8（新建）
-│   ├── api/test_resolution_reconcile.py # 任务 10（新建）
+│   ├── api/test_resolution_draft_manual.py # 任务 9（新建）
+│   ├── api/test_resolution_reconcile.py # 任务 11（新建）
 │   ├── api/test_pipeline_branch.py  # 任务 5：删除 2 个 ready 参数化用例（演进登记 1）
-│   ├── api/test_background_worker.py# 任务 10：追加 resume worker 用例
-│   ├── web/test_decision_page.py    # 任务 11（新建）
-│   ├── web/test_matter_detail_summaries.py # 任务 11：占位断言演进（演进登记 2）
-│   ├── api/test_mcp_resolution.py   # 任务 12（新建）
-│   ├── web/test_audit_query.py      # 任务 13（新建）
-│   ├── web/test_resolution_states_web.py # 任务 14（新建）
-│   └── integration/test_resolution_e2e.py  # 任务 15（新建）
+│   ├── api/test_background_worker.py# 任务 11：追加 resume worker 用例
+│   ├── web/test_decision_page.py    # 任务 12（新建）
+│   ├── web/test_matter_detail_summaries.py # 任务 12：占位断言演进（演进登记 2）
+│   ├── api/test_mcp_resolution.py   # 任务 13（新建）
+│   ├── web/test_audit_query.py      # 任务 14（新建）
+│   ├── web/test_resolution_states_web.py # 任务 15（新建）
+│   └── integration/test_resolution_e2e.py  # 任务 16（新建）
 ```
 
 命名总表见附录 B；需求映射见附录 A。
@@ -201,6 +207,7 @@ class _State(TypedDict, total=False):
 
 def _saver(path):
     conn = sqlite3.connect(str(path), check_same_thread=False)
+    conn.execute("PRAGMA busy_timeout=5000")  # 连接级属性，逐连接设置（PRD 10.3）
     saver = SqliteSaver(conn)
     saver.setup()
     return saver
@@ -253,12 +260,16 @@ def test_interrupt_pauses_and_resume_returns_payload(tmp_path):
 
 def test_plain_invoke_while_paused_restarts_from_start(tmp_path):
     """FOOTGUN locked: plain input on an interrupted thread re-runs from
-    START. tick code must never do this — check get_state().next first."""
+    START — and the input OVERWRITES checkpointed channel values (state
+    pollution, locked below). tick code must never do this — check
+    get_state().next first."""
     graph = _gate_graph(_saver(tmp_path / "g.db"))
     config = {"configurable": {"thread_id": "m1"}}
     graph.invoke({"n": 0}, config)
     result = graph.invoke({"n": 0}, config)  # 错误用法，此处仅锁定语义
-    assert result["n"] == 2  # node_a re-ran
+    # node_a 重跑了，但输入 {"n": 0} 会覆盖 state 通道值（状态污染坑，一并
+    # 锁定）：通道被重置为 0 再自增，结果是 1 而不是 2
+    assert result["n"] == 1
     assert graph.get_state(config).next == ("gate",)  # gate re-interrupted
 
 
@@ -583,7 +594,7 @@ def assert_resolution_transition(current: str, target: str) -> None:
 - [ ] **步骤 4：运行测试验证通过**
 
 运行：`uv run pytest tests/domain/test_resolution.py tests/domain/test_state.py -v`
-预期：resolution 10 passed（含 3 个参数化）+ state 7 passed，无回归。
+预期：resolution 11 passed（9 个函数；`test_resolution_terminal_states_have_no_exit` 参数化 ×3 展开）+ state 7 passed，无回归。
 
 - [ ] **步骤 5：Commit**
 
@@ -989,7 +1000,7 @@ git commit -m "feat: add resolution draft llm schema and prompt with injection d
 - `_branch_phase` 的 ready 二态分支（原样翻 `awaiting_decision` 的占位）改为直接 `return`——草案与状态翻转由 `_draft_resolution_phase` 负责。其余分支（blocked/continue/额度/追问开轮）一字不动。
 - `_draft_resolution_phase` 守卫（幂等）：matter 非 `in_progress` → 返回；最新轮非 `closed` → 返回；无 `ok` 摘要或收敛不是 ready 二态 → 返回；该轮已有 `resolutions` 行（`source_round_id` 命中）→ 返回。
 - 成功：插入 `Resolution(version=_next_resolution_version, status="pending_review", ...)`；`converged` 时同事务把 matter `in_progress→awaiting_decision`（条件 UPDATE）并写 `matter_awaiting_decision` 审计；写 `resolution_drafted` 审计。`provisionally_ready` 时 matter 停留 `in_progress`（PRD 7.1/7.6：等发起人选择）。
-- 失败：`LLMError` → `_block_matter(BLOCKED_REASON_DRAFT_FAILED + error_code + 重试次数)` + `llm_failed` 审计（`stage="resolution_draft"`）；**不建 resolutions 行**（重试由 continue_matter 重新触发生成，任务 10）。
+- 失败：`LLMError` → `_block_matter(BLOCKED_REASON_DRAFT_FAILED + error_code + 重试次数)` + `llm_failed` 审计（`stage="resolution_draft"`）；**不建 resolutions 行**（重试由 continue_matter 重新触发生成，任务 11）。
 - `run_round_pipeline` 第二个 session 块：`_branch_phase` 之后追加 `_draft_resolution_phase`。本任务保持线性管线；任务 6 才把内部切成图 tick。
 
 - [ ] **步骤 1：编写失败的测试**
@@ -1358,7 +1369,7 @@ def _draft_resolution_phase(session: Session, matter: Matter, llm) -> None:
 预期：draft 6 passed + branch 7 passed
 
 再跑全量：`uv run pytest tests -q`
-预期：268 passed（264 + 6 draft − 2 演进的 branch ready 用例；按实际收集数核对，关键是 0 failed）。
+预期：293 passed（264 + 11 任务 2 + 4 任务 3 + 10 任务 4 + 6 draft − 2 演进的 branch ready 用例；按实际收集数核对，关键是 0 failed）。
 
 - [ ] **步骤 5：Commit**
 
@@ -1379,7 +1390,7 @@ git commit -m "feat: generate resolution draft on ready convergence (FR-19/7.6)"
 
 语义说明（对应关键设计决策 1/2/3 与 LangGraph 验证结论）：
 
-- 图节点是 pipeline 相位函数的**薄封装**：每个节点自己开 session、调用相位、commit。本任务的图只到 `draft_resolution → END`（闸门节点在任务 9 加入；本任务 `after_draft` 路由只产生 `"end"`——草案生成后图停在 END，不挂起）。
+- 图节点是 pipeline 相位函数的**薄封装**：每个节点自己开 session、调用相位、commit。本任务的图只到 `draft_resolution → END`（闸门节点在任务 10 加入；本任务 `after_draft` 路由只产生 `"end"`——草案生成后图停在 END，不挂起）。
 - `drive_matter_tick` 的三分支（防验证结论的坑 1/坑 2/崩溃续跑）：挂起在闸门（有 pending interrupt）→ 跳过；有 pending 节点但无 interrupt（崩溃在节点之间）→ `invoke(None, config)` 续跑；无线程状态 → `invoke({"matter_id": ...}, config)` 新跑。
 - `run_round_pipeline` 签名不变（M2 测试直接调用它），内部：round_id → matter_id → `drive_matter_tick`。它仍是唯一驱动入口。
 - checkpoint 文件 = 业务库同一文件：`sqlite_path_from_url(settings.database_url)`。
@@ -1389,8 +1400,6 @@ git commit -m "feat: generate resolution draft on ready convergence (FR-19/7.6)"
 
 ```python
 # tests/graph/test_matter_graph_tick.py
-import sqlite3
-
 import pytest
 from sqlalchemy import func, select, update
 
@@ -1400,9 +1409,9 @@ from hub.db.models import Matter, Resolution, Round, RoundSummary, Task
 from hub.graph.matter_graph import (
     build_matter_graph,
     drive_matter_tick,
+    open_checkpointer,
     sqlite_path_from_url,
 )
-from langgraph.checkpoint.sqlite import SqliteSaver
 from tests.conftest import make_user
 
 SUMMARY_CONTINUE = {
@@ -1422,8 +1431,8 @@ def _pending_node(session_factory, settings, matter_id):
     """Build the graph against the same sqlite file and read the pending
     node for the matter's thread (test introspection helper)."""
     path = sqlite_path_from_url(settings.database_url)
-    with SqliteSaver.from_conn_string(path) as saver:
-        saver.setup()
+    saver = open_checkpointer(path)
+    try:
         graph = build_matter_graph(
             session_factory=session_factory, settings=settings,
             llm=None, checkpointer=saver,
@@ -1431,6 +1440,8 @@ def _pending_node(session_factory, settings, matter_id):
         snapshot = graph.get_state({"configurable": {"thread_id": matter_id}})
         interrupts = [i for t in snapshot.tasks for i in t.interrupts]
         return snapshot.next, interrupts
+    finally:
+        saver.conn.close()
 
 
 @pytest.fixture()
@@ -1547,7 +1558,7 @@ def test_tick_converged_drafts_and_stops_at_end(
     db_session, session_factory, settings, scenario, make_fake_llm
 ):
     """本任务图尚无闸门节点：converged → 草案 + awaiting_decision，图到
-    END（不挂起）。任务 9 会把这里演进为挂 decision_gate。"""
+    END（不挂起）。任务 10 会把这里演进为挂 decision_gate。"""
     _close_round_with_summary(db_session, scenario, "converged")
     llm = make_fake_llm([DRAFT_PAYLOAD])
     drive_matter_tick(session_factory, settings,
@@ -1595,8 +1606,8 @@ def test_tick_continues_after_midrun_crash(
     _close_round_with_summary(db_session, scenario, "converged")
     # 模拟崩溃：checkpoint 停在 summarize 之后、branch 之前
     path = sqlite_path_from_url(settings.database_url)
-    with SqliteSaver.from_conn_string(path) as saver:
-        saver.setup()
+    saver = open_checkpointer(path)
+    try:
         graph = build_matter_graph(
             session_factory=session_factory, settings=settings,
             llm=None, checkpointer=saver,
@@ -1606,6 +1617,8 @@ def test_tick_continues_after_midrun_crash(
             config, {"matter_id": scenario["matter"].id}, as_node="summarize"
         )
         assert graph.get_state(config).next == ("branch",)
+    finally:
+        saver.conn.close()
     llm = make_fake_llm([DRAFT_PAYLOAD])
     drive_matter_tick(session_factory, settings,
                       matter_id=scenario["matter"].id, llm=llm)
@@ -1658,6 +1671,7 @@ Drive model (verified semantics — see the M3 plan's LangGraph section):
 """
 
 import logging
+import sqlite3
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
@@ -1728,7 +1742,7 @@ def _compute_branch_route(session, matter: Matter) -> str:
         return "done"
     latest_res = _latest_resolution(session, matter.id)
     if latest_res is not None and latest_res.status in RESOLUTION_TERMINAL_STATUSES:
-        return "propagate"  # 已拍板但下游未传播（崩溃恢复；任务 9 接线）
+        return "propagate"  # 已拍板但下游未传播（崩溃恢复；任务 10 接线）
     rnd = _latest_round(session, matter.id)
     if rnd is None or rnd.status != "closed":
         return "done"
@@ -1783,7 +1797,7 @@ def build_matter_graph(*, session_factory, settings: Settings, llm,
             matter = session.get(Matter, state["matter_id"])
             _draft_resolution_phase(session, matter, llm)
             session.commit()
-        # 任务 9 在此按收敛态路由到闸门；本任务图到 END。
+        # 任务 10 在此按收敛态路由到闸门；本任务图到 END。
         return {"after_draft": "end"}
 
     graph = StateGraph(MatterGraphState)
@@ -1807,13 +1821,27 @@ def _pending_interrupts(snapshot) -> list:
     return [i for task in snapshot.tasks for i in task.interrupts]
 
 
+def open_checkpointer(path: str) -> SqliteSaver:
+    """Self-built connection + SqliteSaver. Do NOT use
+    SqliteSaver.from_conn_string: it only does
+    sqlite3.connect(path, check_same_thread=False) and never sets
+    busy_timeout (a per-connection PRAGMA; WAL is file-level and
+    unaffected), which PRD 10.3 requires. Caller owns the connection
+    and must close it (saver.conn.close())."""
+    conn = sqlite3.connect(path, check_same_thread=False)
+    conn.execute("PRAGMA busy_timeout=5000")
+    saver = SqliteSaver(conn)
+    saver.setup()
+    return saver
+
+
 def drive_matter_tick(session_factory, settings: Settings, *, matter_id: str,
                       llm) -> None:
     """One drive event for a matter thread. See module docstring for the
     three-way checkpoint dispatch."""
     path = sqlite_path_from_url(settings.database_url)
-    with SqliteSaver.from_conn_string(path) as saver:
-        saver.setup()
+    saver = open_checkpointer(path)
+    try:
         graph = build_matter_graph(
             session_factory=session_factory, settings=settings, llm=llm,
             checkpointer=saver,
@@ -1830,6 +1858,8 @@ def drive_matter_tick(session_factory, settings: Settings, *, matter_id: str,
             graph.invoke(None, config)
             return
         graph.invoke({"matter_id": matter_id}, config)
+    finally:
+        saver.conn.close()
 ```
 
 `hub/api/pipeline.py` 的 `run_round_pipeline` 整体替换为：
@@ -1859,7 +1889,7 @@ def run_round_pipeline(
 预期：9 passed
 
 再跑全量：`uv run pytest tests -q`
-预期：277 passed（268 + 9），M2 管线/后台/reconciler 用例零回归（它们经 `run_round_pipeline` 或 worker 驱动，现在走图）。
+预期：302 passed（293 + 9），M2 管线/后台/reconciler 用例零回归（它们经 `run_round_pipeline` 或 worker 驱动，现在走图）。
 
 - [ ] **步骤 5：Commit**
 
@@ -1881,8 +1911,8 @@ git commit -m "feat: drive round pipeline through langgraph with sqlite checkpoi
 - 守卫顺序：matter 存在（404）→ 发起人（403 + `forbidden_denied`）→ matter `awaiting_decision`（409 `INVALID_STATE_TRANSITION`）→ 最新决议存在且校验载荷（422 `VALIDATION_FAILED`）→ **版本+状态双条件 UPDATE**。
 - UPDATE 把 `version` 置为 `version + 1`（三种终态都递增，见设计决策 6）、写入 `status/final_text/decision_rationale/decided_by/decided_at`。`approved` 的 `final_text = compose_draft_text(草案)`；`modified` 用发起人文本；`rejected` 为 `None`。
 - `rowcount == 0`：重新读行（`session.expire` 后重查，避免 identity map 陈旧——M2 任务 15 教训）；`version != expected` → 409 `RESOLUTION_VERSION_CONFLICT`（details `{current_version, current_status}`）；否则 → 409 `INVALID_STATE_TRANSITION`。两种失败都写 `invalid_state_transition` 审计（detail 带 `action="decide_resolution"` 与版本信息），均不写入决议。
-- 成功写 `resolution_decided` 审计（detail：resolution_id、拍板时 version、decision、has_rationale）。
-- 本服务**不触碰图与队列**——resume 入队在 Web 路由（任务 11）与 reconciler（任务 10）。
+- 成功写 `resolution_decided` 审计（detail：resolution_id、拍板时 version、decision、`rationale`——拍板理由文本，截断到 `AUDIT_RATIONALE_MAX = 500` 字符，无理由为 None；用户已拍板口径，见设计决策 12）。
+- 本服务**不触碰图与队列**——resume 入队在 Web 路由（任务 12）与 reconciler（任务 11）。
 - 并发语义：两个线程各持独立 session 同时 decide，条件 UPDATE 保证只有一个 rowcount=1（SQLite 串行写）。
 
 - [ ] **步骤 1：编写失败的测试**
@@ -1976,6 +2006,11 @@ def test_modified_requires_and_stores_final_text_and_rationale(
     assert loaded.status == "modified"
     assert loaded.final_text == "最终文本"
     assert loaded.decision_rationale == "修改理由"
+    events = [
+        r for r in db_session.scalars(select(AuditEvent)).all()
+        if r.event_type == "resolution_decided"
+    ]
+    assert events[-1].detail["rationale"] == "修改理由"  # 理由入审计（截断 500）
 
 
 def test_reject_requires_rationale(db_session, scenario):
@@ -2092,7 +2127,7 @@ def test_get_latest_resolution_returns_highest_version(db_session, scenario):
 
 - [ ] **步骤 3：实现**
 
-创建 `hub/api/resolutions.py`：
+创建 `hub/api/resolutions.py`（并同步在 `hub/api/audit.py` 追加 `AUDIT_RATIONALE_MAX = 500`——审计 detail 中理由文本的截断口径，设计决策 12）：
 
 ```python
 """Resolution decision services (FR-19~FR-22, PRD 7.4/7.5/7.6).
@@ -2220,7 +2255,10 @@ def decide_resolution(
                        detail={"resolution_id": resolution.id,
                                "version": expected_version,
                                "decision": decision,
-                               "has_rationale": bool((rationale or "").strip())})
+                               "rationale": (
+                                   (rationale or "").strip()
+                                   [:audit.AUDIT_RATIONALE_MAX] or None
+                               )})
     session.flush()
     session.expire(resolution)
     return session.get(Resolution, resolution.id)
@@ -2234,7 +2272,7 @@ def decide_resolution(
 - [ ] **步骤 5：Commit**
 
 ```bash
-git add hub/api/resolutions.py tests/api/test_resolution_decide.py
+git add hub/api/resolutions.py hub/api/audit.py tests/api/test_resolution_decide.py
 git commit -m "feat: add version-locked resolution decision service (FR-20/FR-21/FR-21b)"
 ```
 
@@ -2249,8 +2287,8 @@ git commit -m "feat: add version-locked resolution decision service (FR-20/FR-21
 语义说明：
 
 - 两个动作的前置守卫完全一致：matter 存在 → 发起人 → matter `in_progress` → 最新决议 `pending_review` → 最新轮 `ok` 摘要收敛态为 `provisionally_ready`（`converged` 已直接进 awaiting_decision，不存在"接受"动作；违反 → 409 `INVALID_STATE_TRANSITION`）。
-- `accept_provisional`：条件 UPDATE matter `in_progress→awaiting_decision`，写 `matter_awaiting_decision` 审计（detail 带 `mode="accept_provisional"`、resolution_id、version）。状态翻转在这里做（而不是等 resume），保证 Web 立即看到新状态；图节点的 `provisional_gate` resume 路径再做一次同样的条件 UPDATE（幂等兜底，任务 9）。
-- `continue_probing`：**只校验不改库**——额度授予与新轮创建都在图的 `gate_followup` 节点内幂等完成（任务 9），避免 API 与节点双重授予。返回值无。
+- `accept_provisional`：条件 UPDATE matter `in_progress→awaiting_decision`，写 `matter_awaiting_decision` 审计（detail 带 `mode="accept_provisional"`、resolution_id、version）。状态翻转在这里做（而不是等 resume），保证 Web 立即看到新状态；图节点的 `provisional_gate` resume 路径再做一次同样的条件 UPDATE（幂等兜底，任务 10）。
+- `continue_probing`：**只校验不改库**——额度授予与新轮创建都在图的 `gate_followup` 节点内幂等完成（任务 10），避免 API 与节点双重授予。返回值无。
 - 两个服务同样不触碰图与队列。
 
 - [ ] **步骤 1：编写失败的测试**
@@ -2484,7 +2522,388 @@ git commit -m "feat: add provisional accept and continue-probing services (PRD 7
 
 ---
 
-### 任务 9：graph — 决议闸门 interrupt/resume 与下游落库（FR-21 / 7.4 / 7.5）
+### 任务 9：api+web — 轮次上限 blocked 的"直接生成决议草案"入口（PRD 7.5；用户拍板新增）
+
+**文件：**
+- 修改：`hub/domain/state.py`（`MATTER_TRANSITIONS["blocked"]` 增加 `awaiting_decision` 出口）
+- 修改：`hub/api/resolutions.py`（追加 `draft_resolution_from_blocked`）
+- 修改：`hub/web/routes_matters.py`（`POST /matters/{id}/draft-resolution` 路由 + `can_draft_from_blocked` 上下文）
+- 修改：`hub/web/templates/matter_detail.html`（轮次上限 blocked 横幅旁新增按钮，与"继续（+1 轮）"并列）
+- 测试：`tests/api/test_resolution_draft_manual.py`（新建）
+
+语义说明（PRD 7.5："达到轮次上限……发起人可选择继续（+1 轮额度）、取消或直接要求生成决议草案"；关键设计决策 11；用户已拍板新增的入口）：
+
+- 守卫顺序：matter 存在（404）→ 仅发起人（403 + `forbidden_denied`）→ matter `blocked` 且 `blocked_reason` 以 `BLOCKED_REASON_ROUND_LIMIT` 开头（否则 409 `INVALID_STATE_TRANSITION`；非上限的其他 blocked 原因一律拒绝）。
+- 成功：基于全部轮次 `ok` 摘要调 LLM（复用任务 4 的 `build_resolution_draft_prompt` 与 `resolution_draft` schema；输入含 `continue` 摘要——草案正是从"未收敛但已达上限"的材料中归纳）→ 插入 `Resolution(status="pending_review", version=_next_resolution_version(...))`（无历史草案即 version 1）→ 条件 UPDATE matter `blocked→awaiting_decision`（清 `blocked_reason`）→ 写 `resolution_drafted` 审计（detail 带 `trigger="manual_from_blocked"`）与 `matter_awaiting_decision` 审计（detail 带 `mode="manual_from_blocked"`）。
+- 失败（LLM 重试耗尽）：**保持 `blocked` 且 `blocked_reason` 不变**（既有"继续（+1 轮）"按钮与本入口的守卫均不受影响，可再次点击重试）；写 `llm_failed` 审计（detail：`stage="resolution_draft"`、`trigger="manual_from_blocked"`、`error_code`、`retry_count`）；抛 503 `SERVICE_UNAVAILABLE`，message 沿用 BLOCKED_REASON 风格（"决议草案生成失败（LLM 重试耗尽）：{error_code}（已重试 N 次）"），由路由渲染回详情页——错误可见。
+- 幂等：草案落库后 matter 已非 `blocked`，重复点击被状态守卫 409 拒绝——不重复生成、不重复调 LLM；并发双击由 `source_round_id` 唯一约束兜底（败者 IntegrityError 回滚）。
+- 状态机扩展（PRD 7.5 明文的合法转移）：`MATTER_TRANSITIONS["blocked"]` 增加 `awaiting_decision`。M2 的 `tests/domain/test_state.py` 无 `blocked→awaiting_decision` 负向断言，零演进。
+- LLM 调用口径：本入口是发起人显式触发的同步动作，路由内 `await asyncio.to_thread(...)` 执行服务（约束 10 的 to_thread 口径，不阻塞事件循环）；路由本身只做守卫、commit 与入队。
+- 图联动：成功后路由把 `resolution.source_round_id` 入 `drive_queue` 驱动一次 tick——本任务下图到 END（幂等空转）；任务 10 加入闸门后图会停在 `provisional_gate` 等待拍板，`decide` 的 resume 链式穿过两个闸门完成传播（任务 10 有专门用例覆盖）。后续拍板/驳回流程完全复用任务 7/8/10 的既有链路，本任务不复制。
+
+- [ ] **步骤 1：编写失败的测试**
+
+```python
+# tests/api/test_resolution_draft_manual.py
+"""PRD 7.5: 轮次上限 blocked 时发起人可直接要求生成决议草案。"""
+
+import pytest
+from sqlalchemy import func, select, update
+
+from hub.api import matters as matter_svc
+from hub.api.errors import ApiError
+from hub.api.pipeline import (
+    BLOCKED_REASON_ROUND_LIMIT,
+    BLOCKED_REASON_SUMMARY_FAILED,
+)
+from hub.api.resolutions import draft_resolution_from_blocked
+from hub.db.models import AuditEvent, Matter, Resolution, Round, RoundSummary
+from hub.llm.client import LLMError
+from tests.conftest import make_user
+
+DRAFT_PAYLOAD = {
+    "recommendation": "采用方案 A", "rationale": "依据",
+    "risks": ["风险"], "divergences": [], "cited_rounds": [1],
+}
+
+
+@pytest.fixture()
+def app_llm(make_fake_llm):
+    """client fixture 用：注入脚本化 FakeLLM，避免 app_llm=None 让 create_app
+    构造真实 DeepSeekClient（M2 既有模式，参照
+    tests/web/test_matter_detail_summaries.py 顶部）。"""
+    return make_fake_llm([DRAFT_PAYLOAD])
+
+
+@pytest.fixture()
+def scenario(db_session):
+    """Matter blocked at the round limit; round 1 closed with a continue
+    summary (PRD 7.5 入口的前置形态)。"""
+    init = make_user(db_session, "init", password="pw-123456")
+    alice = make_user(db_session, "alice", password="pw-123456")
+    bob = make_user(db_session, "bob", password="pw-123456")
+    matter = matter_svc.create_matter(
+        db_session, initiator=init, title="T", goal="G", background="B",
+        participant_ids=[alice.id, bob.id], initiator_participates=False,
+        timeout_seconds=3600, max_rounds=1, draft_questions=["Q1?"],
+    )
+    matter_svc.start_matter(db_session, matter_id=matter.id, actor=init)
+    rnd = db_session.scalar(select(Round))
+    db_session.execute(update(Round).where(Round.id == rnd.id).values(status="closed"))
+    db_session.add(
+        RoundSummary(
+            round_id=rnd.id, matter_id=matter.id,
+            consensus_points=["共识"], divergences=["分歧"],
+            blind_spots=[], open_questions=["未决"],
+            convergence="continue", generation_status="ok",
+        )
+    )
+    db_session.execute(
+        update(Matter).where(Matter.id == matter.id)
+        .values(status="blocked", blocked_reason=BLOCKED_REASON_ROUND_LIMIT)
+    )
+    db_session.commit()
+    return {"matter": matter, "round": rnd, "init": init, "alice": alice}
+
+
+def _events(db_session, event_type):
+    return [
+        r for r in db_session.scalars(select(AuditEvent)).all()
+        if r.event_type == event_type
+    ]
+
+
+def test_participant_cannot_draft_from_blocked(db_session, scenario, make_fake_llm):
+    llm = make_fake_llm([DRAFT_PAYLOAD])
+    with pytest.raises(ApiError) as exc_info:
+        draft_resolution_from_blocked(
+            db_session, matter_id=scenario["matter"].id,
+            actor=scenario["alice"], llm=llm)
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.error_code == "FORBIDDEN_SCOPE"
+    assert len(_events(db_session, "forbidden_denied")) == 1
+    assert len(llm.calls) == 0
+    assert db_session.scalar(select(func.count()).select_from(Resolution)) == 0
+
+
+def test_non_round_limit_blocked_rejected(db_session, scenario, make_fake_llm):
+    db_session.execute(
+        update(Matter).where(Matter.id == scenario["matter"].id)
+        .values(blocked_reason=BLOCKED_REASON_SUMMARY_FAILED)
+    )
+    db_session.commit()
+    llm = make_fake_llm([DRAFT_PAYLOAD])
+    with pytest.raises(ApiError) as exc_info:
+        draft_resolution_from_blocked(
+            db_session, matter_id=scenario["matter"].id,
+            actor=scenario["init"], llm=llm)
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.error_code == "INVALID_STATE_TRANSITION"
+    assert len(llm.calls) == 0
+
+
+def test_success_creates_draft_and_flips_to_awaiting_decision(
+    db_session, scenario, make_fake_llm
+):
+    llm = make_fake_llm([DRAFT_PAYLOAD])
+    res = draft_resolution_from_blocked(
+        db_session, matter_id=scenario["matter"].id,
+        actor=scenario["init"], llm=llm)
+    db_session.commit()
+    db_session.expire_all()
+    matter = db_session.get(Matter, scenario["matter"].id)
+    assert matter.status == "awaiting_decision"
+    assert matter.blocked_reason is None
+    assert res.version == 1
+    assert res.status == "pending_review"
+    assert res.source_round_id == scenario["round"].id
+    assert res.recommendation == "采用方案 A"
+    assert len(llm.calls) == 1
+    assert llm.calls[0]["schema_name"] == "resolution_draft"
+    assert "共识" in llm.calls[0]["user_prompt"]  # 全部轮次 ok 摘要入 prompt
+    drafted = _events(db_session, "resolution_drafted")
+    assert len(drafted) == 1
+    assert drafted[0].detail["trigger"] == "manual_from_blocked"
+    awaiting = _events(db_session, "matter_awaiting_decision")
+    assert len(awaiting) == 1
+    assert awaiting[0].detail["mode"] == "manual_from_blocked"
+
+
+def test_llm_failure_keeps_blocked_with_visible_error(
+    db_session, scenario, make_fake_llm
+):
+    llm = make_fake_llm([LLMError("LLM_TIMEOUT", "超时", retry_count=3)])
+    with pytest.raises(ApiError) as exc_info:
+        draft_resolution_from_blocked(
+            db_session, matter_id=scenario["matter"].id,
+            actor=scenario["init"], llm=llm)
+    err = exc_info.value
+    assert err.status_code == 503
+    assert err.error_code == "SERVICE_UNAVAILABLE"
+    assert "LLM_TIMEOUT" in err.message
+    assert "已重试 3 次" in err.message
+    db_session.expire_all()
+    matter = db_session.get(Matter, scenario["matter"].id)
+    assert matter.status == "blocked"
+    assert matter.blocked_reason == BLOCKED_REASON_ROUND_LIMIT  # 原因不变
+    assert db_session.scalar(select(func.count()).select_from(Resolution)) == 0
+    failed = _events(db_session, "llm_failed")
+    assert len(failed) == 1
+    assert failed[0].detail["trigger"] == "manual_from_blocked"
+    assert failed[0].detail["error_code"] == "LLM_TIMEOUT"
+
+
+def test_repeat_trigger_is_idempotent_409(db_session, scenario, make_fake_llm):
+    llm = make_fake_llm([DRAFT_PAYLOAD])
+    draft_resolution_from_blocked(
+        db_session, matter_id=scenario["matter"].id,
+        actor=scenario["init"], llm=llm)
+    db_session.commit()
+    with pytest.raises(ApiError) as exc_info:
+        draft_resolution_from_blocked(
+            db_session, matter_id=scenario["matter"].id,
+            actor=scenario["init"], llm=llm)
+    assert exc_info.value.status_code == 409
+    assert db_session.scalar(select(func.count()).select_from(Resolution)) == 1
+    assert len(llm.calls) == 1  # 未重复调 LLM
+
+
+def test_detail_button_and_post_flow(client, db_session, scenario):
+    client.post("/login", data={"username": "init", "password": "pw-123456"},
+                follow_redirects=False)
+    resp = client.get(f"/matters/{scenario['matter'].id}")
+    assert resp.status_code == 200
+    assert "直接生成决议草案" in resp.text
+    assert "继续（+1 轮）" in resp.text  # 两按钮并列
+    resp = client.post(f"/matters/{scenario['matter'].id}/draft-resolution",
+                       follow_redirects=False)
+    assert resp.status_code == 303
+    db_session.expire_all()
+    matter = db_session.get(Matter, scenario["matter"].id)
+    assert matter.status == "awaiting_decision"
+    res = db_session.scalar(select(Resolution))
+    assert res is not None
+    assert res.status == "pending_review"
+    assert res.version == 1
+```
+
+- [ ] **步骤 2：运行测试验证失败**
+
+运行：`uv run pytest tests/api/test_resolution_draft_manual.py -v`
+预期：FAIL（`draft_resolution_from_blocked` 不存在；新路由 404/405）。
+
+- [ ] **步骤 3：实现**
+
+`hub/domain/state.py` 的 `MATTER_TRANSITIONS` 中 blocked 行改为：
+
+```python
+    "blocked": frozenset({"in_progress", "collecting", "awaiting_decision", "cancelled"}),
+```
+
+（PRD 7.5：轮次上限 blocked 时发起人可直接要求生成决议草案，草案生成后进入 `awaiting_decision`。）
+
+`hub/api/resolutions.py` import 区追加：`Round` 加入 models import 清单；`from hub.api.pipeline import BLOCKED_REASON_DRAFT_FAILED, BLOCKED_REASON_ROUND_LIMIT, _all_summaries_for_draft, _next_resolution_version`（pipeline 不 import resolutions，无循环依赖）；`from hub.llm.client import LLMError`；`from hub.llm.prompts import build_resolution_draft_prompt`；`from hub.domain.state import assert_matter_transition`。文件末尾追加：
+
+```python
+def draft_resolution_from_blocked(session: Session, *, matter_id: str,
+                                  actor: User, llm) -> Resolution:
+    """PRD 7.5 "直接要求生成决议草案"：仅发起人、仅轮次上限 blocked 可触发。
+    成功：pending_review 草案落库 + matter blocked→awaiting_decision。
+    失败（LLM 重试耗尽）：保持 blocked（blocked_reason 不变，重试入口不受
+    影响），llm_failed 审计 + 503 SERVICE_UNAVAILABLE（错误码/重试次数随
+    message 渲染回详情页）。幂等：成功后 matter 已非 blocked，重复触发被
+    守卫 409；并发双击由 source_round_id 唯一约束兜底。"""
+    matter = session.get(Matter, matter_id)
+    if matter is None:
+        raise ApiError(404, "RESOURCE_NOT_FOUND", "事项不存在")
+    session.refresh(matter)  # 避免 identity map 陈旧状态
+    if matter.initiator_id != actor.id:
+        audit.record_audit(session, audit.FORBIDDEN_DENIED,
+                           actor_user_id=actor.id, matter_id=matter_id,
+                           detail={"action": "draft_resolution_from_blocked"})
+        raise ApiError(403, "FORBIDDEN_SCOPE", "仅发起人可要求生成决议草案")
+    if matter.status != "blocked" or not (matter.blocked_reason or "").startswith(
+        BLOCKED_REASON_ROUND_LIMIT
+    ):
+        audit.record_audit(session, audit.INVALID_STATE_TRANSITION,
+                           actor_user_id=actor.id, matter_id=matter_id,
+                           detail={"action": "draft_resolution_from_blocked",
+                                   "current": matter.status,
+                                   "blocked_reason": matter.blocked_reason})
+        raise ApiError(409, "INVALID_STATE_TRANSITION",
+                       "仅达到轮次上限的阻塞可直接生成决议草案")
+    latest = session.scalar(
+        select(Round).where(Round.matter_id == matter_id)
+        .order_by(Round.round_number.desc()).limit(1)
+    )
+    system_prompt, user_prompt = build_resolution_draft_prompt(
+        title=matter.title, goal=matter.goal, background=matter.background,
+        summaries=_all_summaries_for_draft(session, matter_id),
+    )
+    try:
+        data = llm.complete_json(system_prompt, user_prompt,
+                                 schema_name="resolution_draft")
+    except LLMError as e:
+        audit.record_audit(session, audit.LLM_FAILED, matter_id=matter_id,
+                           detail={"stage": "resolution_draft",
+                                   "trigger": "manual_from_blocked",
+                                   "error_code": e.error_code,
+                                   "retry_count": e.retry_count})
+        raise ApiError(
+            503, "SERVICE_UNAVAILABLE",
+            f"{BLOCKED_REASON_DRAFT_FAILED}：{e.error_code}"
+            f"（已重试 {e.retry_count} 次）",
+        ) from e
+    resolution = Resolution(
+        matter_id=matter.id, source_round_id=latest.id,
+        version=_next_resolution_version(session, matter_id),
+        status="pending_review",
+        recommendation=data["recommendation"], rationale=data["rationale"],
+        risks=data["risks"], divergences=data["divergences"],
+        cited_rounds=data["cited_rounds"],
+    )
+    session.add(resolution)
+    session.flush()
+    assert_matter_transition("blocked", "awaiting_decision")  # PRD 7.5 矩阵扩展
+    result = session.execute(
+        update(Matter)
+        .where(Matter.id == matter.id, Matter.status == "blocked")
+        .values(status="awaiting_decision", blocked_reason=None,
+                updated_at=utcnow())
+    )
+    if result.rowcount != 1:
+        raise ApiError(409, "INVALID_STATE_TRANSITION",
+                       "事项状态已变化，请刷新后重试")
+    audit.record_audit(session, audit.RESOLUTION_DRAFTED, matter_id=matter.id,
+                       detail={"resolution_id": resolution.id,
+                               "version": resolution.version,
+                               "source_round_id": latest.id,
+                               "trigger": "manual_from_blocked",
+                               "cited_rounds": data["cited_rounds"]})
+    audit.record_audit(session, audit.MATTER_AWAITING_DECISION,
+                       matter_id=matter.id,
+                       detail={"resolution_id": resolution.id,
+                               "version": resolution.version,
+                               "mode": "manual_from_blocked"})
+    session.flush()
+    return resolution
+```
+
+`hub/web/routes_matters.py`：
+
+1. import 区追加 `import asyncio`（若无）与 `from hub.api.resolutions import draft_resolution_from_blocked`。
+2. `_build_detail` return dict 追加：
+
+```python
+        "can_draft_from_blocked": (
+            is_initiator
+            and matter.status == "blocked"
+            and (matter.blocked_reason or "").startswith(BLOCKED_REASON_ROUND_LIMIT)
+        ),
+```
+
+3. `matter_continue` 路由之后追加：
+
+```python
+@router.post("/matters/{matter_id}/draft-resolution", response_class=HTMLResponse)
+async def matter_draft_resolution(
+    request: Request,
+    matter_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+    settings: Settings = Depends(get_settings),
+):
+    """PRD 7.5：轮次上限 blocked 时发起人直接要求生成决议草案。LLM 调用经
+    asyncio.to_thread 执行（约束 10）；失败保持 blocked，错误渲染回详情页。"""
+    matter = matter_svc.get_matter_for_user(db, matter_id=matter_id, user=user)
+    if matter is None:
+        raise HTTPException(status_code=404, detail="事项不存在或不可见")
+    try:
+        resolution = await asyncio.to_thread(
+            draft_resolution_from_blocked,
+            db, matter_id=matter_id, actor=user, llm=request.app.state.llm,
+        )
+    except ApiError as e:
+        db.commit()  # persist forbidden/invalid-state/llm_failed audit
+        context = _build_detail(db, matter, user, settings)
+        context["current_user_is_admin"] = user.is_admin
+        context["error"] = e.message
+        return templates.TemplateResponse(request, "matter_detail.html", context,
+                                          status_code=e.status_code)
+    db.commit()
+    # 驱动图推进（任务 10 加入闸门后停在闸门等拍板；此前为幂等空转）
+    request.app.state.drive_queue.put_nowait(resolution.source_round_id)
+    return RedirectResponse(f"/matters/{matter_id}", status_code=303)
+```
+
+4. `matter_detail.html` 的 `{% if can_continue %}...{% endif %}` 块之后追加（与"继续（+1 轮）"并列）：
+
+```html
+{% if can_draft_from_blocked %}
+<form method="post" action="/matters/{{ matter.id }}/draft-resolution" style="display:inline">
+  <button type="submit">直接生成决议草案</button>
+</form>
+{% endif %}
+```
+
+- [ ] **步骤 4：运行测试验证通过**
+
+运行：`uv run pytest tests/api/test_resolution_draft_manual.py -v`
+预期：6 passed
+
+再跑全量：`uv run pytest tests -q`
+预期：323 passed（317 + 6，按实际收集核对；0 failed）。
+
+- [ ] **步骤 5：Commit**
+
+```bash
+git add hub/domain/state.py hub/api/resolutions.py hub/web/routes_matters.py hub/web/templates/matter_detail.html tests/api/test_resolution_draft_manual.py
+git commit -m "feat: draft resolution directly from round-limit blocked (PRD 7.5)"
+```
+
+---
+
+### 任务 10：graph — 决议闸门 interrupt/resume 与下游落库（FR-21 / 7.4 / 7.5）
 
 **文件：**
 - 修改：`hub/api/pipeline.py`（抽取 `_open_followup_round`；新增 `apply_resolution_decision`）
@@ -2497,7 +2916,7 @@ git commit -m "feat: add provisional accept and continue-probing services (PRD 7
 - `apply_resolution_decision(session, matter, llm)`（下游传播，全幂等）：
   - 最新决议非终态 → 返回。
   - `approved`/`modified` → 条件 UPDATE matter `awaiting_decision→completed`；rowcount==1 才写 `matter_completed` 审计。
-  - `rejected` → 新轮已存在 → 返回；matter 若 `awaiting_decision` → 条件翻 `in_progress`（rowcount!=1 → 返回；矩阵 `awaiting_decision→in_progress` 合法）；`can_auto_advance` 为假 → `granted_extra_rounds += CREDIT_GRANT_PER_CONTINUE` + `matter_continued` 审计（`mode="reject_grant"`，7.5 隐含授信）；调 `_open_followup_round`。
+  - `rejected` → 新轮已存在 → 返回；matter 若 `awaiting_decision` → 条件翻 `in_progress`（rowcount!=1 → 返回；矩阵 `awaiting_decision→in_progress` 合法）；`can_auto_advance` 为假 → `granted_extra_rounds += CREDIT_GRANT_PER_CONTINUE` + `matter_continued` 审计（`mode="reject_grant"`，7.5 隐含授信；detail 另带截断到 500 字符的驳回理由 `rationale`，设计决策 12）；调 `_open_followup_round`。
 - 图新增节点：
   - `node_draft_resolution` 的 `after_draft` 路由改为读库计算：最新决议不存在（草案失败已 blocked）→ `"end"`；终态 → `"after_decision"`；`pending_review` 且 source 轮摘要 `converged` → `"decision_gate"`；`pending_review` 且 `provisionally_ready` → `"provisional_gate"`。
   - `provisional_gate`：`interrupt({"stage": "provisional", "matter_id", "resolution_id", "version"})`；resume `continue_probing` → `gate_route="continue_probing"`；否则（`accept`）→ 幂等条件 UPDATE matter `in_progress→awaiting_decision` → `gate_route="decide"`。
@@ -2519,17 +2938,20 @@ import pytest
 from sqlalchemy import func, select, update
 
 from hub.api import matters as matter_svc
-from hub.api.pipeline import BLOCKED_REASON_FOLLOWUP_FAILED
+from hub.api.pipeline import (
+    BLOCKED_REASON_FOLLOWUP_FAILED,
+    BLOCKED_REASON_ROUND_LIMIT,
+)
 from hub.api.resolutions import decide_resolution
 from hub.db.models import AuditEvent, Matter, Resolution, Round, RoundSummary, Task
 from hub.graph.matter_graph import (
     build_matter_graph,
     drive_matter_tick,
+    open_checkpointer,
     resume_matter_gate,
     sqlite_path_from_url,
 )
 from hub.llm.client import LLMError
-from langgraph.checkpoint.sqlite import SqliteSaver
 from tests.conftest import make_user
 
 SUMMARY_CONVERGED = {
@@ -2546,13 +2968,15 @@ DRAFT_PAYLOAD = {
 
 def _pending(session_factory, settings, matter_id):
     path = sqlite_path_from_url(settings.database_url)
-    with SqliteSaver.from_conn_string(path) as saver:
-        saver.setup()
+    saver = open_checkpointer(path)
+    try:
         graph = build_matter_graph(
             session_factory=session_factory, settings=settings,
             llm=None, checkpointer=saver,
         )
         return graph.get_state({"configurable": {"thread_id": matter_id}}).next
+    finally:
+        saver.conn.close()
 
 
 @pytest.fixture()
@@ -2744,6 +3168,7 @@ def test_reject_at_round_limit_grants_one_credit(
         and r.detail.get("mode") == "reject_grant"
     ]
     assert len(grant_events) == 1
+    assert grant_events[0].detail["rationale"] == "达到上限也要驳回"  # 驳回理由入审计
 
 
 def test_reject_followup_llm_failure_blocks(
@@ -2878,6 +3303,41 @@ def test_continue_probing_resume_is_idempotent(
     db_session.expire_all()
     assert db_session.scalar(select(func.count()).select_from(Round)) == 2
     assert len(llm.calls) == 2  # 追问 LLM 只调一次（第二次无新轮可建）
+
+
+def test_manual_draft_from_blocked_flows_through_gates(
+    db_session, session_factory, settings, scenario, make_fake_llm
+):
+    """任务 9 的手工草案入口与闸门的链路：轮次上限 blocked 直接生成草案
+    后，tick 把图停在 provisional_gate（源轮摘要为 continue），decide 的
+    resume 链式穿过两个闸门完成传播。"""
+    _write_summary(db_session, scenario, "continue")
+    db_session.execute(
+        update(Matter).where(Matter.id == scenario["matter"].id)
+        .values(status="blocked", blocked_reason=BLOCKED_REASON_ROUND_LIMIT)
+    )
+    db_session.commit()
+    from hub.api.resolutions import draft_resolution_from_blocked
+
+    draft_resolution_from_blocked(
+        db_session, matter_id=scenario["matter"].id,
+        actor=scenario["init"], llm=make_fake_llm([DRAFT_PAYLOAD]))
+    db_session.commit()
+    db_session.expire_all()
+    assert db_session.get(Matter, scenario["matter"].id).status == "awaiting_decision"
+    drive_matter_tick(session_factory, settings,
+                      matter_id=scenario["matter"].id, llm=make_fake_llm())
+    assert _pending(session_factory, settings,
+                    scenario["matter"].id) == ("provisional_gate",)
+    decide_resolution(db_session, matter_id=scenario["matter"].id,
+                      actor=scenario["init"], decision="approved",
+                      expected_version=1)
+    db_session.commit()
+    resume_matter_gate(session_factory, settings,
+                       matter_id=scenario["matter"].id, action="decide",
+                       llm=make_fake_llm())
+    db_session.expire_all()
+    assert db_session.get(Matter, scenario["matter"].id).status == "completed"
 ```
 
 - [ ] **步骤 2：运行测试验证失败**
@@ -3035,7 +3495,11 @@ def apply_resolution_decision(session: Session, matter: Matter, llm) -> None:
                            matter_id=matter.id,
                            detail={"mode": "reject_grant",
                                    "granted_extra_rounds": granted_after,
-                                   "resolution_id": resolution.id})
+                                   "resolution_id": resolution.id,
+                                   "rationale": (
+                                       (resolution.decision_rationale or "")
+                                       [:audit.AUDIT_RATIONALE_MAX] or None
+                                   )})
     summary = session.scalar(
         select(RoundSummary).where(RoundSummary.round_id == source_round.id,
                                    RoundSummary.generation_status == "ok")
@@ -3249,8 +3713,8 @@ def resume_matter_gate(session_factory, settings: Settings, *, matter_id: str,
     Idempotent: mismatching or repeated resumes degrade to a no-op or a
     fallback tick that propagates the stored decision."""
     path = sqlite_path_from_url(settings.database_url)
-    with SqliteSaver.from_conn_string(path) as saver:
-        saver.setup()
+    saver = open_checkpointer(path)
+    try:
         graph = build_matter_graph(
             session_factory=session_factory, settings=settings, llm=llm,
             checkpointer=saver,
@@ -3285,17 +3749,19 @@ def resume_matter_gate(session_factory, settings: Settings, *, matter_id: str,
             return
         logger.warning("resume_matter_gate: exceeded max steps matter_id=%s",
                        matter_id)
+    finally:
+        saver.conn.close()
 ```
 
 - [ ] **步骤 4：运行测试验证通过**
 
 运行：`uv run pytest tests/graph -v`
-预期：gate 13 passed + tick 9 passed + checkpointer 7 passed
+预期：gate 14 passed + tick 9 passed + checkpointer 7 passed
 
 再跑全量：`uv run pytest tests -q`
-预期：290 passed（277 + 13；任务 6 的一个用例按下方说明改名并加强断言，计数不变；按实际收集核对，关键是 0 failed。注意 `test_tick_converged_drafts_and_stops_at_end` 等任务 6 用例若断言"图停在 END"需按闸门语义演进——见下方说明）。
+预期：337 passed（323 + 14；任务 6 的一个用例按下方说明改名并加强断言，计数不变；按实际收集核对，关键是 0 failed。注意 `test_tick_converged_drafts_and_stops_at_end` 等任务 6 用例若断言"图停在 END"需按闸门语义演进——见下方说明）。
 
-**任务 6 用例联动说明**：加入闸门后，`test_tick_converged_drafts_and_stops_at_end` 的 `next_nodes == ()` 断言应变红（现在挂 `("decision_gate",)`）。这是任务 9 的预期演进：把该用例的末尾两断言改为 `next_nodes == ("decision_gate",)`、`len(interrupts) == 1`，并把用例改名为 `test_tick_converged_drafts_and_pauses_at_decision_gate`。演进理由：任务 6 图尚无闸门是过渡形态，任务 9 补齐。除此外不允许改其他任务 6 断言。
+**任务 6 用例联动说明**：加入闸门后，`test_tick_converged_drafts_and_stops_at_end` 的 `next_nodes == ()` 断言应变红（现在挂 `("decision_gate",)`）。这是任务 10 的预期演进：把该用例的末尾两断言改为 `next_nodes == ("decision_gate",)`、`len(interrupts) == 1`，并把用例改名为 `test_tick_converged_drafts_and_pauses_at_decision_gate`。演进理由：任务 6 图尚无闸门是过渡形态，任务 10 补齐。除此外不允许改其他任务 6 断言。
 
 - [ ] **步骤 5：Commit**
 
@@ -3306,7 +3772,7 @@ git commit -m "feat: add resolution gate interrupts and resume downstream (FR-21
 
 ---
 
-### 任务 10：接线 — resume worker、reconciler 扩展与草案失败重试（FR-24 / FR-18）
+### 任务 11：接线 — resume worker、reconciler 扩展与草案失败重试（FR-24 / FR-18）
 
 **文件：**
 - 修改：`hub/background.py`（`resume_worker`）
@@ -3722,7 +4188,7 @@ def _find_interrupted_resolutions(session_factory) -> list[str]:
 预期：reconcile 6 passed + background_worker 5 passed + 既有 reconcile/matters 用例全部通过
 
 再跑全量：`uv run pytest tests -q`
-预期：297 passed（290 + 7 净增，按实际收集核对；0 failed）。
+预期：344 passed（337 + 7 净增，按实际收集核对；0 failed）。
 
 - [ ] **步骤 5：Commit**
 
@@ -3733,7 +4199,7 @@ git commit -m "feat: wire resume worker, resolution reconciler and draft retry (
 
 ---
 
-### 任务 11：Web — 拍板页与详情页决议区（FR-20 / FR-21 / FR-25 / FR-26；演进登记 2）
+### 任务 12：Web — 拍板页与详情页决议区（FR-20 / FR-21 / FR-25 / FR-26；演进登记 2）
 
 **文件：**
 - 创建：`hub/web/routes_decision.py`
@@ -3986,7 +4452,7 @@ def test_post_accept_enters_awaiting_decision(client, db_session, scenario):
     assert "决议" in resp.text
 ```
 
-（演进登记 2：该用例场景是 awaiting_decision 无决议行的直接改库构造——无草案时详情页显示通用"等待发起人拍板"提示而非占位文案；真实草案卡片由上面的 `test_detail_page_shows_decision_card` 覆盖。）
+（演进登记 2：该用例场景是 awaiting_decision 无决议行的直接改库构造——无草案时详情页显示通用"等待发起人对决议拍板"提示（含"决议"二字，与断言口径一致）而非占位文案；真实草案卡片由上面的 `test_detail_page_shows_decision_card` 覆盖。）
 
 - [ ] **步骤 2：运行测试验证失败**
 
@@ -4224,7 +4690,7 @@ def _resolution_convergence(db: Session, matter: Matter) -> str | None:
 <p>决议草案已生成，等待发起人拍板。<a href="/matters/{{ matter.id }}/decision">查看草案（只读）</a></p>
 {% endif %}
 {% elif matter.status == "awaiting_decision" %}
-<p><strong>等待发起人拍板。</strong></p>
+<p><strong>等待发起人对决议拍板。</strong></p>
 {% endif %}
 {% if matter.status == "completed" and resolution %}
 <h2>最终决议（{{ resolution.status }}）</h2>
@@ -4242,7 +4708,7 @@ def _resolution_convergence(db: Session, matter: Matter) -> str | None:
 预期：decision_page 11 passed + detail_summaries 全部通过
 
 再跑全量：`uv run pytest tests -q`
-预期：308 passed（297 + 11，按实际收集核对；0 failed）。
+预期：355 passed（344 + 11，按实际收集核对；0 failed）。
 
 - [ ] **步骤 5：Commit**
 
@@ -4253,13 +4719,13 @@ git commit -m "feat: add decision page with version conflict handling (FR-21/FR-
 
 ---
 
-### 任务 12：MCP — get_matter_status.resolution 接真实数据（PRD 9.2"决议阶段与版本"）
+### 任务 13：MCP — get_matter_status.resolution 接真实数据（PRD 9.2"决议阶段与版本"）
 
 **文件：**
 - 修改：`hub/mcp_server/methods.py`（`_resolution_view` + `mcp_get_matter_status` 替换 `"resolution": None` 占位）
 - 测试：`tests/api/test_mcp_resolution.py`（新建）
 
-语义说明：`resolution` 字段对发起人与参与人同口径返回**元数据**（阶段与版本，PRD 9.2）：`resolution_id / status / version / cited_rounds / created_at / decided_at`；无决议 → `None`（M1 既有断言 `resolution is None` 在无决议场景保持绿色，无需演进）。草案与最终文本正文不经 MCP 返回（Web 拍板页承载）。
+语义说明：`resolution` 字段对发起人与参与人同口径返回**元数据**（阶段与版本，PRD 9.2）：`resolution_id / status / version / cited_rounds / created_at / decided_at`；无决议 → `None`（M1 既有断言 `resolution is None` 在无决议场景保持绿色，无需演进）。草案与最终文本正文不经 MCP 返回（Web 拍板页承载）——PRD 9.2 字面口径，从严控制数据面（已定口径，设计决策 13）。
 
 - [ ] **步骤 1：编写失败的测试**
 
@@ -4397,7 +4863,7 @@ git commit -m "feat: expose resolution stage and version via MCP (PRD 9.2)"
 
 ---
 
-### 任务 13：FR-23b — 审计查询（/admin/audit + 事项审计 + 参与人 403）
+### 任务 14：FR-23b — 审计查询（/admin/audit + 事项审计 + 参与人 403）
 
 **文件：**
 - 创建：`hub/api/audit_query.py`
@@ -4615,7 +5081,7 @@ def query_audit_events(
     return rows[:limit], len(rows) > limit
 ```
 
-`hub/web/routes_admin.py` 追加（import 区追加 `from hub.api.audit_query import query_audit_events`、`from hub.db.models import AuditEvent`、`from datetime import datetime, timedelta`）：
+`hub/web/routes_admin.py` 追加（import 区追加 `from hub.api.audit_query import query_audit_events`、`from datetime import datetime, timedelta`；**不** import `AuditEvent`——代码未使用，否则 ruff F401）：
 
 ```python
 def _parse_date(value: str | None, *, end_of_day: bool = False):
@@ -4838,7 +5304,7 @@ import 追加：`from hub.api import audit as audit_svc`、`from hub.api.audit_q
 预期：10 passed
 
 再跑全量：`uv run pytest tests -q`
-预期：321 passed（308 + 3 任务 12 + 10，按实际收集核对；0 failed）。
+预期：368 passed（355 + 3 任务 13 + 10，按实际收集核对；0 failed）。
 
 - [ ] **步骤 5：Commit**
 
@@ -4849,7 +5315,7 @@ git commit -m "feat: add audit query for admin and initiator (FR-23b)"
 
 ---
 
-### 任务 14：FR-26 — 决议异步状态展示补全（处理中 / 失败重试 / 只读完成）
+### 任务 15：FR-26 — 决议异步状态展示补全（处理中 / 失败重试 / 只读完成）
 
 **文件：**
 - 修改：`hub/web/routes_matters.py`（`can_continue` 扩展草案失败原因 + `continue_label`）
@@ -4858,9 +5324,9 @@ git commit -m "feat: add audit query for admin and initiator (FR-23b)"
 语义说明（FR-26：每个异步操作有处理中、成功、失败、重试和下一步动作）：
 
 - **处理中**：matter `in_progress` 且最新轮 `closed` 且有 ready 摘要且无决议行 → "平台正在生成决议草案（处理中），请稍后刷新"。
-- **失败 + 重试 + 下一步**：`blocked` 且 `blocked_reason` 含 `BLOCKED_REASON_DRAFT_FAILED` → 横幅含错误码/重试次数（reason 已内嵌）+ "重试生成草案"按钮（POST 既有 `/matters/{id}/continue`，任务 10 已扩展服务）；轮次上限原因维持"继续（+1 轮）"。`continue_label` 上下文按原因给按钮文案。
-- **成功 + 只读**：`completed` → 任务 11 已渲染最终决议块；本任务确保 `completed`/`cancelled` 下不出现开始/继续按钮（既有条件已按状态判断，补一条断言即可）。
-- 拍板版本冲突提示已在任务 11 落地，本任务不重复。
+- **失败 + 重试 + 下一步**：`blocked` 且 `blocked_reason` 含 `BLOCKED_REASON_DRAFT_FAILED` → 横幅含错误码/重试次数（reason 已内嵌）+ "重试生成草案"按钮（POST 既有 `/matters/{id}/continue`，任务 11 已扩展服务）；轮次上限原因维持"继续（+1 轮）"。`continue_label` 上下文按原因给按钮文案。
+- **成功 + 只读**：`completed` → 任务 12 已渲染最终决议块；本任务确保 `completed`/`cancelled` 下不出现开始/继续按钮（既有条件已按状态判断，补一条断言即可）。
+- 拍板版本冲突提示已在任务 12 落地，本任务不重复。
 
 - [ ] **步骤 1：编写失败的测试**
 
@@ -5067,10 +5533,10 @@ def _latest_round_closed_ready(db: Session, matter: Matter) -> bool:
 - [ ] **步骤 4：运行测试验证通过**
 
 运行：`uv run pytest tests/web -v`
-预期：resolution_states_web 5 passed + 既有 web 用例全部通过（任务 15 的既有 continue 用例断言"继续（+1 轮）"在轮次上限原因下不变）。
+预期：resolution_states_web 5 passed + 既有 web 用例全部通过（M2 既有 continue 用例断言"继续（+1 轮）"在轮次上限原因下不变）。
 
 再跑全量：`uv run pytest tests -q`
-预期：326 passed（321 + 5，按实际收集核对；0 failed）。
+预期：373 passed（368 + 5，按实际收集核对；0 failed）。
 
 - [ ] **步骤 5：Commit**
 
@@ -5081,12 +5547,14 @@ git commit -m "feat: show resolution processing, failure retry and read-only sta
 
 ---
 
-### 任务 15：验收场景集成测试（场景 1/6/7/9/16/17/19/24）
+### 任务 16：验收场景集成测试（场景 1/6/7/9/16/17/19/24）
 
 **文件：**
 - 测试：`tests/integration/test_resolution_e2e.py`（新建）
 
 语义说明：把 PRD §13 的 M3 相关验收场景串成进程级集成测试。驱动方式混合：事项/提交走服务与 MCP 方法函数（确定性），图驱动直接调 `run_round_pipeline` / `resume_matter_gate`（同步、确定性），Web 层走 `client` fixture。全部 FakeLLM，零真实 API。已有单测覆盖的细则（版本锁、权限、分页）不重复，这里验证**跨层闭环叙事**。
+
+驱动链注意（实证）：`mcp_submit_output`（methods.py 服务层）**不翻转轮次状态**——`open→awaiting_summary` 只在 MCP 工具包装层（tools.py）的 `pipeline.maybe_drive_round` 里发生。本文件直接调服务层，因此每次 submit 后必须显式补 `maybe_drive_round(db_session, task_id=task.id)`，否则轮次永远停在 `open`，后续管线断言必红。另：`client` fixture 建 app 时 lifespan reconciler 会拾起场景 seed 的空 `generating` 轮次，本文件顶部用 `app_llm` fixture 注入脚本化 FakeLLM（M2 既有模式），避免 `app_llm=None` 让 create_app 构造真实 DeepSeekClient 导致 LLM_NOT_CONFIGURED 污染场景。
 
 - [ ] **步骤 1：编写失败的测试**
 
@@ -5101,7 +5569,7 @@ from sqlalchemy import func, select, update
 
 from hub.api import matters as matter_svc
 from hub.api.errors import ApiError
-from hub.api.pipeline import run_round_pipeline
+from hub.api.pipeline import maybe_drive_round, run_round_pipeline
 from hub.api.resolutions import decide_resolution
 from hub.db.models import AuditEvent, Matter, Output, Resolution, Round, Task
 from hub.domain.digest import compute_content_digest
@@ -5144,6 +5612,16 @@ def scenario(db_session):
     return {"matter": matter, "init": init, "alice": alice, "bob": bob}
 
 
+@pytest.fixture()
+def app_llm(make_fake_llm):
+    """client fixture 建 app 时 lifespan reconciler 会拾起场景 seed 的空
+    generating 轮次；app_llm 默认 None 会让 create_app 构造真实
+    DeepSeekClient(api_key=None) → LLM_NOT_CONFIGURED 污染场景。注入脚本化
+    FakeLLM 绕开（M2 既有模式，参照 tests/web/test_matter_detail_summaries.py
+    顶部）。"""
+    return make_fake_llm([{"questions": ["兜底追问？"]}])
+
+
 def _run_first_round(db_session, session_factory, settings, scenario, llm):
     """Drive first-round generation and submit both agents' outputs."""
     run_round_pipeline(session_factory, settings,
@@ -5172,6 +5650,9 @@ def _run_first_round(db_session, session_factory, settings, scenario, llm):
             },
         )
         assert result["status"] == "submitted"
+        # 服务层 mcp_submit_output 不翻转轮次；open→awaiting_summary 由工具层
+        # 的 maybe_drive_round 负责（tools.py），直调服务层必须自己补
+        maybe_drive_round(db_session, task_id=task.id)
     db_session.commit()
     return rnd
 
@@ -5442,10 +5923,12 @@ def test_scenario24_audit_queryable(
         assert "content_digest" not in blob
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [ ] **步骤 2：运行测试验证失败（负向验证）**
+
+本任务在任务 1–15 之后执行，组件均已落地，预期直接全绿；负向验证采用**有效形式**：临时注释掉 `_run_first_round` 中的 `maybe_drive_round(db_session, task_id=task.id)` 调用跑一遍——7 个用例必须全部变红（轮次停在 `open`，后续摘要/草案/拍板断言连锁失败），确认后恢复。这既验证测试链路的真实性，也锁定"服务层 submit 不翻转轮次"这一驱动链认知。恢复后再跑：
 
 运行：`uv run pytest tests/integration/test_resolution_e2e.py -v`
-预期：全部通过或个别因集成间隙失败——本任务在任务 1–14 之后执行，组件均已落地；若有失败，是真实的集成间隙，逐个修复（不得删断言消红）。步骤 2 的"失败验证"在本任务体现为：先注释掉任务 11 的 routes_decision include 跑一次确认 e2e Web 断言失败，再恢复（可选）；或者直接跑并以 0 failed 为准。
+预期：7 passed。若仍有失败，是真实的集成间隙，逐个修复（不得删断言消红）。
 
 - [ ] **步骤 3：实现**
 
@@ -5465,14 +5948,14 @@ git commit -m "test: acceptance integration for resolution loop (scenarios 1/6/7
 
 ---
 
-### 任务 16：全量回归 + ruff
+### 任务 17：全量回归 + ruff
 
 **文件：** 无新增（修复性改动视结果而定）
 
 - [ ] **步骤 1：全量测试**
 
 运行：`uv run pytest tests -q`
-预期：333 passed 左右（257 基线 +7+10+4+10+6−2+9+9+6+13+7+11+3+10+5+7，以实际收集为准），**0 failed**。若有 M1/M2 用例被 M3 行为变化打破且不在演进登记内，逐个修复并记录原因——不得通过删除断言来消红。
+预期：380 passed 左右（257 基线 +7+11+4+10+6−2+9+9+6+6+14+7+11+3+10+5+7，以实际收集为准），**0 failed**。若有 M1/M2 用例被 M3 行为变化打破且不在演进登记内，逐个修复并记录原因——不得通过删除断言来消红。
 
 - [ ] **步骤 2：ruff**
 
@@ -5488,7 +5971,7 @@ git commit -m "fix: resolve M3 integration fallout found by full regression"
 
 ---
 
-### 任务 17：手工冒烟——真实 DeepSeek 决议闭环（可选但强烈建议）
+### 任务 18：手工冒烟——真实 DeepSeek 决议闭环（可选但强烈建议）
 
 **文件：** 无新增（复用 M2 的 `scripts/smoke_seed.py` 与 `scripts/smoke_two_agents.py`）
 
@@ -5525,30 +6008,31 @@ SMOKE_TOKEN_ALICE=... SMOKE_TOKEN_BOB=... uv run python scripts/smoke_two_agents
 
 | PRD 条目 | 覆盖任务 |
 |---|---|
-| FR-19 决议草案（四块 + 引用轮次 + pending_review） | 任务 3（表）+ 4（schema/prompt）+ 5（生成相位）+ 11（展示） |
-| FR-20 仅发起人拍板；未拍板不能 completed | 任务 7（服务守卫）+ 11（页面权限）+ 15（场景 1/7） |
-| FR-21 通过/修改通过/驳回（理由/最终文本规则、驳回开新轮） | 任务 2（载荷校验）+ 7（写入）+ 9（驳回开新轮）+ 15（场景 7） |
-| FR-21b 版本单调递增、409 RESOLUTION_VERSION_CONFLICT、并发唯一成功 | 任务 2（常量）+ 3（唯一约束）+ 7（双条件 UPDATE + 并发用例）+ 9（驳回后新草案递增由 5 覆盖）+ 11（页面提示）+ 15（场景 9/17） |
-| FR-22 拍板审计、完成后只读 | 任务 7（resolution_decided）+ 9（matter_completed）+ 14（只读隐藏表单）+ 15（场景 1 只读断言） |
+| FR-19 决议草案（四块 + 引用轮次 + pending_review） | 任务 3（表）+ 4（schema/prompt）+ 5（生成相位）+ 12（展示） |
+| FR-20 仅发起人拍板；未拍板不能 completed | 任务 7（服务守卫）+ 12（页面权限）+ 16（场景 1/7） |
+| FR-21 通过/修改通过/驳回（理由/最终文本规则、驳回开新轮） | 任务 2（载荷校验）+ 7（写入）+ 10（驳回开新轮）+ 16（场景 7） |
+| FR-21b 版本单调递增、409 RESOLUTION_VERSION_CONFLICT、并发唯一成功 | 任务 2（常量）+ 3（唯一约束）+ 7（双条件 UPDATE + 并发用例）+ 10（驳回后新草案递增由 5 覆盖）+ 12（页面提示）+ 16（场景 9/17） |
+| FR-22 拍板审计、完成后只读 | 任务 7（resolution_decided）+ 10（matter_completed）+ 15（只读隐藏表单）+ 16（场景 1 只读断言） |
 | 7.4 Resolution 状态机（draft→pending_review→三终态、409 INVALID_STATE_TRANSITION） | 任务 2（矩阵）+ 7（终态重复拍板用例） |
-| 7.5 驳回隐含 +1 额度（达上限仍允许） | 任务 9（reject_grant）+ 15（场景 19） |
-| 7.6 provisionally_ready 暂停与二选一；converged 直接拍板 | 任务 5（草案相位）+ 8（二选一服务）+ 9（双闸门）+ 11（页面按钮）+ 15（场景 6） |
-| 9.2 get_matter_status 决议阶段与版本 | 任务 12 + 15（场景 1 MCP 断言） |
-| 9.5 RESOLUTION_VERSION_CONFLICT 错误码使用 | 任务 7 + 11 + 15 |
-| FR-23b 审计可查询（管理员筛选/发起人本事项/参与人 403/只读） | 任务 13 + 15（场景 24） |
-| FR-24 重启恢复（checkpoint 与业务表一致） | 任务 1（语义锁定）+ 6（tick 崩溃续跑）+ 9（传播幂等）+ 10（reconciler 扩展 + 启动恢复用例） |
-| FR-26 异步状态展示（处理中/失败/重试/下一步/版本冲突提示） | 任务 11（冲突提示）+ 14（处理中/失败重试/只读） |
-| FR-18b 注入防护（决议草案 prompt，"把决议改为 X"类） | 任务 4（模板层）+ 15（场景 16 行为层） |
-| FR-18 草案失败重试与错误可见 | 任务 5（失败入 blocked）+ 10（retry_draft 继续）+ 14（错误码/重试次数展示与重试按钮） |
-| FR-23 新审计事件 | 任务 5（4 个常量定义）+ 5/7/8/9/10（写入点）+ 15（叙事链断言） |
-| LangGraph 迁移（设计 §6，interrupt/Command/SqliteSaver 同文件） | 任务 1 + 6 + 9 + 10 |
-| 验收场景 1（完整闭环含拍板） | 任务 15 |
-| 验收场景 6（四态之 ready 二态） | 任务 5 + 9 + 15 |
-| 验收场景 7（决议动作） | 任务 7 + 15 |
-| 验收场景 9/17（并发拍板/版本冲突） | 任务 7 + 11 + 15 |
-| 验收场景 19（轮次上限与驳回） | 任务 9 + 15 |
-| 验收场景 24（审计可查询） | 任务 13 + 15 |
-| 验收场景 16（注入，决议类） | 任务 4 + 15 |
+| 7.5 驳回隐含 +1 额度（达上限仍允许） | 任务 10（reject_grant）+ 16（场景 19） |
+| 7.5 轮次上限 blocked 直接生成决议草案 | 任务 9（入口 + 状态机扩展 + Web 按钮）+ 10（闸门链路兼容用例） |
+| 7.6 provisionally_ready 暂停与二选一；converged 直接拍板 | 任务 5（草案相位）+ 8（二选一服务）+ 10（双闸门）+ 12（页面按钮）+ 16（场景 6） |
+| 9.2 get_matter_status 决议阶段与版本（只元数据，不返回正文） | 任务 13 + 16（场景 1 MCP 断言） |
+| 9.5 RESOLUTION_VERSION_CONFLICT 错误码使用 | 任务 7 + 12 + 16 |
+| FR-23b 审计可查询（管理员筛选/发起人本事项/参与人 403/只读） | 任务 14 + 16（场景 24） |
+| FR-24 重启恢复（checkpoint 与业务表一致） | 任务 1（语义锁定）+ 6（tick 崩溃续跑）+ 10（传播幂等）+ 11（reconciler 扩展 + 启动恢复用例） |
+| FR-26 异步状态展示（处理中/失败/重试/下一步/版本冲突提示） | 任务 9（手工草案失败 503 可见）+ 12（冲突提示）+ 15（处理中/失败重试/只读） |
+| FR-18b 注入防护（决议草案 prompt，"把决议改为 X"类） | 任务 4（模板层）+ 16（场景 16 行为层） |
+| FR-18 草案失败重试与错误可见 | 任务 5（失败入 blocked）+ 9（手工草案失败 503）+ 11（retry_draft 继续）+ 15（错误码/重试次数展示与重试按钮） |
+| FR-23 新审计事件 | 任务 5（4 个常量定义）+ 5/7/8/9/10/11（写入点）+ 16（叙事链断言） |
+| LangGraph 迁移（设计 §6，interrupt/Command/SqliteSaver 同文件 + busy_timeout 连接纪律） | 任务 1 + 6 + 10 + 11 |
+| 验收场景 1（完整闭环含拍板） | 任务 16 |
+| 验收场景 6（四态之 ready 二态） | 任务 5 + 10 + 16 |
+| 验收场景 7（决议动作） | 任务 7 + 16 |
+| 验收场景 9/17（并发拍板/版本冲突） | 任务 7 + 12 + 16 |
+| 验收场景 19（轮次上限与驳回） | 任务 10 + 16 |
+| 验收场景 24（审计可查询） | 任务 14 + 16 |
+| 验收场景 16（注入，决议类） | 任务 4 + 16 |
 
 明确不做（任务书口径，M3 不覆盖）：FR-14b（超时调度器，M4）、FR-08b（换人，M4）、429 限流实计数、Web CSRF、取消事项（M4）、审计/决议导出、provisionally_ready 的草案再编辑。
 
@@ -5558,20 +6042,20 @@ SMOKE_TOKEN_ALICE=... SMOKE_TOKEN_BOB=... uv run python scripts/smoke_two_agents
 
 **M3 新增/变更符号：**
 
-domain：`hub/domain/resolution.py`（新）：`RESOLUTION_STATUS_DRAFT/RESOLUTION_STATUS_PENDING_REVIEW/RESOLUTION_STATUS_APPROVED/RESOLUTION_STATUS_MODIFIED/RESOLUTION_STATUS_REJECTED`、`RESOLUTION_TERMINAL_STATUSES`（frozenset）、`DECISION_APPROVE/DECISION_MODIFIED/DECISION_REJECT`（值同终态名）、`DECISIONS`、`ResolutionValidationError`、`validate_decision_payload(*, decision, final_text, rationale) -> None`、`compose_draft_text(*, recommendation, rationale, risks, divergences) -> str`。`hub/domain/state.py` 追加：`RESOLUTION_TRANSITIONS`、`assert_resolution_transition(current, target)`（抛 `InvalidTransitionError`）。
+domain：`hub/domain/resolution.py`（新）：`RESOLUTION_STATUS_DRAFT/RESOLUTION_STATUS_PENDING_REVIEW/RESOLUTION_STATUS_APPROVED/RESOLUTION_STATUS_MODIFIED/RESOLUTION_STATUS_REJECTED`、`RESOLUTION_TERMINAL_STATUSES`（frozenset）、`DECISION_APPROVE/DECISION_MODIFIED/DECISION_REJECT`（值同终态名）、`DECISIONS`、`ResolutionValidationError`、`validate_decision_payload(*, decision, final_text, rationale) -> None`、`compose_draft_text(*, recommendation, rationale, risks, divergences) -> str`。`hub/domain/state.py` 追加：`RESOLUTION_TRANSITIONS`、`assert_resolution_transition(current, target)`（抛 `InvalidTransitionError`）；`MATTER_TRANSITIONS["blocked"]` 增加 `awaiting_decision` 出口（PRD 7.5"直接要求生成决议草案"，任务 9）。
 
 db：`Resolution(id, matter_id index, source_round_id unique, version, status default "pending_review", recommendation, rationale, risks JSON, divergences JSON, cited_rounds JSON, final_text nullable, decision_rationale nullable, decided_by nullable, decided_at nullable, created_at)`；`UniqueConstraint(matter_id, version)`。
 
 llm：`complete_json` 的 `schema_name` 新增 `"resolution_draft"`（契约：`recommendation`/`rationale` 非空 str、`risks`/`divergences` list[str]、`cited_rounds` 非空 list[int]）；`build_resolution_draft_prompt(*, title, goal, background, summaries) -> tuple[str, str]`（summaries 项：`{"round_number": int, "consensus_points": [...], "divergences": [...], "blind_spots": [...], "open_questions": [...], "convergence": str}`）。
 
-api：`audit` 追加 `RESOLUTION_DRAFTED/RESOLUTION_DECIDED/MATTER_COMPLETED/MATTER_AWAITING_DECISION`。`hub/api/pipeline.py`：追加 `BLOCKED_REASON_DRAFT_FAILED`、`_next_resolution_version(session, matter_id) -> int`、`_all_summaries_for_draft(session, matter_id) -> list[dict]`、`_draft_resolution_phase(session, matter, llm) -> None`、`_open_followup_round(session, matter, rnd, summary, llm) -> bool`、`apply_resolution_decision(session, matter, llm) -> None`、`find_interrupted_resolution_matter_ids(session) -> list[str]`；`run_round_pipeline(session_factory, settings, *, round_id, llm) -> None` 签名不变、内部切图 tick；`find_interrupted_round_ids` rule (b) 排除有决议行的事项；`_branch_phase` ready 分支不再翻状态。`hub/api/resolutions.py`（新）：`get_latest_resolution(session, *, matter_id) -> Resolution | None`、`decide_resolution(session, *, matter_id, actor, decision, expected_version, final_text=None, rationale=None) -> Resolution`、`accept_provisional(session, *, matter_id, actor) -> None`、`continue_probing(session, *, matter_id, actor) -> None`、内部 `_require_provisional_pause(session, *, matter_id, actor, action) -> tuple[Matter, Resolution]`。`hub/api/matters.py`：`continue_matter` 扩展草案失败重试（`mode="retry_draft"`，不授额度）。`hub/api/audit_query.py`（新）：`query_audit_events(session, *, actor_user_id=None, matter_id=None, event_type=None, since=None, until=None, limit=50, offset=0) -> tuple[list[AuditEvent], bool]`；常量 `DEFAULT_AUDIT_PAGE_SIZE=50`、`MATTER_AUDIT_MAX=200`、`DETAIL_AUDIT_PREVIEW=20`。
+api：`audit` 追加 `RESOLUTION_DRAFTED/RESOLUTION_DECIDED/MATTER_COMPLETED/MATTER_AWAITING_DECISION` 与 `AUDIT_RATIONALE_MAX = 500`（审计 detail 中拍板/驳回理由文本的截断口径）。`hub/api/pipeline.py`：追加 `BLOCKED_REASON_DRAFT_FAILED`、`_next_resolution_version(session, matter_id) -> int`、`_all_summaries_for_draft(session, matter_id) -> list[dict]`、`_draft_resolution_phase(session, matter, llm) -> None`、`_open_followup_round(session, matter, rnd, summary, llm) -> bool`、`apply_resolution_decision(session, matter, llm) -> None`、`find_interrupted_resolution_matter_ids(session) -> list[str]`；`run_round_pipeline(session_factory, settings, *, round_id, llm) -> None` 签名不变、内部切图 tick；`find_interrupted_round_ids` rule (b) 排除有决议行的事项；`_branch_phase` ready 分支不再翻状态。`hub/api/resolutions.py`（新）：`get_latest_resolution(session, *, matter_id) -> Resolution | None`、`decide_resolution(session, *, matter_id, actor, decision, expected_version, final_text=None, rationale=None) -> Resolution`、`accept_provisional(session, *, matter_id, actor) -> None`、`continue_probing(session, *, matter_id, actor) -> None`、`draft_resolution_from_blocked(session, *, matter_id, actor, llm) -> Resolution`（任务 9，PRD 7.5 轮次上限 blocked 直接草案入口）、内部 `_require_provisional_pause(session, *, matter_id, actor, action) -> tuple[Matter, Resolution]`。`hub/api/matters.py`：`continue_matter` 扩展草案失败重试（`mode="retry_draft"`，不授额度）。`hub/api/audit_query.py`（新）：`query_audit_events(session, *, actor_user_id=None, matter_id=None, event_type=None, since=None, until=None, limit=50, offset=0) -> tuple[list[AuditEvent], bool]`；常量 `DEFAULT_AUDIT_PAGE_SIZE=50`、`MATTER_AUDIT_MAX=200`、`DETAIL_AUDIT_PREVIEW=20`。
 
-graph（新包 `hub/graph/`）：`MatterGraphState(TypedDict, total=False)`（`matter_id: str`、`branch: str`、`after_draft: str`、`gate_route: str`）；节点名常量 `NODE_GENERATE_ROUND/NODE_SUMMARIZE/NODE_BRANCH/NODE_DRAFT_RESOLUTION/NODE_PROVISIONAL_GATE/NODE_DECISION_GATE/NODE_AFTER_DECISION/NODE_GATE_FOLLOWUP`；动作常量 `ACTION_CONTINUE_PROBING/ACTION_ACCEPT/ACTION_DECIDE`；`MAX_RESUME_STEPS = 4`；`sqlite_path_from_url(database_url) -> str`（拒绝非 sqlite 与 `:memory:`）；`build_matter_graph(*, session_factory, settings, llm, checkpointer)`；`drive_matter_tick(session_factory, settings, *, matter_id, llm) -> None`；`resume_matter_gate(session_factory, settings, *, matter_id, action, llm) -> None`。
+graph（新包 `hub/graph/`）：`MatterGraphState(TypedDict, total=False)`（`matter_id: str`、`branch: str`、`after_draft: str`、`gate_route: str`）；节点名常量 `NODE_GENERATE_ROUND/NODE_SUMMARIZE/NODE_BRANCH/NODE_DRAFT_RESOLUTION/NODE_PROVISIONAL_GATE/NODE_DECISION_GATE/NODE_AFTER_DECISION/NODE_GATE_FOLLOWUP`；动作常量 `ACTION_CONTINUE_PROBING/ACTION_ACCEPT/ACTION_DECIDE`；`MAX_RESUME_STEPS = 4`；`sqlite_path_from_url(database_url) -> str`（拒绝非 sqlite 与 `:memory:`）；`open_checkpointer(path) -> SqliteSaver`（自建连接 `check_same_thread=False` + `PRAGMA busy_timeout=5000`——`from_conn_string` 不设 busy_timeout，禁用；调用方负责 `saver.conn.close()`）；`build_matter_graph(*, session_factory, settings, llm, checkpointer)`；`drive_matter_tick(session_factory, settings, *, matter_id, llm) -> None`；`resume_matter_gate(session_factory, settings, *, matter_id, action, llm) -> None`。
 
 background/main：`resume_worker(queue, session_factory, settings, llm)` 协程（队列元素 `(matter_id, action)` 元组）；`app.state.resume_queue: asyncio.Queue[tuple[str, str]]`；main 追加 `_find_interrupted_resolutions(session_factory)`；lifespan 启动 `drive_worker` + `resume_worker` 两个协程并兜底入队两类 reconciler 结果。
 
 mcp_server：`methods._resolution_view(session, matter_id) -> dict | None`；`mcp_get_matter_status` 的 `resolution` 字段为 `None | {"resolution_id", "status", "version", "cited_rounds", "created_at", "decided_at"}`。
 
-web：`hub/web/routes_decision.py`（新）：`GET /matters/{matter_id}/decision`、`POST /matters/{matter_id}/decision`（表单字段 `action/decision/final_text/rationale/version`；action ∈ `decide/accept/continue_probing`）。`routes_matters.py`：`_build_detail` 上下文追加 `resolution`、`resolution_convergence`、`continue_label`、`draft_pending_generation`、`audit_preview`、`audit_usernames`；`can_continue` 扩展草案失败原因；新路由 `GET /matters/{matter_id}/audit`。`routes_admin.py`：新路由 `GET /admin/audit`（参数 `actor/matter_id/event_type/since/until/offset`）。模板：`decision.html`（新）、`admin_audit.html`（新）、`matter_audit.html`（新）、`matter_detail.html`（决议区/审计块/处理中态/重试按钮）。
+web：`hub/web/routes_decision.py`（新）：`GET /matters/{matter_id}/decision`、`POST /matters/{matter_id}/decision`（表单字段 `action/decision/final_text/rationale/version`；action ∈ `decide/accept/continue_probing`）。`routes_matters.py`：`_build_detail` 上下文追加 `resolution`、`resolution_convergence`、`continue_label`、`draft_pending_generation`、`audit_preview`、`audit_usernames`、`can_draft_from_blocked`；`can_continue` 扩展草案失败原因；新路由 `GET /matters/{matter_id}/audit`、`POST /matters/{matter_id}/draft-resolution`（任务 9）。`routes_admin.py`：新路由 `GET /admin/audit`（参数 `actor/matter_id/event_type/since/until/offset`）。模板：`decision.html`（新）、`admin_audit.html`（新）、`matter_audit.html`（新）、`matter_detail.html`（决议区/审计块/处理中态/重试按钮）。
 
-测试基座（新增目录/文件）：`tests/graph/`（test_checkpointer、test_matter_graph_tick、test_resolution_gate）、`tests/domain/test_resolution.py`、`tests/api/test_resolution_model.py`、`tests/api/test_pipeline_draft.py`、`tests/api/test_resolution_decide.py`、`tests/api/test_provisional_choice.py`、`tests/api/test_resolution_reconcile.py`、`tests/api/test_mcp_resolution.py`、`tests/llm/test_resolution_draft.py`、`tests/web/test_decision_page.py`、`tests/web/test_audit_query.py`、`tests/web/test_resolution_states_web.py`、`tests/integration/test_resolution_e2e.py`。共用测试常量惯例：`DRAFT_PAYLOAD = {"recommendation", "rationale", "risks", "divergences", "cited_rounds"}`。
+测试基座（新增目录/文件）：`tests/graph/`（test_checkpointer、test_matter_graph_tick、test_resolution_gate）、`tests/domain/test_resolution.py`、`tests/api/test_resolution_model.py`、`tests/api/test_pipeline_draft.py`、`tests/api/test_resolution_decide.py`、`tests/api/test_provisional_choice.py`、`tests/api/test_resolution_draft_manual.py`、`tests/api/test_resolution_reconcile.py`、`tests/api/test_mcp_resolution.py`、`tests/llm/test_resolution_draft.py`、`tests/web/test_decision_page.py`、`tests/web/test_audit_query.py`、`tests/web/test_resolution_states_web.py`、`tests/integration/test_resolution_e2e.py`。共用测试常量惯例：`DRAFT_PAYLOAD = {"recommendation", "rationale", "risks", "divergences", "cited_rounds"}`。

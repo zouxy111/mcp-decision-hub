@@ -133,7 +133,7 @@ generate_round → await_outputs（阻塞节点，等待"本轮收齐"信号）
   → archive
 ```
 
-- **人审闸门**：`resolution_gate` 用 `interrupt()`；Web 拍板后 `Command(resume={decision, rationale, version})` 恢复；驳回时图路由回 `generate_round`。
+- **人审闸门**：`resolution_gate` 用 `interrupt()`；Web 拍板后 `Command(resume={decision, rationale, version})` 恢复；驳回时图路由回 `generate_round`。（M3 实现口径：resume 只携带动作信号，拍板数据以业务表为单一事实源——此处 `Command(resume={decision, rationale, version})` 的载荷形态以代码为准。）
 - **持久化**：`SqliteSaver` checkpointer，与业务表同一个 SQLite 文件；服务器重启后所有事项进度精确恢复。
 - **与个人 agent 的关系**：中台是 supervisor 模式，但 worker 不在同进程，不共享 LangGraph State；通信介质是 MCP 任务表。
 - **轮次额度**：轮次上限（默认 10）只约束自动推进。达上限时 `check_convergence` 不自动开新轮，转 `blocked`；发起人手动继续或驳回决议各授予 1 轮额度（驳回隐含人工确认，不再弹二次确认）。额度累加逻辑放在 domain 层，图节点只读结果。
