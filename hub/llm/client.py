@@ -63,6 +63,22 @@ def _validate_schema(schema_name: str, data) -> None:
         _require_str_list(data, "questions")
         if not data["questions"] or any(not q.strip() for q in data["questions"]):
             raise LLMSchemaError("问题列表为空或含空问题（FR-18 不生成空问题）")
+    elif schema_name == "resolution_draft":
+        if not isinstance(data.get("recommendation"), str) or not data[
+            "recommendation"
+        ].strip():
+            raise LLMSchemaError("recommendation 必须是非空字符串（FR-18 不生成空决议）")
+        if not isinstance(data.get("rationale"), str) or not data["rationale"].strip():
+            raise LLMSchemaError("rationale 必须是非空字符串")
+        _require_str_list(data, "risks")
+        _require_str_list(data, "divergences")
+        cited = data.get("cited_rounds")
+        if (
+            not isinstance(cited, list)
+            or not cited
+            or any(not isinstance(n, int) or isinstance(n, bool) for n in cited)
+        ):
+            raise LLMSchemaError("cited_rounds 必须是非空整数数组")
     else:
         raise LLMSchemaError(f"未知 schema: {schema_name}")
 
