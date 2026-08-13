@@ -49,6 +49,30 @@
   <button type="submit">直接生成决议草案</button>
 </form>
 {% endif %}
+{% if can_reassign and reassignable_tasks %}
+<h2>换人（超时/阻塞出口）</h2>
+<p>可把当前开放轮中 pending/timeout 的任务换给新参与人（原任务只读为 reassigned，新任务截止时间自换人时刻重算）。</p>
+<table>
+  <tr><th>原参与人</th><th>任务状态</th><th>换给</th><th></th></tr>
+  {% for tv in reassignable_tasks %}
+  <tr>
+    <form method="post" action="/matters/{{ matter.id }}/reassign">
+    <td>{{ tv.assignee }}</td>
+    <td>{{ tv.task.status }}</td>
+    <td>
+      <select name="new_user_id">
+        {% for u in active_users %}
+        <option value="{{ u.id }}">{{ u.username }}</option>
+        {% endfor %}
+      </select>
+      <input type="hidden" name="task_id" value="{{ tv.task.id }}">
+    </td>
+    <td><button type="submit">换人</button></td>
+    </form>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
 {% if is_initiator and matter.status == "draft" %}
 <form method="post" action="/matters/{{ matter.id }}/start">
   <button type="submit">开始事项（生成第一轮任务）</button>

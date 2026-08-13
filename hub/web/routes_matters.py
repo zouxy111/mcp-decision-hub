@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from hub.api import audit as audit_svc
 from hub.api import matters as matter_svc
+from hub.api import reassignment as reassign_svc
 from hub.api.audit_query import (
     DETAIL_AUDIT_PREVIEW,
     MATTER_AUDIT_MAX,
@@ -22,7 +23,7 @@ from hub.api.pipeline import (
 )
 from hub.api.resolutions import draft_resolution_from_blocked, get_latest_resolution
 from hub.config import Settings
-from hub.db.models import Matter, Output, Round, RoundSummary, Task, User
+from hub.db.models import Matter, MatterParticipant, Output, Round, RoundSummary, Task, User
 from hub.web.deps import get_current_user, get_db, get_settings
 from hub.web.routes_auth import LLM_NOTICE
 
@@ -150,6 +151,31 @@ def _build_detail(db: Session, matter: Matter, user: User, settings: Settings) -
         })
     rounds_used = len(rounds)
     auto_limit = matter.max_rounds + matter.granted_extra_rounds
+    # 换人（FR-08b）：仅发起人、且事项 collecting/blocked 时可用。换人对象为
+    # 当前开放轮中 pending/timeout 的任务。
+    can_reassign = (
+        is_initiator
+        and matter.status in reassign_svc.REASSIGNABLE_MATTER_STATUSES
+    )
+    reassignable_tasks = []
+    if can_reassign and round_views:
+        latest = round_views[-1]
+        if latest["round"].status == "open":
+            for tv in latest["task_views"]:
+                if tv["task"].status in reassign_svc.REASSIGNABLE_TASK_STATUSES:
+                    reassignable_tasks.append(tv)
+    active_users: list[User] = []
+    if can_reassign:
+        participant_ids = set(db.scalars(
+            select(MatterParticipant.user_id).where(
+                MatterParticipant.matter_id == matter.id)
+        ).all())
+        active_users = list(db.scalars(
+            select(User).where(User.is_active.is_(True),
+                               User.id.not_in(participant_ids) if participant_ids
+                               else True)
+            .order_by(User.username)
+        ).all())
     return {
         "matter": matter,
         "is_initiator": is_initiator,
@@ -186,6 +212,9 @@ def _build_detail(db: Session, matter: Matter, user: User, settings: Settings) -
         ),
         "resolution": get_latest_resolution(db, matter_id=matter.id),
         "resolution_convergence": _resolution_convergence(db, matter),
+        "can_reassign": can_reassign,
+        "reassignable_tasks": reassignable_tasks,
+        "active_users": active_users,
         "audit_preview": (
             query_audit_events(db, matter_id=matter.id,
                                limit=DETAIL_AUDIT_PREVIEW)[0]
@@ -296,6 +325,37 @@ def matter_continue(
                                           status_code=e.status_code)
     db.commit()
     request.app.state.drive_queue.put_nowait(round_id)
+    return RedirectResponse(f"/matters/{matter_id}", status_code=303)
+
+
+@router.post("/matters/{matter_id}/reassign", response_class=HTMLResponse)
+def matter_reassign(
+    request: Request,
+    matter_id: str,
+    task_id: str = Form(""),
+    new_user_id: int = Form(0),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+    settings: Settings = Depends(get_settings),
+):
+    """换人（FR-08b）：仅发起人，collecting/blocked 下把 pending/timeout 任务
+    换给新参与人。换人不触发 LLM；新任务入待办后由各 Agent 自行轮询提交。"""
+    try:
+        reassign_svc.reassign_task(
+            db, matter_id=matter_id, task_id=task_id,
+            new_user_id=new_user_id, actor=user,
+        )
+    except ApiError as e:
+        db.commit()  # persist forbidden/invalid-state audit
+        matter = matter_svc.get_matter_for_user(db, matter_id=matter_id, user=user)
+        if matter is None:
+            raise HTTPException(status_code=404, detail="事项不存在或不可见") from e
+        context = _build_detail(db, matter, user, settings)
+        context["current_user_is_admin"] = user.is_admin
+        context["error"] = e.message
+        return templates.TemplateResponse(request, "matter_detail.html", context,
+                                          status_code=e.status_code)
+    db.commit()
     return RedirectResponse(f"/matters/{matter_id}", status_code=303)
 
 
