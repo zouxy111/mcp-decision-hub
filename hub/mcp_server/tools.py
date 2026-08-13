@@ -1,6 +1,8 @@
 """FastMCP tool shells: extract identity, call methods, translate errors.
 
 Tools are added by tasks 19-21; this task only provides the shared plumbing.
+Submit-specific rate limit (PRD 9.1) is enforced here to avoid ASGI
+body-buffering complexity — same error code, different transport layer.
 """
 
 import json
@@ -11,11 +13,17 @@ from fastmcp.server.dependencies import get_http_request
 
 from hub.api.errors import ApiError, error_payload
 from hub.config import Settings
+from hub.domain.rate_limit import RateLimiter, rate_limit_key_submit
 
 
 def _current_user_id() -> int:
     request = get_http_request()
     return request.state.user_id
+
+
+def _current_token_id() -> str:
+    request = get_http_request()
+    return request.state.token_id
 
 
 def _call(session_factory, fn, **kwargs):
@@ -31,8 +39,15 @@ def _call(session_factory, fn, **kwargs):
         return result
 
 
+def _rate_limit_error(retry_after: int) -> ToolError:
+    payload = {"error_code": "RATE_LIMITED",
+               "message": "submit_output 请求过于频繁，请稍后重试",
+               "details": {"retry_after": retry_after}}
+    raise ToolError(json.dumps(payload, ensure_ascii=False))
+
+
 def register_tools(mcp: FastMCP, session_factory, settings: Settings,
-                   drive_queue=None) -> None:
+                   drive_queue=None, limiter: RateLimiter | None = None) -> None:
     from hub.api import pipeline
     from hub.mcp_server import methods
 
@@ -64,6 +79,13 @@ def register_tools(mcp: FastMCP, session_factory, settings: Settings,
         notes: str | None = None,
     ) -> dict:
         """Submit human-approved output for a task (PRD 9.2/9.3/9.4)."""
+        # Submit-specific rate limit (PRD 9.1): 10/min per token
+        if limiter is not None:
+            sub_key = rate_limit_key_submit(_current_token_id())
+            ok, retry = limiter.allow(
+                sub_key, limit=settings.rate_limit_submit_per_minute)
+            if not ok:
+                _rate_limit_error(retry)
         payload = {
             "task_id": task_id,
             "answers": answers,

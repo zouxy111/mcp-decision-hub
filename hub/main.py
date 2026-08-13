@@ -9,6 +9,7 @@ from hub.api.accounts import seed_admin
 from hub.background import drive_worker, resume_worker, timeout_worker
 from hub.config import Settings, load_settings
 from hub.db.session import init_db, make_engine, make_session_factory
+from hub.domain.rate_limit import RateLimiter
 from hub.llm.client import DeepSeekClient
 from hub.web import (
     routes_admin,
@@ -59,9 +60,10 @@ def create_app(settings: Settings | None = None, *, llm=None) -> FastAPI:
 
     mcp_asgi = None
     mcp_inner_lifespan = None
+    limiter = RateLimiter()
     if create_mcp_asgi is not None:
         mcp_asgi, mcp_inner_lifespan = create_mcp_asgi(
-            session_factory, settings, drive_queue
+            session_factory, settings, drive_queue, limiter=limiter,
         )
 
     @asynccontextmanager

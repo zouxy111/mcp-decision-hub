@@ -35,8 +35,6 @@ from hub.domain.timeutil import iso_z, parse_iso_z, utcnow
 
 DEFAULT_LIMIT = 20
 MAX_LIMIT = 100
-POLL_SECONDS_IDLE = 300
-POLL_SECONDS_ACTIVE = 30
 
 
 def _encode_cursor(offset: int) -> str:
@@ -71,7 +69,8 @@ def mcp_list_pending_tasks(
     ).all()
     has_more = len(rows) > effective_limit
     rows = rows[:effective_limit]
-    poll_seconds = POLL_SECONDS_ACTIVE if rows else POLL_SECONDS_IDLE
+    poll_seconds = (settings.poll_seconds_active if rows
+                    else settings.poll_seconds_idle)
     return {
         "tasks": [
             {
