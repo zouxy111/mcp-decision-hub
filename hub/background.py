@@ -24,6 +24,18 @@ logger = logging.getLogger(__name__)
 
 POLL_TIMEOUT_SECONDS = 1.0
 
+# 进程内 per-matter 锁字典（设计决策 6）：tick 与 gate resume 对同一 matter
+# 不再并发；不同 matter 之间互不阻塞。
+_matter_locks: dict[str, asyncio.Lock] = {}
+
+
+def _matter_lock(matter_id: str) -> asyncio.Lock:
+    lock = _matter_locks.get(matter_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _matter_locks[matter_id] = lock
+    return lock
+
 
 async def drive_worker(queue: asyncio.Queue, session_factory, settings, llm) -> None:
     while True:
@@ -33,11 +45,28 @@ async def drive_worker(queue: asyncio.Queue, session_factory, settings, llm) -> 
             )
         except TimeoutError:
             continue
+        # 锁粒度：先解析 matter_id，再按 matter 持锁跑管线。解析失败
+        # （round 被删、race）时无锁直接跑，_run_safe 内部正常处理异常。
+        matter_id = await asyncio.to_thread(
+            _resolve_matter_id, session_factory, round_id
+        )
         try:
-            await asyncio.to_thread(_run_safe, session_factory, settings,
-                                    round_id, llm)
+            if matter_id is not None:
+                async with _matter_lock(matter_id):
+                    await asyncio.to_thread(_run_safe, session_factory,
+                                            settings, round_id, llm)
+            else:
+                await asyncio.to_thread(_run_safe, session_factory,
+                                        settings, round_id, llm)
         finally:
             queue.task_done()
+
+
+def _resolve_matter_id(session_factory, round_id: str) -> str | None:
+    from hub.api.pipeline import resolve_round_matter
+
+    with session_factory() as session:
+        return resolve_round_matter(session, round_id=round_id)
 
 
 def _run_safe(session_factory, settings, round_id, llm) -> None:
@@ -60,9 +89,11 @@ async def resume_worker(queue: asyncio.Queue, session_factory, settings,
             )
         except TimeoutError:
             continue
+        matter_id, _action = item
         try:
-            await asyncio.to_thread(_resume_safe, session_factory, settings,
-                                    item, llm)
+            async with _matter_lock(matter_id):
+                await asyncio.to_thread(_resume_safe, session_factory, settings,
+                                        item, llm)
         finally:
             queue.task_done()
 

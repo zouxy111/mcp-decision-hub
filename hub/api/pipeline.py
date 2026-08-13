@@ -53,6 +53,12 @@ BLOCKED_REASON_FIRST_ROUND_FAILED = "首轮出题失败（LLM 重试耗尽）"
 BLOCKED_REASON_DRAFT_FAILED = "决议草案生成失败（LLM 重试耗尽）"
 
 
+def resolve_round_matter(session: Session, *, round_id: str) -> str | None:
+    """轻量查询：返回 round_id 所属的 matter_id（供 background matter 锁用）。"""
+    rnd = session.get(Round, round_id)
+    return rnd.matter_id if rnd is not None else None
+
+
 def maybe_drive_round(session: Session, *, task_id: str) -> str | None:
     """Entry point called after a successful submit_output. If the round is
     now collected, flip round open→awaiting_summary and matter
