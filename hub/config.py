@@ -28,6 +28,8 @@ class Settings:
     rate_limit_token_per_minute: int = 60
     rate_limit_submit_per_minute: int = 10
     rate_limit_account_per_minute: int = 120
+    rate_limit_login_username_per_minute: int = 5
+    rate_limit_login_ip_per_minute: int = 20
     poll_seconds_idle: int = 300
     poll_seconds_active: int = 30
 
@@ -73,6 +75,11 @@ def load_settings() -> Settings:
             "RATE_LIMIT_SUBMIT_PER_MINUTE", "rate_limit_submit_per_minute"),
         rate_limit_account_per_minute=_int_env(
             "RATE_LIMIT_ACCOUNT_PER_MINUTE", "rate_limit_account_per_minute"),
+        rate_limit_login_username_per_minute=_int_env(
+            "RATE_LIMIT_LOGIN_USERNAME_PER_MINUTE",
+            "rate_limit_login_username_per_minute"),
+        rate_limit_login_ip_per_minute=_int_env(
+            "RATE_LIMIT_LOGIN_IP_PER_MINUTE", "rate_limit_login_ip_per_minute"),
         poll_seconds_idle=_int_env("POLL_SECONDS_IDLE", "poll_seconds_idle"),
         poll_seconds_active=_int_env("POLL_SECONDS_ACTIVE", "poll_seconds_active"),
     )

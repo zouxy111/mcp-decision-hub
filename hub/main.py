@@ -99,6 +99,7 @@ def create_app(settings: Settings | None = None, *, llm=None) -> FastAPI:
     app = FastAPI(title="mcp-decision-hub", lifespan=lifespan)
     app.state.settings = settings
     app.state.session_factory = session_factory
+    app.state.limiter = limiter
     app.state.llm = llm
     app.state.drive_queue = drive_queue
     app.state.resume_queue = resume_queue

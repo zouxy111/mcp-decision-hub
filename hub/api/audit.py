@@ -6,6 +6,7 @@ from hub.db.models import AuditEvent
 
 LOGIN_SUCCESS = "login_success"
 LOGIN_FAILED = "login_failed"
+LOGIN_RATE_LIMITED = "login_rate_limited"
 PASSWORD_CHANGED = "password_changed"
 INVITE_CREATED = "invite_created"
 INVITE_CONSUMED = "invite_consumed"

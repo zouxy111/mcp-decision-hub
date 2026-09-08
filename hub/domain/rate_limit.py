@@ -50,6 +50,28 @@ class RateLimiter:
             retry_after = math.ceil(q[0] + self._window - now)
             return False, max(retry_after, 1)
 
+    def check(
+        self, key: str, *, limit: int, now: float | None = None,
+    ) -> tuple[bool, int]:
+        """Peek whether a request would be allowed, WITHOUT recording a hit.
+
+        Used by failure-counting scenarios (e.g. login): the caller peeks first,
+        and records via ``allow()`` only when the attempt actually fails.
+        """
+        if now is None:
+            now = time.monotonic()
+        cutoff = now - self._window
+        with self._lock:
+            q = self._hits.get(key)
+            if q is None:
+                return True, 0
+            while q and q[0] <= cutoff:
+                q.popleft()
+            if len(q) < limit:
+                return True, 0
+            retry_after = math.ceil(q[0] + self._window - now)
+            return False, max(retry_after, 1)
+
 
 def rate_limit_key_token(token_id: str) -> str:
     return f"token:{token_id}"
@@ -61,3 +83,11 @@ def rate_limit_key_submit(token_id: str) -> str:
 
 def rate_limit_key_account(user_id: int) -> str:
     return f"account:{user_id}"
+
+
+def rate_limit_key_login_username(username: str) -> str:
+    return f"login:user:{username}"
+
+
+def rate_limit_key_login_ip(ip: str) -> str:
+    return f"login:ip:{ip}"

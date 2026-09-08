@@ -16,6 +16,10 @@ def get_settings(request: Request) -> Settings:
     return request.app.state.settings
 
 
+def get_limiter(request: Request):
+    return request.app.state.limiter
+
+
 def get_session_factory(request: Request) -> sessionmaker[Session]:
     return request.app.state.session_factory
 

@@ -8,10 +8,15 @@ from sqlalchemy.orm import Session
 from hub.api import accounts, audit
 from hub.config import Settings
 from hub.db.models import User
+from hub.domain.rate_limit import (
+    rate_limit_key_login_ip,
+    rate_limit_key_login_username,
+)
 from hub.web.deps import (
     clear_session_cookie,
     get_current_user,
     get_db,
+    get_limiter,
     get_settings,
     set_session_cookie,
 )
@@ -39,6 +44,40 @@ def _render_login(request: Request, settings: Settings, *, error=None,
     )
 
 
+def _login_keys(request: Request, username: str) -> list[tuple[str, int]]:
+    """(limiter key, per-minute limit) pairs for username + client IP."""
+    ip = request.client.host if request.client else "unknown"
+    return [
+        (rate_limit_key_login_username(username), "username"),
+        (rate_limit_key_login_ip(ip), "ip"),
+    ]
+
+
+def _login_rate_check(request: Request, settings: Settings, limiter,
+                      username: str) -> int | None:
+    """Peek failure counters; return retry_after seconds if throttled."""
+    if limiter is None:
+        return None
+    for key, dim in _login_keys(request, username):
+        limit = (settings.rate_limit_login_username_per_minute if dim == "username"
+                 else settings.rate_limit_login_ip_per_minute)
+        ok, retry = limiter.check(key, limit=limit)
+        if not ok:
+            return retry
+    return None
+
+
+def _login_rate_record(request: Request, settings: Settings, limiter,
+                       username: str) -> None:
+    """Record one failed attempt on both dimensions."""
+    if limiter is None:
+        return
+    for key, dim in _login_keys(request, username):
+        limit = (settings.rate_limit_login_username_per_minute if dim == "username"
+                 else settings.rate_limit_login_ip_per_minute)
+        limiter.allow(key, limit=limit)
+
+
 @router.get("/login", response_class=HTMLResponse)
 def login_page(request: Request, settings: Settings = Depends(get_settings)):
     return _render_login(request, settings)
@@ -51,9 +90,19 @@ def login_submit(
     password: str = Form(...),
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
+    limiter=Depends(get_limiter),
 ):
+    retry = _login_rate_check(request, settings, limiter, username)
+    if retry is not None:
+        audit.record_audit(db, audit.LOGIN_RATE_LIMITED,
+                           detail={"username": username})
+        db.commit()
+        return _render_login(
+            request, settings, status_code=429,
+            error=f"尝试过于频繁，请 {retry} 秒后重试")
     user = accounts.authenticate(db, username, password)
     if user is None:
+        _login_rate_record(request, settings, limiter, username)
         audit.record_audit(db, audit.LOGIN_FAILED, detail={"username": username})
         db.commit()
         return _render_login(request, settings, error="用户名或密码错误")
@@ -101,12 +150,22 @@ def invite_consume(
     new_password: str = Form(...),
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
+    limiter=Depends(get_limiter),
 ):
+    retry = _login_rate_check(request, settings, limiter, username)
+    if retry is not None:
+        audit.record_audit(db, audit.LOGIN_RATE_LIMITED,
+                           detail={"username": username})
+        db.commit()
+        return _render_login(
+            request, settings, status_code=429,
+            invite_error=f"尝试过于频繁，请 {retry} 秒后重试")
     try:
         user = accounts.consume_invitation(
             db, username=username, token=invitation_token, new_password=new_password
         )
     except accounts.InvitationError:
+        _login_rate_record(request, settings, limiter, username)
         db.commit()  # persist the login_failed audit written by the service
         return _render_login(request, settings, invite_error="邀请凭证无效或已过期")
     db.commit()
