@@ -1,7 +1,9 @@
 # MCP 决策中台 · M4 加固完成报告
 
 - 日期：2026-08-13
-- 仓库：`/Volumes/ZXSSD/work/公司项目/mcp-decision-hub`（main 分支直接开发）
+- 仓库（多端同步，同一仓库）：
+  - `/Volumes/ZXSSD/work/公司项目/mcp-decision-hub`（原开发机）
+  - `/Users/zouxingyu/Desktop/work/公司项目/mcp-decision-hub`（本机，main 分支直接开发）
 - 当前状态：**M4 加固全部完成**，454 个自动化测试全绿，ruff check 零错误
 
 ---
