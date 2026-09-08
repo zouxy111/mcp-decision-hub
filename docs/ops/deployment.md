@@ -49,6 +49,8 @@ uv run uvicorn hub.main:app --host 0.0.0.0 --port 8000
 | `RATE_LIMIT_TOKEN_PER_MINUTE` | `60` | 单 Token 每分钟请求上限 |
 | `RATE_LIMIT_SUBMIT_PER_MINUTE` | `10` | 单 Token submit_output 每分钟上限 |
 | `RATE_LIMIT_ACCOUNT_PER_MINUTE` | `120` | 单账号全部 Token 合计每分钟上限 |
+| `RATE_LIMIT_LOGIN_USERNAME_PER_MINUTE` | `5` | Web 登录/邀请消费单用户名每分钟失败上限（仅计失败） |
+| `RATE_LIMIT_LOGIN_IP_PER_MINUTE` | `20` | Web 登录/邀请消费单 IP 每分钟失败上限（仅计失败） |
 | `POLL_SECONDS_IDLE` | `300` | 无待办时建议轮询间隔（秒） |
 | `POLL_SECONDS_ACTIVE` | `30` | 有待办时建议轮询间隔（秒） |
 | `CONTENT_ITEM_LIMIT` | `16384` (16KiB) | 单个 answer content 字节数上限 |
