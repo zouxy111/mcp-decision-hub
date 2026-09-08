@@ -44,8 +44,10 @@ def revoke_token(session: Session, *, user: User, token_id: str) -> AgentToken:
     return token
 
 
-def find_user_by_token(session: Session, plaintext: str) -> User | None:
-    """Resolve a bearer token to its user. Updates last_used_at on success."""
+def resolve_user_and_token(
+    session: Session, plaintext: str
+) -> tuple[User, AgentToken] | None:
+    """Resolve a bearer token to (user, token). Updates last_used_at on success."""
     token = session.scalar(
         select(AgentToken).where(
             AgentToken.token_hash == sha256_hex(plaintext),
@@ -59,4 +61,12 @@ def find_user_by_token(session: Session, plaintext: str) -> User | None:
         return None
     token.last_used_at = utcnow()
     session.flush()
-    return user
+    return user, token
+
+
+def find_user_by_token(session: Session, plaintext: str) -> User | None:
+    """Resolve a bearer token to its user. Updates last_used_at on success."""
+    resolved = resolve_user_and_token(session, plaintext)
+    if resolved is None:
+        return None
+    return resolved[0]

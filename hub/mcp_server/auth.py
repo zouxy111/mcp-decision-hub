@@ -10,7 +10,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.types import Receive, Scope, Send
 
-from hub.api.tokens import find_user_by_token
+from hub.api.tokens import resolve_user_and_token
 from hub.domain.rate_limit import (
     RateLimiter,
     rate_limit_key_account,
@@ -46,10 +46,10 @@ class BearerAuthMiddleware:
         token_id = None
         if plaintext:
             with self.session_factory() as session:
-                token_obj = find_user_by_token(session, plaintext)
-                if token_obj is not None:
-                    user = token_obj
-                    token_id = token_obj.id
+                resolved = resolve_user_and_token(session, plaintext)
+                if resolved is not None:
+                    user, agent_token = resolved
+                    token_id = agent_token.id
                 session.commit()  # persist last_used_at
         if user is None:
             response = JSONResponse(
