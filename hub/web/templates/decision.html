@@ -22,6 +22,7 @@
 {% if can_decide %}
 <h2>拍板</h2>
 <form method="post" action="/matters/{{ matter.id }}/decision">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
   <input type="hidden" name="action" value="decide">
   <input type="hidden" name="version" value="{{ resolution.version }}">
   <label><input type="radio" name="decision" value="approved" checked> 通过</label>
@@ -36,11 +37,13 @@
 {% elif provisional_choice %}
 <h2>暂定收敛：请选择下一步</h2>
 <form method="post" action="/matters/{{ matter.id }}/decision" style="display:inline">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
   <input type="hidden" name="action" value="continue_probing">
   <input type="hidden" name="version" value="{{ resolution.version }}">
   <button type="submit">继续追问（开启新一轮）</button>
 </form>
 <form method="post" action="/matters/{{ matter.id }}/decision" style="display:inline">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
   <input type="hidden" name="action" value="accept">
   <input type="hidden" name="version" value="{{ resolution.version }}">
   <button type="submit">进入拍板</button>

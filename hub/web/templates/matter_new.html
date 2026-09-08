@@ -5,6 +5,7 @@
 <div class="notice">{{ llm_notice }}</div>
 {% if error %}<p class="error">{{ error }}</p>{% endif %}
 <form method="post" action="/matters/new">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
   <label>主题（必填）<input name="title" required></label>
   <label>目标（必填）<textarea name="goal" required></textarea></label>
   <label>背景 <textarea name="background"></textarea></label>

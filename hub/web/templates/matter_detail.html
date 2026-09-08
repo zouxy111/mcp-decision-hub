@@ -41,17 +41,20 @@
 {% endif %}
 {% if can_continue %}
 <form method="post" action="/matters/{{ matter.id }}/continue">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
   <button type="submit">{{ continue_label }}</button>
 </form>
 {% endif %}
 {% if can_cancel %}
 <form method="post" action="/matters/{{ matter.id }}/cancel" style="display:inline"
       onsubmit="return confirm('确定取消该事项？取消后任务不可提交，事项进入 cancelled 终态。')">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
   <button type="submit">取消事项</button>
 </form>
 {% endif %}
 {% if can_draft_from_blocked %}
 <form method="post" action="/matters/{{ matter.id }}/draft-resolution" style="display:inline">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
   <button type="submit">直接生成决议草案</button>
 </form>
 {% endif %}
@@ -63,6 +66,7 @@
   {% for tv in reassignable_tasks %}
   <tr>
     <form method="post" action="/matters/{{ matter.id }}/reassign">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
     <td>{{ tv.assignee }}</td>
     <td>{{ tv.task.status }}</td>
     <td>
@@ -81,6 +85,7 @@
 {% endif %}
 {% if is_initiator and matter.status == "draft" %}
 <form method="post" action="/matters/{{ matter.id }}/start">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
   <button type="submit">开始事项（生成第一轮任务）</button>
 </form>
 {% endif %}

@@ -18,11 +18,14 @@ from hub.web.deps import (
     get_db,
     get_limiter,
     get_settings,
+    register_csrf_globals,
+    require_csrf,
     set_session_cookie,
 )
 
 router = APIRouter()
 templates = Jinja2Templates(directory="hub/web/templates")
+register_csrf_globals(templates)
 
 LLM_NOTICE = (
     "本事项中提交的回答正文将发送至平台配置的第三方大模型服务商，"
@@ -127,7 +130,7 @@ def change_password_submit(
     new_password: str = Form(...),
     confirm_password: str = Form(...),
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_csrf),
 ):
     if new_password != confirm_password:
         return templates.TemplateResponse(
@@ -175,7 +178,7 @@ def invite_consume(
 
 
 @router.post("/logout")
-def logout():
+def logout(user: User = Depends(require_csrf)):
     response = RedirectResponse("/login", status_code=303)
     clear_session_cookie(response)
     return response

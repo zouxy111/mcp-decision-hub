@@ -11,6 +11,7 @@
 {% endif %}
 <h2>新建 Token</h2>
 <form method="post" action="/settings/agents">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
   <label>名称 <input name="name" required></label>
   <button type="submit">签发</button>
 </form>
@@ -29,6 +30,7 @@
       <form method="post" action="/settings/agents/{{ t.id }}/revoke"
             hx-post="/settings/agents/{{ t.id }}/revoke"
             hx-confirm="确认吊销 Token「{{ t.name }}」？吊销后使用该 Token 的 Agent 将立即失效。">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
         <button type="submit">吊销</button>
       </form>
     </td>

@@ -22,6 +22,7 @@
     <a href="/settings/agents">Agent Token</a>
     {% if current_user_is_admin %}<a href="/admin/invitations">邀请管理</a>{% endif %}
     <form method="post" action="/logout" style="display:inline">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
       <button type="submit">退出</button>
     </form>
   </nav>

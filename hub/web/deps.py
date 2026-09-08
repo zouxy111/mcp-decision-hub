@@ -20,6 +20,39 @@ def get_limiter(request: Request):
     return request.app.state.limiter
 
 
+CSRF_FIELD = "csrf_token"
+CSRF_SALT = "hub-csrf"
+
+
+def get_csrf_serializer(request: Request) -> URLSafeSerializer:
+    return URLSafeSerializer(request.app.state.settings.session_secret,
+                             salt=CSRF_SALT)
+
+
+def make_csrf_token(request: Request) -> str:
+    """CSRF 同步器 Token：签名绑定当前会话 Cookie（httponly，攻击者不可知）。"""
+    return get_csrf_serializer(request).dumps(
+        {"sid": request.cookies.get(SESSION_COOKIE, "")})
+
+
+def register_csrf_globals(templates) -> None:
+    """把 csrf_token(request) 注册为 Jinja 全局函数，供表单隐藏域使用。"""
+    templates.env.globals[CSRF_FIELD] = make_csrf_token
+
+
+def _validate_csrf(request: Request) -> None:
+    """同步器 Token 校验：签名有效且绑定的会话与当前 Cookie 一致。"""
+    # request.form() 已由调用方（async 依赖）读取并缓存
+    token = str(request.state._csrf_form.get(CSRF_FIELD, ""))
+    try:
+        data = get_csrf_serializer(request).loads(token)
+    except BadSignature:
+        data = {}
+    if data.get("sid") != request.cookies.get(SESSION_COOKIE):
+        raise HTTPException(status_code=403,
+                            detail="CSRF 校验失败，请刷新页面后重试")
+
+
 def get_session_factory(request: Request) -> sessionmaker[Session]:
     return request.app.state.session_factory
 
@@ -64,3 +97,19 @@ def require_admin(user: User = Depends(get_current_user)) -> User:
     if not user.is_admin:
         raise HTTPException(status_code=403, detail="需要管理员权限")
     return user
+
+
+async def require_csrf(request: Request,
+                       user: User = Depends(get_current_user)) -> User:
+    """认证态 POST 依赖：先登录校验，再 CSRF 校验。"""
+    request.state._csrf_form = await request.form()
+    _validate_csrf(request)
+    return user
+
+
+async def require_csrf_admin(request: Request,
+                             admin: User = Depends(require_admin)) -> User:
+    """管理态 POST 依赖：先管理员校验，再 CSRF 校验。"""
+    request.state._csrf_form = await request.form()
+    _validate_csrf(request)
+    return admin

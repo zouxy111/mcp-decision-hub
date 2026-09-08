@@ -14,10 +14,17 @@ from hub.api.audit_query import query_audit_events
 from hub.api.errors import ApiError
 from hub.config import Settings
 from hub.db.models import AuditEvent, User
-from hub.web.deps import get_db, get_settings, require_admin
+from hub.web.deps import (
+    get_db,
+    get_settings,
+    register_csrf_globals,
+    require_admin,
+    require_csrf_admin,
+)
 
 router = APIRouter()
 templates = Jinja2Templates(directory="hub/web/templates")
+register_csrf_globals(templates)
 
 
 def _pending_invitations(db: Session) -> list[User]:
@@ -58,7 +65,7 @@ def invitations_create(
     username: str = Form(...),
     email: str = Form(...),
     db: Session = Depends(get_db),
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_csrf_admin),
     settings: Settings = Depends(get_settings),
 ):
     if not username.strip() or not email.strip():
@@ -73,7 +80,7 @@ def invitations_create(
 
 @router.post("/admin/invitations/{user_id}/revoke")
 def invitations_revoke(user_id: int, db: Session = Depends(get_db),
-                       admin: User = Depends(require_admin)):
+                       admin: User = Depends(require_csrf_admin)):
     try:
         accounts.revoke_invitation(db, admin=admin, user_id=user_id)
     except ApiError:

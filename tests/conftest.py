@@ -1,8 +1,31 @@
 import pytest
 from fastapi.testclient import TestClient
+from itsdangerous import URLSafeSerializer
 
 from hub.config import Settings
 from hub.db.session import init_db, make_engine, make_session_factory
+
+
+class CsrfTestClient(TestClient):
+    """自动为认证态 POST 注入 CSRF Token 的 TestClient（登录/邀请消费豁免）。
+
+    测试显式传入 csrf_token 时不覆盖（可用于伪造场景）；未登录（无会话
+    Cookie）时不注入，行为与未认证请求一致。
+    """
+
+    _EXEMPT_PREFIXES = ("/login", "/invite/consume")
+
+    def post(self, url, **kwargs):
+        sid = self.cookies.get("hub_session")
+        if sid is not None and not url.startswith(self._EXEMPT_PREFIXES):
+            data = dict(kwargs.get("data") or {})
+            secret = self.app.state.settings.session_secret
+            data.setdefault(
+                "csrf_token",
+                URLSafeSerializer(secret, salt="hub-csrf").dumps({"sid": sid}),
+            )
+            kwargs["data"] = data
+        return super().post(url, **kwargs)
 
 
 @pytest.fixture()
@@ -40,7 +63,7 @@ def client(settings, app_llm):
     from hub.main import create_app
 
     app = create_app(settings, llm=app_llm)
-    with TestClient(app) as test_client:
+    with CsrfTestClient(app) as test_client:
         yield test_client
 
 

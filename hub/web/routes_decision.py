@@ -17,10 +17,11 @@ from hub.api.resolutions import (
 )
 from hub.db.models import RoundSummary, User
 from hub.domain.convergence import CONVERGENCE_PROVISIONALLY_READY
-from hub.web.deps import get_current_user, get_db
+from hub.web.deps import get_current_user, get_db, register_csrf_globals, require_csrf
 
 router = APIRouter()
 templates = Jinja2Templates(directory="hub/web/templates")
+register_csrf_globals(templates)
 
 
 def _page_context(db: Session, matter, user: User) -> dict | None:
@@ -85,7 +86,7 @@ def decision_submit(
     rationale: str = Form(""),
     version: int = Form(0),
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_csrf),
 ):
     matter = matter_svc.get_matter_for_user(db, matter_id=matter_id, user=user)
     if matter is None:

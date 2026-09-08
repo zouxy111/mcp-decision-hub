@@ -24,11 +24,18 @@ from hub.api.pipeline import (
 from hub.api.resolutions import draft_resolution_from_blocked, get_latest_resolution
 from hub.config import Settings
 from hub.db.models import Matter, MatterParticipant, Output, Round, RoundSummary, Task, User
-from hub.web.deps import get_current_user, get_db, get_settings
+from hub.web.deps import (
+    get_current_user,
+    get_db,
+    get_settings,
+    register_csrf_globals,
+    require_csrf,
+)
 from hub.web.routes_auth import LLM_NOTICE
 
 router = APIRouter()
 templates = Jinja2Templates(directory="hub/web/templates")
+register_csrf_globals(templates)
 
 
 @router.get("/dashboard", response_class=HTMLResponse)
@@ -77,7 +84,7 @@ def matter_create(
     participant_ids: list[int] = Form(default=[]),
     initiator_participates: bool = Form(default=False),
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_csrf),
     settings: Settings = Depends(get_settings),
 ):
     ids = list(participant_ids)
@@ -282,7 +289,7 @@ def matter_start(
     request: Request,
     matter_id: str,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_csrf),
     settings: Settings = Depends(get_settings),
 ):
     try:
@@ -312,7 +319,7 @@ def matter_continue(
     request: Request,
     matter_id: str,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_csrf),
     settings: Settings = Depends(get_settings),
 ):
     try:
@@ -337,7 +344,7 @@ def matter_cancel(
     request: Request,
     matter_id: str,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_csrf),
     settings: Settings = Depends(get_settings),
 ):
     """取消事项（FR-08）。取消后任务不可提交，事项进入 cancelled。"""
@@ -364,7 +371,7 @@ def matter_reassign(
     task_id: str = Form(""),
     new_user_id: int = Form(0),
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_csrf),
     settings: Settings = Depends(get_settings),
 ):
     """换人（FR-08b）：仅发起人，collecting/blocked 下把 pending/timeout 任务
@@ -393,7 +400,7 @@ async def matter_draft_resolution(
     request: Request,
     matter_id: str,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_csrf),
     settings: Settings = Depends(get_settings),
 ):
     """PRD 7.5：轮次上限 blocked 时发起人直接要求生成决议草案。LLM 调用经
