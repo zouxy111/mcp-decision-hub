@@ -93,6 +93,25 @@ def get_current_user(request: Request, db: Session = Depends(get_db)) -> User:
     return user
 
 
+def get_optional_user(request: Request,
+                      db: Session = Depends(get_db)) -> User | None:
+    """解析当前会话用户；未登录或会话无效时返回 None，不抛重定向异常。
+
+    用于站点根路径等「按登录态分流」的场景。
+    """
+    raw = request.cookies.get(SESSION_COOKIE)
+    if not raw:
+        return None
+    try:
+        uid = get_serializer(request).loads(raw).get("uid")
+    except BadSignature:
+        return None
+    user = db.get(User, uid) if uid is not None else None
+    if user is None or not user.is_active:
+        return None
+    return user
+
+
 def require_admin(user: User = Depends(get_current_user)) -> User:
     if not user.is_admin:
         raise HTTPException(status_code=403, detail="需要管理员权限")

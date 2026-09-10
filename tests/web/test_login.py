@@ -33,6 +33,30 @@ def test_login_success_sets_cookie_and_redirects(client, db_session):
     assert "hub_session" in resp.headers["set-cookie"]
 
 
+def test_root_redirects_anonymous_to_login(client):
+    resp = client.get("/", follow_redirects=False)
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/login"
+
+
+def test_root_redirects_logged_in_to_dashboard(client, db_session):
+    make_user(db_session, "alice", password="right-pw-1")
+    db_session.commit()
+    _login(client, "alice", "right-pw-1")
+    resp = client.get("/", follow_redirects=False)
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/dashboard"
+
+
+def test_root_respects_must_change_password(client, db_session):
+    make_user(db_session, "root", password="init-pw-123", must_change_password=True)
+    db_session.commit()
+    _login(client, "root", "init-pw-123")
+    resp = client.get("/", follow_redirects=False)
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/change-password"
+
+
 def test_dashboard_requires_login(client):
     resp = client.get("/dashboard", follow_redirects=False)
     assert resp.status_code == 303

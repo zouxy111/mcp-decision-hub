@@ -17,6 +17,7 @@ from hub.web.deps import (
     get_current_user,
     get_db,
     get_limiter,
+    get_optional_user,
     get_settings,
     register_csrf_globals,
     require_csrf,
@@ -79,6 +80,18 @@ def _login_rate_record(request: Request, settings: Settings, limiter,
         limit = (settings.rate_limit_login_username_per_minute if dim == "username"
                  else settings.rate_limit_login_ip_per_minute)
         limiter.allow(key, limit=limit)
+
+
+@router.get("/")
+def index(user: User | None = Depends(get_optional_user)):
+    """站点根路径：按登录态分流，避免已登录用户被送回登录页。
+
+    已登录 → 主界面（或强制改密页）；未登录 → 登录页。
+    """
+    if user is None:
+        return RedirectResponse("/login", status_code=303)
+    target = "/change-password" if user.must_change_password else "/dashboard"
+    return RedirectResponse(target, status_code=303)
 
 
 @router.get("/login", response_class=HTMLResponse)
