@@ -4,8 +4,13 @@ import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.encoders import jsonable_encoder
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 
 from hub.api.accounts import seed_admin
+from hub.api.errors import ApiError, error_payload
 from hub.background import drive_worker, resume_worker, timeout_worker
 from hub.config import Settings, load_settings
 from hub.db.session import init_db, make_engine, make_session_factory
@@ -14,6 +19,7 @@ from hub.llm.client import DeepSeekClient
 from hub.web import (
     routes_admin,
     routes_agents,
+    routes_api,
     routes_auth,
     routes_decision,
     routes_matters,
@@ -103,11 +109,33 @@ def create_app(settings: Settings | None = None, *, llm=None) -> FastAPI:
     app.state.llm = llm
     app.state.drive_queue = drive_queue
     app.state.resume_queue = resume_queue
+
+    @app.exception_handler(ApiError)
+    async def _api_error_handler(_request, exc: ApiError) -> JSONResponse:
+        """统一错误形状 {error_code, message, details?}（PRD 9.5）。
+
+        既有 HTML 路由均自行 try/except 捕获，故此处不影响其行为。
+        """
+        return JSONResponse(error_payload(exc), status_code=exc.status_code)
+
+    @app.exception_handler(RequestValidationError)
+    async def _validation_error_handler(request, exc: RequestValidationError):
+        """JSON API 的载荷校验失败也走统一错误形状（422 而非 500）。
+
+        仅作用于 /api/ 前缀；既有 HTML 路由沿用 FastAPI 默认处理，行为不变。
+        """
+        if request.url.path.startswith("/api/"):
+            err = ApiError(422, "VALIDATION_FAILED", "请求载荷校验失败",
+                           details={"errors": jsonable_encoder(exc.errors())})
+            return JSONResponse(error_payload(err), status_code=err.status_code)
+        return await request_validation_exception_handler(request, exc)
+
     app.include_router(routes_auth.router)
     app.include_router(routes_matters.router)
     app.include_router(routes_decision.router)
     app.include_router(routes_agents.router)
     app.include_router(routes_admin.router)
+    app.include_router(routes_api.router)
     if mcp_asgi is not None:
         app.mount("/mcp", mcp_asgi)
     return app

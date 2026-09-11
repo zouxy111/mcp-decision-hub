@@ -6,6 +6,8 @@ from fastapi import Depends, HTTPException, Request
 from itsdangerous import BadSignature, URLSafeSerializer
 from sqlalchemy.orm import Session, sessionmaker
 
+from hub.api.errors import ApiError
+from hub.api.tokens import resolve_user_and_token
 from hub.config import Settings
 from hub.db.models import User
 
@@ -132,3 +134,20 @@ async def require_csrf_admin(request: Request,
     request.state._csrf_form = await request.form()
     _validate_csrf(request)
     return admin
+
+
+def require_bearer(request: Request, db: Session = Depends(get_db)) -> User:
+    """JSON API 依赖：从 Authorization: Bearer 解析身份。
+
+    复用 resolve_user_and_token（SHA-256 比对 + 吊销/停用校验）作为唯一事实源；
+    失败一律 401 AUTH_INVALID_TOKEN，交由全局 ApiError handler 序列化。
+    成功后提交以持久化 last_used_at。
+    """
+    header = request.headers.get("authorization", "")
+    plaintext = header[7:].strip() if header.lower().startswith("bearer ") else ""
+    resolved = resolve_user_and_token(db, plaintext) if plaintext else None
+    if resolved is None:
+        raise ApiError(401, "AUTH_INVALID_TOKEN", "Token 缺失、无效或已吊销")
+    user, _agent_token = resolved
+    db.commit()  # 持久化 last_used_at
+    return user

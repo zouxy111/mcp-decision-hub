@@ -3,7 +3,16 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import JSON, Boolean, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from hub.db.base import Base
@@ -175,4 +184,39 @@ class Resolution(Base):
     decided_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"),
                                                    nullable=True)
     decided_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    created_at: Mapped[datetime] = mapped_column(default=utcnow, nullable=False)
+
+
+class Stance(Base):
+    """立场层：某参与人在某轮次对议题的结构化立场（新增表，不改既有表）。"""
+
+    __tablename__ = "stances"
+    __table_args__ = (UniqueConstraint("matter_id", "round_number", "user_id"),)
+
+    stance_id: Mapped[str] = mapped_column(String(48), primary_key=True,
+                                           default=lambda: new_id("stn"))
+    matter_id: Mapped[str] = mapped_column(ForeignKey("matters.id"), nullable=False,
+                                           index=True)
+    round_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False,
+                                         index=True)
+    stance: Mapped[str] = mapped_column(String(32), nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    position_summary: Mapped[str] = mapped_column(Text, nullable=False)
+    rationale_summary: Mapped[str] = mapped_column(Text, nullable=False)
+    non_negotiables: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    conditions: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    open_questions: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    depends_on: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    questions_for: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    disagreement_kind: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    supersedes: Mapped[str | None] = mapped_column(ForeignKey("stances.stance_id"),
+                                                   nullable=True)
+    acting_as: Mapped[str] = mapped_column(String(32), nullable=False)
+    authority: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    ttl_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    urgency: Mapped[str] = mapped_column(String(16), default="normal", nullable=False)
+    visibility: Mapped[str] = mapped_column(String(16), default="participants",
+                                            nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     created_at: Mapped[datetime] = mapped_column(default=utcnow, nullable=False)
