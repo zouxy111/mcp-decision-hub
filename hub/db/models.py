@@ -6,6 +6,7 @@ from datetime import datetime
 from sqlalchemy import (
     JSON,
     Boolean,
+    CheckConstraint,
     Float,
     ForeignKey,
     Integer,
@@ -188,10 +189,35 @@ class Resolution(Base):
 
 
 class Stance(Base):
-    """立场层：某参与人在某轮次对议题的结构化立场（新增表，不改既有表）。"""
+    """立场层：某参与人在某轮次对议题的结构化立场（新增表，不改既有表）。
+
+    枚举列由 CHECK 约束兜底（stance / acting_as / urgency / visibility），
+    取值与 hub.schemas.stance 的 StrEnum 保持一致。
+
+    注意：本仓库没有迁移工具，CHECK 约束只对**新建库**生效；存量库里的
+    stances 表不会被自动改写，需要升级时只能手工重建表并迁移数据。
+    """
 
     __tablename__ = "stances"
-    __table_args__ = (UniqueConstraint("matter_id", "round_number", "user_id"),)
+    __table_args__ = (
+        UniqueConstraint("matter_id", "round_number", "user_id"),
+        CheckConstraint(
+            "stance IN ('support', 'oppose', 'conditional', 'abstain', 'need_info')",
+            name="ck_stances_stance",
+        ),
+        CheckConstraint(
+            "acting_as IN ('human', 'agent_on_behalf')",
+            name="ck_stances_acting_as",
+        ),
+        CheckConstraint(
+            "urgency IN ('low', 'normal', 'high')",
+            name="ck_stances_urgency",
+        ),
+        CheckConstraint(
+            "visibility IN ('participants', 'all')",
+            name="ck_stances_visibility",
+        ),
+    )
 
     stance_id: Mapped[str] = mapped_column(String(48), primary_key=True,
                                            default=lambda: new_id("stn"))

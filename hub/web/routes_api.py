@@ -4,6 +4,8 @@
 Authorization: Bearer（无 Cookie 会话），错误经全局 ApiError handler 序列化。
 """
 
+from dataclasses import asdict
+
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
@@ -28,6 +30,23 @@ def submit_stance(
     )
     db.commit()
     return stance
+
+
+# 注意：本路由必须声明在 /stances/{user_id} 之前，否则 "analysis" 会被当成
+# user_id 去解析成 int，直接 422。
+@router.get("/api/items/{matter_id}/stances/analysis")
+def read_stance_analysis(
+    matter_id: str,
+    round_number: int = 1,
+    user: User = Depends(require_bearer),
+    db: Session = Depends(get_db),
+):
+    """本轮立场分析（只读）。鉴权与 404 语义复用 stance 既有路由。"""
+    analysis = stance_svc.analyze_round(
+        db, matter_id=matter_id, round_number=round_number, user=user
+    )
+    db.commit()  # 落脏数据的收敛降级审计
+    return asdict(analysis)
 
 
 @router.get("/api/items/{matter_id}/stances/{user_id}",

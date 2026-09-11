@@ -18,8 +18,13 @@ DIVERGENCE_GOAL = "goal"
 DIVERGENCE_RISK_APPETITE = "risk_appetite"
 DIVERGENCE_RESOURCE = "resource"
 
-# 明确反对的置信度门槛：达到即视为硬阻塞。
+# 明确反对的置信度门槛：达到即视为硬阻塞（0.7 为闭区间下界，恰等即硬阻断）。
 OPPOSE_BLOCK_CONFIDENCE = 0.7
+
+# 契约（2026-09-12 冻结）：机器可读的「本轮未检测」检查名。
+# 宁可如实说没检查，也不默认「无冲突」。
+UNDETECTED_NON_NEGOTIABLES = "non_negotiables_vs_decision"
+UNDETECTED_CONDITIONAL_CONFLICT = "conditional_conditions_conflict"
 
 
 class ConvergenceEvalError(ValueError):
@@ -58,6 +63,12 @@ class ConvergenceResult:
     divergences: list[Divergence] = field(default_factory=list)
     factions: list[Faction] = field(default_factory=list)
     blocking: list[str] = field(default_factory=list)
+    # 契约（2026-09-12 冻结）：宽容版跳过脏数据后置 True；一旦降级，
+    # converged 必须为 False —— 脏数据不许冒充收敛。
+    degraded: bool = False
+    skipped_stance_user_ids: tuple[str, ...] = ()
+    # 本轮在结构上无法检测的检查项，如实暴露，不假装做过。
+    undetected_checks: tuple[str, ...] = ()
 
 
 _STANCE_WEIGHTS = {
@@ -97,12 +108,50 @@ def _dominant_kind(stances: list[StanceInput]) -> str:
     return DIVERGENCE_GOAL
 
 
-def evaluate_convergence(stances: list[StanceInput]) -> ConvergenceResult:
+def evaluate_convergence(
+    stances: list[StanceInput], *, decision: str | None = None
+) -> ConvergenceResult:
+    """严格版：未知 stance 一律视为调用方 bug，直接抛错。
+
+    decision 为结论文本，本版**不解析其内容**；接收它是为了明确「不可谈判项
+    与结论的比对尚未实现」，并以 undetected_checks 如实告知调用方。
+    """
     for s in stances:
         if s.stance not in _STANCE_WEIGHTS:
             raise ConvergenceEvalError(f"未知立场: {s.stance!r}")
+    return _evaluate_core(stances)
 
+
+def evaluate_convergence_lenient(
+    stances: list[StanceInput], *, decision: str | None = None
+) -> ConvergenceResult:
+    """宽容版：跳过未知 stance 的行并降级，绝不因脏数据抛错。
+
+    跳过的行不参与任何判定；一旦发生跳过即 degraded=True 且 converged=False——
+    脏数据不允许冒充收敛。decision 语义同 evaluate_convergence（本版不解析）。
+    """
+    kept: list[StanceInput] = []
+    skipped: list[str] = []
+    for s in stances:
+        if s.stance in _STANCE_WEIGHTS:
+            kept.append(s)
+        elif s.user_id not in skipped:
+            skipped.append(s.user_id)
+    return _evaluate_core(
+        kept,
+        degraded=bool(skipped),
+        skipped_stance_user_ids=tuple(skipped),
+    )
+
+
+def _evaluate_core(
+    stances: list[StanceInput],
+    *,
+    degraded: bool = False,
+    skipped_stance_user_ids: tuple[str, ...] = (),
+) -> ConvergenceResult:
     blocking: list[str] = []
+    undetected: list[str] = []
     divergences: list[Divergence] = []
 
     opposers = [s for s in stances if s.stance == STANCE_OPPOSE]
@@ -167,6 +216,16 @@ def evaluate_convergence(stances: list[StanceInput]) -> ConvergenceResult:
             f"用户 {s.user_id} 的不可谈判项（{items}）与结论直接冲突，无法收敛"
         )
 
+    # 未检测项 C1：下面这句「与结论直接冲突」是保守假设，并未真正比对结论文本。
+    # 如实登记，避免调用方把「没报冲突」误读为「已核对过结论」。
+    if unmet:
+        undetected.append(UNDETECTED_NON_NEGOTIABLES)
+
+    # 未检测项 C2：conditional 的 conditions 是自由文本，条件之间是否互相冲突
+    # 本轮同样无法检测。固定排在 C1 之后，保证 undetected_checks 顺序稳定。
+    if any(s.stance == STANCE_CONDITIONAL and s.conditions for s in stances):
+        undetected.append(UNDETECTED_CONDITIONAL_CONFLICT)
+
     # 硬条件 3：need_info 说明尚未表态；若分歧属事实类，则补信息有可能解决。
     for s in stances:
         if s.stance != STANCE_NEED_INFO:
@@ -194,7 +253,7 @@ def evaluate_convergence(stances: list[StanceInput]) -> ConvergenceResult:
         s.stance in (STANCE_SUPPORT, STANCE_CONDITIONAL, STANCE_ABSTAIN)
         for s in stances
     )
-    converged = bool(stances) and settled and not blocking
+    converged = bool(stances) and settled and not blocking and not degraded
 
     if not stances:
         blocking.append("无参与人立场，无法评估收敛")
@@ -211,4 +270,7 @@ def evaluate_convergence(stances: list[StanceInput]) -> ConvergenceResult:
         divergences=divergences,
         factions=_factions(stances),
         blocking=blocking,
+        degraded=degraded,
+        skipped_stance_user_ids=skipped_stance_user_ids,
+        undetected_checks=tuple(undetected),
     )

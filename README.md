@@ -52,11 +52,27 @@ uv run uvicorn hub.main:app --host 127.0.0.1 --port 8000
 ## 测试与代码规范
 
 ```bash
-uv run pytest tests -q     # 当前基线：526 passed
+uv run pytest tests -q     # 当前基线：567 passed
 uv run ruff check .        # 零错误
 ```
 
 提交前请确保两项都通过。
+
+## 立场提交：content_hash 口径
+
+立场提交（`POST /api/items/{matter_id}/stances`）要求客户端携带 `content_hash`，
+服务端按同一口径重算并逐字比对，不匹配直接 422 `VALIDATION_FAILED`。口径冻结如下：
+
+1. 取提交正文**除 `content_hash` 自身外**的全部字段，用 Pydantic 的
+   `model_dump(mode="json")` 序列化为 JSON 可表示的值；
+2. 对该对象做规范化 JSON：
+   `json.dumps(body, sort_keys=True, ensure_ascii=False, separators=(",", ":"))`；
+3. 对所得字符串按 UTF-8 编码取 `sha256`，`hexdigest()` 即 `content_hash`
+   （64 位小写十六进制）。
+
+参考实现见 `hub/domain/digest.py:compute_stance_content_hash`。`sort_keys` 保证
+字段顺序无关；`ensure_ascii=False` 加紧凑分隔符保证与客户端按同一文本编码计算的
+结果一致。
 
 ## 项目结构
 

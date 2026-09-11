@@ -91,3 +91,20 @@ def test_同一matter轮次用户重复提交被拦下(db_session):
     db_session.add(Stance(**_stance_kwargs(matter, alice)))
     with pytest.raises(IntegrityError):
         db_session.flush()
+
+
+@pytest.mark.parametrize(
+    ("field", "bad_value"),
+    [
+        ("stance", "banana"),
+        ("acting_as", "robot"),
+        ("urgency", "urgent"),
+        ("visibility", "nobody"),
+    ],
+)
+def test_枚举字段的非法值被数据库CHECK约束拦下(db_session, field, bad_value):
+    alice = make_user(db_session, "alice")
+    matter = _make_matter(db_session, alice)
+    db_session.add(Stance(**_stance_kwargs(matter, alice, **{field: bad_value})))
+    with pytest.raises(IntegrityError):
+        db_session.flush()

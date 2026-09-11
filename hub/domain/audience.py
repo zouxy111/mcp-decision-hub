@@ -12,10 +12,15 @@
 """
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Iterable
 
-_INT_TOKEN = re.compile(r"(?<!\d)\d+(?!\d)")
+# 兜底扫描只认「id 形态」：用户 2 / 用户2 / user 2 / user_id=2 / uid:2 …
+# 裸整数不判（业务正文里到处都是数字：v2、3 个方案、2 阶段）。
+# 权限判定由结构化数据（visible_user_ids）负责，正则不再承担这个职责。
+_ID_SHAPED = re.compile(
+    r"(?:用户|用戶|使用者|user|uid|id)\s*[:#＝=号]?\s*(\d+)", re.IGNORECASE
+)
 
 
 @dataclass(frozen=True)
@@ -32,6 +37,9 @@ class FactBase:
     risks: list[str]
     action_items: dict[int, list[str]]
     dissenting: dict[int, str]
+    # 契约（2026-09-12 冻结）：user_id -> 显示名（users.username）。
+    # 装配层负责填充；domain 不碰数据库。缺省空 dict，存量构造全部兼容。
+    display_names: dict[int, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -56,9 +64,11 @@ def build_audience_view(fact: FactBase, viewer_user_id: int) -> AudienceView:
         "决定事项": fact.item_title,
         "要解决的问题": fact.question,
         "结论": fact.decision if fact.decision else "这事目前还没定下来。",
-        "为什么这么定": fact.rationale,
-        "还要注意的风险": _bullets(fact.risks, "目前没有特别提到的风险。"),
     }
+    if fact.decision:
+        # 结论还没定，就不能紧接着解释「为什么这么定」——那是自相矛盾。
+        sections["为什么这么定"] = fact.rationale
+    sections["还要注意的风险"] = _bullets(fact.risks, "目前没有特别提到的风险。")
 
     if viewer_user_id in fact.supporting_user_ids:
         sections["你的意见被采纳了"] = "你支持的方向，这次被采纳了。"
@@ -68,8 +78,12 @@ def build_audience_view(fact: FactBase, viewer_user_id: int) -> AudienceView:
         sections["你当初的意见"] = fact.dissenting.get(viewer_user_id) or (
             "这次没有记录下你当时的具体意见。"
         )
-        sections["为什么这次没有采纳"] = f"这次结论的依据是：{fact.rationale}"
-        sections["什么情况下会重新考虑"] = _reconsider_condition(fact)
+        if fact.decision:
+            sections["为什么这次没有采纳"] = f"这次结论的依据是：{fact.rationale}"
+            sections["什么情况下会重新考虑"] = _reconsider_condition(fact)
+        else:
+            # 结论还没定，就不能说「为什么没有采纳」——那是自相矛盾。
+            sections["现在还没有结论"] = "这事目前还没定下来，你的意见还在桌面上。"
 
     sections["你要做的事"] = _bullets(
         fact.action_items.get(viewer_user_id, []), "这次没有要你做的事。"
@@ -93,10 +107,25 @@ def _reconsider_condition(fact: FactBase) -> str:
 
 @dataclass(frozen=True)
 class ScanResult:
-    """出口扫描的结果。blocked 为真表示这份消息被拦下，不能发出去。"""
+    """出口扫描的结果。blocked 为真表示这份消息被拦下，不能发出去。
+
+    limitations：本次扫描在结构上覆盖不到的范围，随结果一起返回。
+    调用方须把它一并暴露出去，不得把「没发现问题」当成「没有问题」。
+    """
 
     blocked: bool
     violations: list[str]
+    limitations: tuple[str, ...] = ()
+
+
+# 出口扫描做不到的事，固定三条，随 ScanResult 一起返回。
+# 调用方必须把它一并暴露出去：扫描说「没发现问题」，不等于「没有问题」。
+SCAN_LIMITATIONS: tuple[str, ...] = (
+    "仅覆盖 build_audience_view 产出的 sections 文本，"
+    "不覆盖调用方在 sections 之外附加的内容",
+    "只识别 id 形态（如 user 2 / user_id=2），正文里的裸整数一律不判为泄漏",
+    "不做语义判断，改写、拼音、指代形式的泄漏无法发现",
+)
 
 
 def participant_user_ids(fact: FactBase) -> frozenset[int]:
@@ -113,11 +142,16 @@ def scan_view(
     *,
     forbidden_terms: Iterable[str] = (),
 ) -> ScanResult:
-    """出口扫描：兜底的一道检查，扫的是已经组装好的那一份消息。
+    """出口扫描：兜底的一道断言，扫的是已经组装好的那一份消息。
+
+    这不是权限判定的主防线 —— 主防线是 build_audience_view 的确定性裁剪，
+    权限由结构化数据（visible_user_ids）负责。这里只做「撞见 id 形态」的兜底，
+    宁可少报也不要把正常业务文本里的数字误判成泄漏。
 
     什么算禁止内容，三类：
-    1. 未授权的用户 id —— 文本里出现了事实基座中存在的用户编号，
-       但不在这份视图的 visible_user_ids 里；
+    1. 未授权的用户 id —— 文本里以 id 形态（如「用户 2」「user_id=2」）出现了
+       事实基座中存在的用户编号，但不在这份视图的 visible_user_ids 里；
+       裸整数一律不判；
     2. 未授权用户的异议原文 —— 别人的反对意见被原样搬了进来；
     3. 调用方给的敏感词 —— 由外部传入的 forbidden_terms。
     """
@@ -127,11 +161,14 @@ def scan_view(
     known = participant_user_ids(fact)
 
     reported: set[int] = set()
-    for token in _INT_TOKEN.findall(text):
+    for token in _ID_SHAPED.findall(text):
         number = int(token)
         if number in known and number not in visible and number not in reported:
             reported.add(number)
-            violations.append(f"出现了未授权的用户 id: {number}")
+            # 文案里只说人话（显示名），不回显裸 id —— 违规提示本身不该再泄漏一次 id。
+            violations.append(
+                f"出现了未授权的用户：{fact.display_names.get(number) or '未命名成员'}"
+            )
 
     for uid, words in fact.dissenting.items():
         if uid not in visible and words and words in text:
@@ -141,4 +178,8 @@ def scan_view(
         if term and term in text:
             violations.append(f"命中了禁止内容: {term}")
 
-    return ScanResult(blocked=bool(violations), violations=violations)
+    return ScanResult(
+        blocked=bool(violations),
+        violations=violations,
+        limitations=SCAN_LIMITATIONS,
+    )

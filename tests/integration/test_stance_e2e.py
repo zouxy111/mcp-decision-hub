@@ -14,8 +14,14 @@ from sqlalchemy import select
 from hub.api import matters as matter_svc
 from hub.api.tokens import issue_token
 from hub.db.models import AuditEvent, MatterParticipant, Stance
-from hub.domain.audience import FactBase, build_audience_view, scan_view
+from hub.domain.audience import (
+    SCAN_LIMITATIONS,
+    FactBase,
+    build_audience_view,
+    scan_view,
+)
 from hub.domain.convergence_eval import StanceInput, evaluate_convergence
+from hub.domain.digest import compute_stance_content_hash
 from tests.conftest import make_user
 
 
@@ -42,9 +48,12 @@ def _payload(**overrides) -> dict:
         "ttl_seconds": 3600,
         "urgency": "normal",
         "visibility": "participants",
-        "content_hash": "e" * 64,
     }
     data.update(overrides)
+    # 未显式指定 content_hash 时按正文重算，保证默认载荷是「自洽」的；
+    # 显式传 content_hash 时原样保留，用于构造摘要不匹配的负例。
+    if "content_hash" not in overrides:
+        data["content_hash"] = compute_stance_content_hash(data)
     return data
 
 
@@ -53,10 +62,10 @@ def test_立场层端到端从提交到差异化分发(client, db_session):
     bob = make_user(db_session, "bob")
     dave = make_user(db_session, "dave")  # 非参与方
 
-    # 标题刻意不含数字：出口扫描按纯文本匹配整数，标题里的 "v2" 会被误判成
-    # 「未授权用户 id: 2」，见本文件末尾的已知缺陷用例。
+    # 标题里的数字是刻意保留的：它曾经触发 scan_view 的假阳性（把 "v2" 当成
+    # 「未授权用户 id: 2」），现在必须带着数字安然通过整条链路。
     matter = matter_svc.create_matter(
-        db_session, initiator=alice, title="是否上线推荐系统",
+        db_session, initiator=alice, title="是否上线推荐系统 v2",
         goal="就是否上线达成结论", background="背景",
         participant_ids=[alice.id, bob.id], initiator_participates=True,
         timeout_seconds=3600, max_rounds=10, draft_questions=[],
@@ -151,24 +160,39 @@ def test_立场层端到端从提交到差异化分发(client, db_session):
 
     assert view_alice.sections != view_bob.sections
     assert view_alice.fact_version == view_bob.fact_version == fact.fact_version
-    assert "为什么这次没有采纳" in view_bob.sections
-    assert "为什么这次没有采纳" not in view_alice.sections
     assert view_bob.sections["你当初的意见"] == "反对上线"
 
-    assert scan_view(fact, view_alice).blocked is False
-    assert scan_view(fact, view_bob).blocked is False
+    # A3：本轮 decision 为 None（还没形成结论）。此时对反对者既不能说
+    # 「为什么这次没有采纳」，也不能紧接着解释「为什么这么定」——那都是在
+    # 无结论的前提下假装有结论依据。改发「现在还没有结论」，如实说明意见
+    # 仍在桌面上。
+    assert "为什么这次没有采纳" not in view_bob.sections
+    assert "现在还没有结论" in view_bob.sections
+    assert "为什么这么定" not in view_bob.sections
+    # 支持者本来就不该收到「未采纳」解释（角色差异，与是否成结论无关）。
+    assert "为什么这次没有采纳" not in view_alice.sections
+
+    # 出口扫描：标题带数字也照样放行；且「没发现问题」与「能发现什么」分开表达。
+    result_alice = scan_view(fact, view_alice)
+    result_bob = scan_view(fact, view_bob)
+    assert result_alice.blocked is False
+    assert result_bob.blocked is False
+    assert result_alice.violations == []
+    assert result_bob.violations == []
+    assert result_alice.limitations == SCAN_LIMITATIONS
+    assert result_bob.limitations == SCAN_LIMITATIONS
 
 
-def test_出口扫描把标题里的版本号误判成未授权用户id_已知缺陷():
-    """已知缺陷（记录当前真实行为，不是期望行为）。
+def test_标题里的版本号不再被判定为泄漏():
+    """标题里的 "v2" 不再触发出口扫描的假阳性。
 
-    scan_view 用 `(?<!\\d)\\d+(?!\\d)` 在成品文本里找整数，任何裸整数只要
-    等于某个参与人 id 且不在 visible_user_ids 里就被判为「泄漏用户 id」。
-    真实参与人 id 是自增小整数（1、2、3…），于是 "推荐系统 v2"、"3 个方案"
-    这种极普通的中文文案都会被误判成泄漏，把本来合法的消息拦下。
+    scan_view 只在成品文本里认「id 形态」（如「用户 2」「user_id=2」），裸整数
+    一概不判——权限判定本就由结构化数据（visible_user_ids）负责，正则不再承担
+    这个职责。于是 "推荐系统 v2"、"3 个方案" 这类普通中文文案可以安然通过，
+    同时 "用户2" 这种真实泄漏仍会被抓住（见 tests/domain/test_audience.py）。
 
-    这不是接线引入的问题，是 hub/domain/audience.py:scan_view 本身的
-    假阳性，端到端串联把它暴露了出来。
+    前提断言必须保留：先确认构造出的文本里确实含 "v2"，否则这条用例会退化成
+    「一段不含数字的文本没被拦」——那什么都证明不了。
     """
     fact = FactBase(
         fact_version="v1", item_title="是否上线推荐系统 v2",
@@ -180,6 +204,9 @@ def test_出口扫描把标题里的版本号误判成未授权用户id_已知�
     )
     view_alice = build_audience_view(fact, 1)
 
+    # 前提：成品文本里确实含 "v2"，其中数字 2 恰好等于一位参与人的 id。
+    assert "v2" in view_alice.sections["决定事项"]
+
     result = scan_view(fact, view_alice)
-    assert result.blocked is True
-    assert result.violations == ["出现了未授权的用户 id: 2"]
+    assert result.blocked is False
+    assert result.violations == []

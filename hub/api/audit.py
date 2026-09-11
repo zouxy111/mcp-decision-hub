@@ -33,6 +33,8 @@ MATTER_AWAITING_DECISION = "matter_awaiting_decision"
 TASK_TIMEOUT = "task_timeout"
 TASK_REASSIGNED = "task_reassigned"
 STANCE_READ = "stance_read"
+# 契约（2026-09-12 冻结）：收敛判定因脏数据降级时写入，detail 带 {stance, user_id}。
+CONVERGENCE_DEGRADED = "convergence_degraded"
 
 # Max chars of a decision rationale stored in audit detail (design decision 12).
 AUDIT_RATIONALE_MAX = 500
