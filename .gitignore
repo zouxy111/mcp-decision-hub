@@ -10,3 +10,5 @@ data/
 .DS_Store
 .env
 .workbuddy/
+web-ui/node_modules/
+web-ui/dist/
