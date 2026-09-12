@@ -5,6 +5,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from hub.db.base import Base
+from hub.db.migrations import run_migrations
 
 
 def make_engine(database_url: str) -> Engine:
@@ -25,6 +26,9 @@ def init_db(engine: Engine) -> None:
     # Import models so they register on Base.metadata before create_all.
     import hub.db.models  # noqa: F401
 
+    # Upgrades the *existing* schema first: create_all only ever adds missing
+    # tables, it never alters a table that is already there.
+    run_migrations(engine)
     Base.metadata.create_all(engine)
 
 
