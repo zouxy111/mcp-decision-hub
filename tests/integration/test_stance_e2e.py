@@ -44,7 +44,7 @@ def _payload(**overrides) -> dict:
         "disagreement_kind": None,
         "supersedes": None,
         "acting_as": "agent_on_behalf",
-        "authority": "CFO",
+        "authority": "can_commit",
         "ttl_seconds": 3600,
         "urgency": "normal",
         "visibility": "participants",

@@ -38,7 +38,8 @@ def test_full_chain_roundtrip(db_session):
     db_session.flush()
     out = Output(task_id=task.id, answers=[{"question_id": "q1", "content": "A"}],
                  notes=None, approved_at=utcnow(), content_digest="x" * 64)
-    rec = IdempotencyRecord(task_id=task.id, idempotency_key="k1",
+    rec = IdempotencyRecord(scope_type="task", scope_id=task.id, task_id=task.id,
+                            idempotency_key="k1",
                             request_fingerprint="f", response_json="{}")
     tok = AgentToken(user_id=alice.id, name="a1", token_hash="h" * 64)
     evt = AuditEvent(actor_user_id=alice.id, event_type="task_submitted",

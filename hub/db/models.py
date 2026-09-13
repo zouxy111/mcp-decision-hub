@@ -68,6 +68,11 @@ class Matter(Base):
         Integer, nullable=False, default=0, server_default="0"
     )
     blocked_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # 中转站 v1（rpQt6D 载体映射，v4 迁移同步）：items ← Matter 扩展 4 列
+    irreversible: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    options: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    overall_deadline: Mapped[datetime | None] = mapped_column(nullable=True)
+    item_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow, nullable=False)
 
@@ -77,6 +82,9 @@ class MatterParticipant(Base):
 
     matter_id: Mapped[str] = mapped_column(ForeignKey("matters.id"), primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    # 中转站 v1（Q1/Q2：agent_authority 挂「事项 × 参与人」，两档），v5 迁移同步
+    agent_authority: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    visibility_scope: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
 
 class Round(Base):
@@ -114,14 +122,22 @@ class Output(Base):
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     approved_at: Mapped[datetime] = mapped_column(nullable=False)
     content_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    # v8 迁移同步（补充决策 S1）：代理提交路径的授权档位留痕，与 stances 对称
+    authority: Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_at: Mapped[datetime] = mapped_column(default=utcnow, nullable=False)
 
 
 class IdempotencyRecord(Base):
     __tablename__ = "idempotency_records"
 
-    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id"), primary_key=True)
+    # v7 迁移同步：主键从 task_id 作用域放开为 scope_type + scope_id，
+    # 使幂等键可服务非 task 作用域（历史行迁移时 scope_type='task'、scope_id=task_id）。
+    scope_type: Mapped[str] = mapped_column(
+        String(32), primary_key=True, default="task"
+    )
+    scope_id: Mapped[str] = mapped_column(String(48), primary_key=True)
     idempotency_key: Mapped[str] = mapped_column(String(128), primary_key=True)
+    task_id: Mapped[str | None] = mapped_column(ForeignKey("tasks.id"), nullable=True)
     request_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
     response_json: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(default=utcnow, nullable=False)
@@ -156,6 +172,9 @@ class RoundSummary(Base):
                                                    nullable=False)
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     retry_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # v6 迁移同步：收敛评估的展示参考分与聚类结果（agreement_score 不作判据）
+    agreement_score: Mapped[float | None] = mapped_column(nullable=True)
+    clusters: Mapped[list | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(default=utcnow, nullable=False)
 
 
@@ -194,8 +213,9 @@ class Stance(Base):
     枚举列由 CHECK 约束兜底（stance / acting_as / urgency / visibility），
     取值与 hub.schemas.stance 的 StrEnum 保持一致。
 
-    注意：本仓库没有迁移工具，CHECK 约束只对**新建库**生效；存量库里的
-    stances 表不会被自动改写，需要升级时只能手工重建表并迁移数据。
+    注意：迁移机制已存在（hub/db/migrations/，v1/v2 起）。CHECK 约束对
+    **新建库**直接生效（create_all）；存量库走迁移步骤重建表补齐，不再
+    需要手工迁移。
     """
 
     __tablename__ = "stances"
@@ -216,6 +236,10 @@ class Stance(Base):
         CheckConstraint(
             "visibility IN ('participants', 'all')",
             name="ck_stances_visibility",
+        ),
+        CheckConstraint(
+            "authority IS NULL OR authority IN ('propose_only', 'can_commit')",
+            name="ck_stances_authority",
         ),
     )
 
@@ -239,7 +263,12 @@ class Stance(Base):
     supersedes: Mapped[str | None] = mapped_column(ForeignKey("stances.stance_id"),
                                                    nullable=True)
     acting_as: Mapped[str] = mapped_column(String(32), nullable=False)
-    authority: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # v3 迁移同步（补充决策 S3/S1）：authority 收敛为两档枚举（propose_only /
+    # can_commit，NULL 允许）；存量自由文本授权原值只读保留于 authority_legacy，
+    # 禁止启发式回填（PRD §3.4-1）。
+    authority: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    authority_legacy: Mapped[str | None] = mapped_column(Text, nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(nullable=True)
     ttl_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     urgency: Mapped[str] = mapped_column(String(16), default="normal", nullable=False)
     visibility: Mapped[str] = mapped_column(String(16), default="participants",

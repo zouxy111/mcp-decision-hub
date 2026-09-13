@@ -96,14 +96,15 @@ def test_重复跑迁移是幂等的且不重复执行(tmp_path, monkeypatch):
     db = tmp_path / "idem.db"
     engine = make_engine(f"sqlite:///{db}")
 
+    real_versions = tuple(m.version for m in migrations_module.MIGRATIONS)
     calls: list[int] = []
-    spy = Migration(99, "spy", lambda conn: calls.append(99))
+    spy = Migration(99, "spy", lambda conn: calls.append(99), lambda conn: None)
     monkeypatch.setattr(
         migrations_module, "MIGRATIONS", (*migrations_module.MIGRATIONS, spy)
     )
 
     first = run_migrations(engine, backup=False)
-    assert first.applied == (1, 2, 99)
+    assert first.applied == (*real_versions, 99)
     assert calls == [99]
 
     second = run_migrations(engine, backup=False)
@@ -126,12 +127,14 @@ def test_迁移失败后无半成品且版本号不前进(tmp_path, monkeypatch)
     db = tmp_path / "boom.db"
     engine = make_engine(f"sqlite:///{db}")
 
+    broken_version = migrations_module.MIGRATIONS[-1].version + 1
+
     def explodes(conn):
         conn.execute("BEGIN")
         conn.execute("CREATE TABLE half_done (x INTEGER)")  # 半成品
         raise RuntimeError("步骤内部炸了")
 
-    broken = Migration(5, "broken", explodes)
+    broken = Migration(broken_version, "broken", explodes, lambda conn: None)
     monkeypatch.setattr(
         migrations_module, "MIGRATIONS", (*migrations_module.MIGRATIONS, broken)
     )
@@ -139,13 +142,15 @@ def test_迁移失败后无半成品且版本号不前进(tmp_path, monkeypatch)
     with pytest.raises(MigrationError) as excinfo:
         run_migrations(engine, backup=False)
 
-    assert excinfo.value.version == 5
+    assert excinfo.value.version == broken_version
     assert excinfo.value.name == "broken"
     assert isinstance(excinfo.value.__cause__, RuntimeError)
 
     conn = _connect(db)
     try:
-        assert current_version(conn) == 2  # 只前进到最后一次成功的版本
+        # 只前进到最后一次成功的版本（v5 与被 monkeypatch 的 v99 无关）
+        # 只前进到最后一次成功的版本（被 monkeypatch 的 broken 步骤未记版本）
+        assert current_version(conn) == broken_version - 1
         assert "half_done" not in _table_names(conn)
     finally:
         conn.close()
@@ -183,7 +188,7 @@ def test_迁移不触碰LangGraph自管的表(tmp_path):
         conn.close()
 
     report = run_migrations(engine, backup=False)
-    assert report.applied == (2,)  # 确认 v2 真的执行了
+    assert 2 in report.applied  # 确认 v2 真的执行了（其后还有 v3+ 步骤）
 
     conn = _connect(db)
     try:
@@ -252,7 +257,7 @@ def test_升级存量库前先生成迁移前状态的备份(tmp_path):
 
     report = run_migrations(engine)  # backup 默认 True
 
-    assert report.applied == (2,)
+    assert 2 in report.applied
     backups = sorted((tmp_path / "backups").glob("hub-backup-*.db"))
     assert len(backups) == 1
 
@@ -395,31 +400,39 @@ def test_存量库升级后stances的CHECK约束生效且数据保留(tmp_path):
     db = tmp_path / "legacy.db"
     engine = _make_legacy_db(db)
 
-    # 旧库里先放一行合法数据，迁移必须把它带过去
+    # 旧库里先放一行合法数据（裸 SQL：legacy 表没有新模型才有的列），
+    # 迁移必须把它带过去
     with make_session_factory(engine)() as session:
         alice = make_user(session, "alice")
         matter = Matter(initiator_id=alice.id, title="T", goal="G", background="B")
         session.add(matter)
-        session.flush()
-        session.add(Stance(**_stance_kwargs(matter, alice)))
         session.commit()
         matter_id = matter.id
-
     conn = _connect(db)
     try:
+        conn.execute(
+            "INSERT INTO stances (stance_id, matter_id, round_number, user_id,"
+            " stance, confidence, position_summary, rationale_summary,"
+            " non_negotiables, conditions, open_questions, depends_on,"
+            " questions_for, acting_as, authority, urgency, visibility,"
+            " content_hash, created_at) VALUES ('stn_legacy', ?, 1, ?,"
+            " 'conditional', 0.5, 'p', 'r', '[]', '[]', '[]', '[]', '[]',"
+            " 'human', NULL, 'normal', 'participants', ?, '2026-01-01T00:00:00Z')",
+            (matter_id, alice.id, "a" * 64),
+        )
         stance_id = conn.execute("SELECT stance_id FROM stances").fetchone()[0]
+        conn.commit()
     finally:
         conn.close()
 
     report = run_migrations(engine, backup=False)
 
     assert report.from_version == 1  # 无版本表 + 已有业务表 → 认领为 baseline v1
-    assert report.applied == (2,)
+    assert 2 in report.applied
 
     conn = _connect(db)
     try:
         assert "ck_stances_" in _stances_ddl(conn)
-        assert current_version(conn) == 2
         rows = conn.execute("SELECT stance_id, matter_id FROM stances").fetchall()
         assert rows == [(stance_id, matter_id)]
         indexes = {

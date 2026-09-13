@@ -7,9 +7,9 @@ created_at）不接受客户端注入。
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Annotated
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 ShortText = Annotated[str, Field(min_length=1, max_length=500)]
 
@@ -75,7 +75,8 @@ class StanceCreate(BaseModel):
     disagreement_kind: DisagreementKind | None = None
     supersedes: str | None = Field(default=None, max_length=48)
     acting_as: ActingAs
-    authority: str | None = Field(default=None, max_length=255)
+    # v3 起收敛为两档枚举（补充决策 S3）：authority 答「凭什么能提交」
+    authority: Literal["propose_only", "can_commit"] | None = None
     ttl_seconds: int | None = Field(default=None, ge=60)
     urgency: Urgency = Urgency.NORMAL
     visibility: Visibility = Visibility.PARTICIPANTS
@@ -103,7 +104,75 @@ class StanceRead(BaseModel):
     disagreement_kind: DisagreementKind | None
     supersedes: str | None
     acting_as: ActingAs
-    authority: str | None
+    authority: Literal["propose_only", "can_commit"] | None
+    ttl_seconds: int | None
+    urgency: Urgency
+    visibility: Visibility
+    content_hash: str
+    created_at: datetime
+
+
+# 与 hub/domain/audience.py 的占位文案保持一致（domain 层是纯函数、零依赖，
+# 不反向导入 schema，故此处复制字面量并在测试中钉住行为）。
+NO_DECISION_PLACEHOLDER = "这事目前还没定下来。"
+
+
+class StanceAnalysisRead(BaseModel):
+    """GET /api/items/{matter_id}/stances/analysis 出参（rsEXuh：禁止裸 dict）。
+
+    faithfulness 校验（生成后）：sections 里凡承载事实的字段必须逐字来自
+    事实基座，唯一例外是固定占位文案。此处校验其结构性推论（无需源事实
+    即可判定）：「结论」为无结论占位文案时，不得同时出现「为什么这么定」/
+    「为什么这次没有采纳」—— 没下结论却解释采纳理由，即不忠实。
+    """
+
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
+
+    fact_version: str
+    sections: dict[str, str]
+    violations: list[str]
+    limitations: list[str]
+    converged: bool
+    degrading: bool
+    undetected_checks: list[str]
+    skipped_user_ids: list[str]
+
+    @model_validator(mode="after")
+    def _conclusion_is_faithful(self) -> "StanceAnalysisRead":
+        conclusion = self.sections.get("结论")
+        if conclusion == NO_DECISION_PLACEHOLDER:
+            contradictory = {"为什么这么定", "为什么这次没有采纳"} & set(
+                self.sections
+            )
+            if contradictory:
+                raise ValueError(
+                    f"无结论占位与采纳解释并存，不忠实于事实基座: {contradictory}"
+                )
+        return self
+
+
+class StanceListItem(BaseModel):
+    """立场列表出参：StanceRead 去掉私有字段后的公开子集（B27）。
+
+    私有字段默认清单【待 owner 确认】：confidence / rationale_summary /
+    non_negotiables / conditions / disagreement_kind —— 内部把握度与依据、
+    底线与条件属「内部」信息，不进列表；单读端点（StanceRead）不受影响。
+    """
+
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
+
+    stance_id: str
+    matter_id: str
+    round_number: int
+    user_id: int
+    stance: StanceKind
+    position_summary: str
+    open_questions: list[str]
+    depends_on: list[str]
+    questions_for: list[QuestionFor]
+    supersedes: str | None
+    acting_as: ActingAs
+    authority: Literal["propose_only", "can_commit"] | None
     ttl_seconds: int | None
     urgency: Urgency
     visibility: Visibility

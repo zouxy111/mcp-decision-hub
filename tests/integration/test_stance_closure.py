@@ -69,9 +69,9 @@ def test_四层闭环从脏数据到出口扫描(db_session):
 
     # 脏数据写入：真实 schema 的 CHECK 约束会拦住 stance="banana"。这里用
     # SQLite 的 ignore_check_constraints 模拟「存量库/外部直写」入库的脏行——
-    # 本仓库没有迁移工具，CHECK 只对新建库生效，老库的 stances 表没有该约束，
-    # 历史脏行 / 外部写入 / 新增立场类型忘了同步都会产生未知 stance。所以这
-    # 不是在测一个假想分支。
+    # 迁移机制已存在（hub/db/migrations/，v1/v2 起），CHECK 对新建库直接生效、
+    # 存量库由迁移步骤重建表补齐；但迁移前入库的历史脏行 / 外部写入 / 新增
+    # 立场类型忘了同步，仍会产生未知 stance。所以这不是在测一个假想分支。
     db_session.execute(text("PRAGMA ignore_check_constraints = ON"))
     db_session.add_all([
         _stance_row(matter_id=matter.id, user_id=alice.id, stance="support"),

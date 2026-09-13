@@ -232,7 +232,7 @@ def mcp_submit_output(
     fingerprint = sha256_hex(
         json.dumps(payload, sort_keys=True, ensure_ascii=False)
     )
-    record = session.get(IdempotencyRecord, (task_id, idempotency_key))
+    record = session.get(IdempotencyRecord, ("task", task_id, idempotency_key))
     existing_output = session.scalar(
         select(Output).where(Output.task_id == task_id)
     )
@@ -305,6 +305,8 @@ def mcp_submit_output(
     }
     session.add(
         IdempotencyRecord(
+            scope_type="task",
+            scope_id=task_id,
             task_id=task_id,
             idempotency_key=idempotency_key,
             request_fingerprint=fingerprint,

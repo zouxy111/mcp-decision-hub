@@ -35,6 +35,9 @@ TASK_REASSIGNED = "task_reassigned"
 STANCE_READ = "stance_read"
 # 契约（2026-09-12 冻结）：收敛判定因脏数据降级时写入，detail 带 {stance, user_id}。
 CONVERGENCE_DEGRADED = "convergence_degraded"
+# 补充决策 A（owner 已批）：迁移步骤应用时写入，detail = {version, name}，
+# actor_user_id/matter_id 均为 NULL（系统事件）。写入守卫在迁移层。
+SCHEMA_MIGRATED = "schema_migrated"
 
 # Max chars of a decision rationale stored in audit detail (design decision 12).
 AUDIT_RATIONALE_MAX = 500

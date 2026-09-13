@@ -4,14 +4,17 @@
 Authorization: Bearer（无 Cookie 会话），错误经全局 ApiError handler 序列化。
 """
 
-from dataclasses import asdict
-
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from hub.api import stances as stance_svc
 from hub.db.models import User
-from hub.schemas.stance import StanceCreate, StanceRead
+from hub.schemas.stance import (
+    StanceAnalysisRead,
+    StanceCreate,
+    StanceListItem,
+    StanceRead,
+)
 from hub.web.deps import get_db, require_bearer
 
 router = APIRouter()
@@ -34,7 +37,8 @@ def submit_stance(
 
 # 注意：本路由必须声明在 /stances/{user_id} 之前，否则 "analysis" 会被当成
 # user_id 去解析成 int，直接 422。
-@router.get("/api/items/{matter_id}/stances/analysis")
+@router.get("/api/items/{matter_id}/stances/analysis",
+            response_model=StanceAnalysisRead)
 def read_stance_analysis(
     matter_id: str,
     round_number: int = 1,
@@ -46,7 +50,7 @@ def read_stance_analysis(
         db, matter_id=matter_id, round_number=round_number, user=user
     )
     db.commit()  # 落脏数据的收敛降级审计
-    return asdict(analysis)
+    return analysis
 
 
 @router.get("/api/items/{matter_id}/stances/{user_id}",
@@ -65,7 +69,7 @@ def read_stance(
 
 
 @router.get("/api/items/{matter_id}/stances",
-            response_model=list[StanceRead])
+            response_model=list[StanceListItem])
 def list_stances(
     matter_id: str,
     user: User = Depends(require_bearer),

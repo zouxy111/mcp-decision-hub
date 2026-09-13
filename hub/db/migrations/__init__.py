@@ -58,6 +58,7 @@ happen, ``run_migrations`` takes a WAL-safe backup *before* touching anything
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -73,6 +74,7 @@ class Migration:
     version: int
     name: str
     upgrade: Callable[[sqlite3.Connection], None]
+    downgrade: Callable[[sqlite3.Connection], None]
 
 
 @dataclass(frozen=True)
@@ -93,11 +95,49 @@ class MigrationError(RuntimeError):
 
 
 MIGRATIONS: tuple[Migration, ...] = (
-    Migration(1, "baseline", _steps.upgrade_baseline),
+    Migration(1, "baseline", _steps.upgrade_baseline,
+              _steps.downgrade_baseline),
     Migration(
         2,
         "add_stance_check_constraints",
         _steps.upgrade_add_stance_check_constraints,
+        _steps.downgrade_add_stance_check_constraints,
+    ),
+    Migration(
+        3,
+        "stance_authority_enum_and_approval",
+        _steps.upgrade_stance_authority_enum_and_approval,
+        _steps.downgrade_stance_authority_enum_and_approval,
+    ),
+    Migration(
+        4,
+        "add_matter_item_columns",
+        _steps.upgrade_add_matter_item_columns,
+        _steps.downgrade_add_matter_item_columns,
+    ),
+    Migration(
+        5,
+        "add_participant_authority_columns",
+        _steps.upgrade_add_participant_authority_columns,
+        _steps.downgrade_add_participant_authority_columns,
+    ),
+    Migration(
+        6,
+        "add_summary_evaluation_columns",
+        _steps.upgrade_add_summary_evaluation_columns,
+        _steps.downgrade_add_summary_evaluation_columns,
+    ),
+    Migration(
+        7,
+        "rescope_idempotency_primary_key",
+        _steps.upgrade_rescope_idempotency_primary_key,
+        _steps.downgrade_rescope_idempotency_primary_key,
+    ),
+    Migration(
+        8,
+        "add_output_authority",
+        _steps.upgrade_add_output_authority,
+        _steps.downgrade_add_output_authority,
     ),
 )
 
@@ -156,6 +196,62 @@ def _record(conn: sqlite3.Connection, migration: Migration) -> None:
     )
 
 
+def _write_audit(conn: sqlite3.Connection, migration: Migration) -> None:
+    """数据语义变更补一条 audit_events 事件（补充决策 A）。
+
+    守卫：迁移跑在 ``create_all`` **之前**，全新库上 ``audit_events`` 尚不存在
+    → 只写 logging、不报错（事件常量 ``SCHEMA_MIGRATED`` 已获 owner 批准）。
+    """
+    if not _table_exists(conn, "audit_events"):
+        logging.warning(
+            "schema migrated v%s (%s): audit_events 不存在，仅记 logging",
+            migration.version, migration.name,
+        )
+        return
+    import json
+
+    conn.execute(
+        "INSERT INTO audit_events (event_type, matter_id, detail, created_at)"
+        " VALUES (?, NULL, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+        ("schema_migrated", json.dumps(
+            {"version": migration.version, "name": migration.name},
+            ensure_ascii=False,
+        )),
+    )
+
+
+def rollback_step(engine: Engine, version: int) -> None:
+    """回滚**当前最新**的一个已应用步骤（每项可单独回滚）。
+
+    只允许回滚最新版：跳着回滚会让中间步骤的假设失效。回滚成功后删除该
+    版本记录，使 ``run_migrations`` 之后可以重新应用它（可回滚 = 可重放）。
+    """
+    raw = engine.raw_connection()
+    try:
+        conn = raw.driver_connection
+        conn.isolation_level = None
+        current = current_version(conn)
+        if version != current:
+            raise MigrationError(
+                f"只能回滚当前最新版本（当前 v{current}，请求 v{version}）",
+                version=version,
+            )
+        migration = _migration(version)
+        try:
+            migration.downgrade(conn)
+        except BaseException as exc:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise MigrationError(
+                f"回滚 v{migration.version} ({migration.name}) 失败: {exc}",
+                version=migration.version,
+                name=migration.name,
+            ) from exc
+        conn.execute(f"DELETE FROM {_VERSION_TABLE} WHERE version = ?", (version,))
+    finally:
+        raw.close()
+
+
 def _backup(engine: Engine) -> Path | None:
     """WAL-safe pre-migration backup, written next to the database file.
 
@@ -209,6 +305,7 @@ def run_migrations(engine: Engine, *, backup: bool = True) -> MigrationReport:
                     name=migration.name,
                 ) from exc
             _record(conn, migration)
+            _write_audit(conn, migration)
         return MigrationReport(
             from_version=from_version,
             to_version=MIGRATIONS[-1].version,

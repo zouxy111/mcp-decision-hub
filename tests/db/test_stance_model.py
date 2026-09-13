@@ -35,7 +35,10 @@ def _stance_kwargs(matter, user, *, round_number=1, **overrides) -> dict:
         "disagreement_kind": "risk_appetite",
         "supersedes": None,
         "acting_as": "agent_on_behalf",
-        "authority": "CFO 授权",
+        # v3 起 authority 收敛为两档枚举（propose_only / can_commit）；
+        # 历史自由文本只进 authority_legacy（禁止启发式回填，PRD §3.4-1）
+        "authority": "can_commit",
+        "authority_legacy": "CFO 授权",
         "ttl_seconds": 3600,
         "urgency": "high",
         "visibility": "all",
@@ -74,7 +77,8 @@ def test_完整立场对象落库读回字段无损(db_session):
     assert loaded.disagreement_kind == "risk_appetite"
     assert loaded.supersedes is None
     assert loaded.acting_as == "agent_on_behalf"
-    assert loaded.authority == "CFO 授权"
+    assert loaded.authority == "can_commit"
+    assert loaded.authority_legacy == "CFO 授权"
     assert loaded.ttl_seconds == 3600
     assert loaded.urgency == "high"
     assert loaded.visibility == "all"

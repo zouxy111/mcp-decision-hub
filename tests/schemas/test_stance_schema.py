@@ -25,7 +25,7 @@ def _payload(**overrides) -> dict:
         "disagreement_kind": "fact",
         "supersedes": None,
         "acting_as": "human",
-        "authority": "本人",
+        "authority": "can_commit",
         "ttl_seconds": 600,
         "urgency": "normal",
         "visibility": "participants",

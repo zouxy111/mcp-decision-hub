@@ -149,13 +149,21 @@ def analyze_round(
                Stance.round_number == round_number)
         .order_by(Stance.created_at.asc())
     ).all()
+    # 聚合读同样留痕（roR8Pk 第 3 条收口）：detail 只记范围与行数，
+    # 不记任何立场内容。
+    audit.record_audit(
+        session, audit.STANCE_READ,
+        actor_user_id=user.id, matter_id=matter_id,
+        detail={"scope": "analysis", "round_number": round_number,
+                "returned_rows": len(rows)},
+    )
 
     result = evaluate_convergence_lenient(to_stance_inputs(rows))
-    # 降级分支的可达性：本仓库没有迁移工具（无 Alembic，schema 变更靠
-    # Base.metadata.create_all），而 create_all 不会改已存在的表，CHECK 约束
-    # 只对「新建库」生效。存量库的 stances 表没有该约束，历史脏行 / 外部
-    # 直写 / 新增立场类型忘了同步，都会产生未知 stance。所以下面这段不是
-    # 死代码 —— 它是存量库与外部写入方的主要防线，不要删。
+    # 降级分支的可达性：迁移机制已存在（hub/db/migrations/，v1/v2 起），
+    # CHECK 约束对新建库直接生效、存量库由迁移步骤重建表补齐。但迁移前
+    # 已入库的历史脏行 / 外部直写 / 新增立场类型忘了同步，仍会产生未知
+    # stance。所以下面这段不是死代码 —— 它是存量库与外部写入方的主要防线，
+    # 不要删。
     skipped = set(result.skipped_stance_user_ids)
     for row in rows:
         if str(row.user_id) in skipped:
@@ -305,12 +313,21 @@ def get_stance(
 
 
 def list_stances(session: Session, *, matter_id: str, user: User) -> list[Stance]:
-    """列出该事项下当前用户可见的全部立场（按轮次升序）。"""
+    """列出该事项下当前用户可见的全部立场（按轮次升序）。
+
+    批量读是拉取他人立场的主入口，必须有读取侧审计（roR8Pk 第 3 条收口）。
+    """
     matter = _require_matter_access(session, matter_id=matter_id, user=user)
     rows = session.scalars(
         select(Stance)
         .where(Stance.matter_id == matter_id)
         .order_by(Stance.round_number.asc(), Stance.created_at.asc())
     ).all()
-    return [s for s in rows if _visible(session, matter=matter, user=user,
-                                        stance=s)]
+    visible = [s for s in rows if _visible(session, matter=matter, user=user,
+                                           stance=s)]
+    audit.record_audit(
+        session, audit.STANCE_READ,
+        actor_user_id=user.id, matter_id=matter_id,
+        detail={"scope": "list", "returned_rows": len(visible)},
+    )
+    return visible
