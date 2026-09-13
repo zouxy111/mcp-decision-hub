@@ -1,9 +1,11 @@
 """DeepSeek client (OpenAI-compatible chat completions), sync httpx.
 
-Retry policy (PRD 10.1/11.2): invalid JSON, schema violations, timeouts,
-network errors and HTTP errors (including 401/403 auth failures) are retried
-up to MAX_RETRIES times with exponential backoff; exhaustion raises LLMError.
-A missing API key fails immediately without retry.
+Retry policy (r5Am9i 分级重试，R1–R10；C2 修正旧「401 也重试」缺陷):
+429 / 5xx / network errors / timeouts / invalid JSON / schema violations are
+retried up to MAX_RETRIES times with exponential backoff + jitter (capped);
+4xx client errors — including 401/403 auth failures — fail immediately
+without retry. A missing API key fails immediately without retry.
+Classification and backoff live in :mod:`hub.domain.retry` (pure domain).
 
 Logging discipline (PRD 10.1): only schema_name, duration, error code and
 retry count are logged — never prompts, completions or API keys.
@@ -11,11 +13,13 @@ retry count are logged — never prompts, completions or API keys.
 
 import json
 import logging
+import random
 import time
 from collections.abc import Callable
 
 import httpx
 
+from hub.domain import retry as retry_policy
 from hub.domain.convergence import ConvergenceValidationError, validate_convergence
 
 logger = logging.getLogger(__name__)
@@ -33,9 +37,11 @@ BACKOFF_BASE_SECONDS = 1.0
 
 
 class LLMError(Exception):
-    def __init__(self, error_code: str, message: str, *, retry_count: int):
+    def __init__(self, error_code: str, message: str, *, retry_count: int,
+                 status_code: int | None = None):
         self.error_code = error_code
         self.retry_count = retry_count
+        self.status_code = status_code
         super().__init__(message)
 
 
@@ -95,6 +101,7 @@ class DeepSeekClient:
         backoff_base_seconds: float = BACKOFF_BASE_SECONDS,
         http_client: httpx.Client | None = None,
         sleep_fn: Callable[[float], None] = time.sleep,
+        rng: random.Random | None = None,
     ):
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
@@ -104,6 +111,7 @@ class DeepSeekClient:
         self._backoff_base = backoff_base_seconds
         self._http = http_client or httpx.Client(timeout=timeout_seconds)
         self._sleep = sleep_fn
+        self._rng = rng
 
     def complete_json(
         self, system_prompt: str, user_prompt: str, *, schema_name: str
@@ -116,9 +124,14 @@ class DeepSeekClient:
             )
         started = time.monotonic()
         last_error: LLMError | None = None
+        delays = retry_policy.backoff_delays(
+            retries=self._max_retries,
+            base=self._backoff_base,
+            rng=self._rng,
+        )
         for attempt in range(self._max_retries + 1):
             if attempt > 0:
-                self._sleep(self._backoff_base * (2 ** (attempt - 1)))
+                self._sleep(delays[attempt - 1])
             try:
                 result = self._call_once(system_prompt, user_prompt,
                                          schema_name=schema_name)
@@ -128,13 +141,19 @@ class DeepSeekClient:
                 )
                 return result
             except LLMError as e:
+                if not retry_policy.should_retry(
+                    error_code=e.error_code, status_code=e.status_code
+                ):
+                    # R1：4xx 客户端错误（认证失败等）立即失败，不消耗重试。
+                    raise
                 last_error = e
                 logger.warning(
                     "llm_call failed type=%s error_code=%s retry=%d",
                     schema_name, e.error_code, attempt,
                 )
         raise LLMError(
-            last_error.error_code, str(last_error), retry_count=self._max_retries
+            last_error.error_code, str(last_error), retry_count=self._max_retries,
+            status_code=last_error.status_code,
         ) from last_error
 
     def _call_once(self, system_prompt: str, user_prompt: str, *,
@@ -161,10 +180,12 @@ class DeepSeekClient:
                            f"LLM 网络错误: {type(e).__name__}", retry_count=0) from e
         if resp.status_code in (401, 403):
             raise LLMError(LLM_AUTH_FAILED,
-                           f"LLM 认证失败（HTTP {resp.status_code}）", retry_count=0)
+                           f"LLM 认证失败（HTTP {resp.status_code}）",
+                           retry_count=0, status_code=resp.status_code)
         if resp.status_code != 200:
             raise LLMError(LLM_HTTP_ERROR,
-                           f"LLM HTTP 错误（{resp.status_code}）", retry_count=0)
+                           f"LLM HTTP 错误（{resp.status_code}）",
+                           retry_count=0, status_code=resp.status_code)
         try:
             content = resp.json()["choices"][0]["message"]["content"]
             data = json.loads(content)

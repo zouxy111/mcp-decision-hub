@@ -88,7 +88,9 @@ def test_timeout_retried_then_success():
     assert len(calls) == 2
 
 
-def test_http_401_retried_and_exhausted():
+def test_http_401_fails_immediately_without_retry():
+    """【断言翻转 · C2 修复】401 属 4xx 客户端错误，立即失败不重试
+    （r5Am9i R1；旧断言「重试 3 次耗尽」编码的正是被修掉的缺陷）。"""
     calls = []
 
     def handler(request):
@@ -99,8 +101,8 @@ def test_http_401_retried_and_exhausted():
     with pytest.raises(LLMError) as exc:
         client.complete_json("s", "u", schema_name="round_summary")
     assert exc.value.error_code == LLM_AUTH_FAILED
-    assert exc.value.retry_count == 3
-    assert len(calls) == 4  # 首次 + 3 次重试
+    assert exc.value.retry_count == 0
+    assert len(calls) == 1  # 只有首次，零重试
 
 
 def test_invalid_json_exhausted_raises_with_retry_count():
@@ -201,6 +203,9 @@ def test_questions_schema_rejects_empty_questions():
 
 
 def test_backoff_schedule():
+    """【断言翻转 · r5Am9i R8】退避带乘性 jitter：以默认随机源注入时序列不再是
+    恰好 [1, 2, 4]，但仍单调递增（在 base=1、±20% 抖动下数学上不可能逆序），
+    且次数不变。确定性序列断言移至 test_client_retry.py::test_R8（固定种子）。"""
     sleeps = []
 
     def handler(request):
@@ -209,4 +214,6 @@ def test_backoff_schedule():
     client = _make_client(handler, sleep_fn=sleeps.append)
     with pytest.raises(LLMError):
         client.complete_json("s", "u", schema_name="round_summary")
-    assert sleeps == [1.0, 2.0, 4.0]
+    assert len(sleeps) == 3
+    assert sleeps == sorted(sleeps)
+    assert all(0 < d <= 30.0 for d in sleeps)
