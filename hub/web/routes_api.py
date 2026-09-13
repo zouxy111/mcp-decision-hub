@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from hub.api import stances as stance_svc
 from hub.db.models import User
-from hub.schemas.stance import StanceCreate, StanceRead
+from hub.schemas.stance import StanceAnalysisOut, StanceCreate, StanceRead
 from hub.web.deps import get_db, require_bearer
 
 router = APIRouter()
@@ -34,7 +34,8 @@ def submit_stance(
 
 # 注意：本路由必须声明在 /stances/{user_id} 之前，否则 "analysis" 会被当成
 # user_id 去解析成 int，直接 422。
-@router.get("/api/items/{matter_id}/stances/analysis")
+@router.get("/api/items/{matter_id}/stances/analysis",
+            response_model=StanceAnalysisOut)
 def read_stance_analysis(
     matter_id: str,
     round_number: int = 1,

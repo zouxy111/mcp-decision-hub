@@ -109,3 +109,23 @@ class StanceRead(BaseModel):
     visibility: Visibility
     content_hash: str
     created_at: datetime
+
+
+class StanceAnalysisOut(BaseModel):
+    """GET /api/items/{id}/stances/analysis 的响应契约（B1 收口）。
+
+    与生产装配出口 `RoundStanceAnalysis`（hub/api/stances.py 的冻结
+    dataclass）逐字段对齐：dataclass 是领域侧事实源，本模型只把它
+    声明进 OpenAPI，让键集合成为 API 契约。tuple 字段经 JSON 序列化
+    后即 list。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    fact_version: str
+    sections: dict[str, str]
+    violations: list[str]
+    limitations: list[str]
+    converged: bool
+    degrading: bool
+    undetected_checks: list[str]
+    skipped_user_ids: list[str]

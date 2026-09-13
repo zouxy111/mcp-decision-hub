@@ -716,3 +716,29 @@ def test_非法载荷返回422且不落库(client, db_session, overrides):
 
     db_session.expire_all()
     assert db_session.scalars(select(Stance)).all() == []
+
+
+def test_分析接口在OpenAPI中声明响应模型(client, db_session):
+    """B1 收口：analysis 端点必须声明 response_model，键集合进 API 契约，
+    而不是只在运行时碰巧是 dict。"""
+    carol = make_user(db_session, "carol")
+    alice = make_user(db_session, "alice")
+    matter = _make_matter_for_initiator(db_session, carol, participants=(alice,))
+    db_session.add(_stance_row(matter_id=matter.id, user_id=alice.id,
+                               stance="support"))
+    db_session.commit()
+    h_alice = _auth_headers(db_session, alice, "alice")
+
+    resp = client.get(f"/api/items/{matter.id}/stances/analysis",
+                      headers=h_alice)
+    assert resp.status_code == 200
+
+    from hub.schemas.stance import StanceAnalysisOut
+    StanceAnalysisOut.model_validate(resp.json())
+
+    spec = client.get("/openapi.json").json()
+    op = spec["paths"]["/api/items/{matter_id}/stances/analysis"]["get"]
+    content = op["responses"]["200"].get("content", {})
+    assert "application/json" in content
+    assert "StanceAnalysisOut" in content["application/json"]["schema"][
+        "$ref"]
