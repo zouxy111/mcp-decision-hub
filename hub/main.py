@@ -18,6 +18,7 @@ from hub.domain.rate_limit import RateLimiter
 from hub.llm.client import DeepSeekClient
 from hub.web import (
     routes_admin,
+    routes_agent_rest,
     routes_agents,
     routes_api,
     routes_auth,
@@ -136,6 +137,7 @@ def create_app(settings: Settings | None = None, *, llm=None) -> FastAPI:
     app.include_router(routes_agents.router)
     app.include_router(routes_admin.router)
     app.include_router(routes_api.router)
+    app.include_router(routes_agent_rest.router)
     if mcp_asgi is not None:
         app.mount("/mcp", mcp_asgi)
     return app

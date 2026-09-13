@@ -32,9 +32,21 @@ from hub.domain.limits import (
     validate_request_body_size,
 )
 from hub.domain.timeutil import iso_z, parse_iso_z, utcnow
+from hub.schemas.mcp_outputs import (
+    MatterStatusOut,
+    PendingTasksOut,
+    SubmitOutputOut,
+    TaskDetailOut,
+)
 
 DEFAULT_LIMIT = 20
 MAX_LIMIT = 100
+
+
+def _contract(model_cls, data):
+    """返回值先过 Pydantic 输出契约再出门：键漂移/多字段/缺字段在这里炸，
+    不带病交给调用方。模型字段与既有 JSON 键逐一对齐，只校验不改形。"""
+    return model_cls.model_validate(data).model_dump(exclude_defaults=True)
 
 
 def _encode_cursor(offset: int) -> str:
@@ -71,7 +83,7 @@ def mcp_list_pending_tasks(
     rows = rows[:effective_limit]
     poll_seconds = (settings.poll_seconds_active if rows
                     else settings.poll_seconds_idle)
-    return {
+    return _contract(PendingTasksOut, {
         "tasks": [
             {
                 "task_id": task.id,
@@ -85,7 +97,7 @@ def mcp_list_pending_tasks(
         ],
         "next_cursor": _encode_cursor(offset + effective_limit) if has_more else None,
         "next_poll_after": iso_z(utcnow() + timedelta(seconds=poll_seconds)),
-    }
+    })
 
 
 def mcp_get_task(
@@ -107,7 +119,7 @@ def mcp_get_task(
         raise ApiError(403, "FORBIDDEN_SCOPE", "无权访问该任务")
     matter = session.get(Matter, task.matter_id)
     rnd = session.get(Round, task.round_id)
-    return {
+    return _contract(TaskDetailOut, {
         "task_id": task.id,
         "status": task.status,
         "matter": {
@@ -124,7 +136,7 @@ def mcp_get_task(
         "previous_summary": _previous_summary_view(session, rnd),
         "deadline_at": iso_z(task.deadline_at) if task.deadline_at else None,
         "llm_provider": settings.llm_provider_name,
-    }
+    })
 
 
 def _limit_api_error(e: ContentLimitError) -> ApiError:
@@ -254,7 +266,7 @@ def mcp_submit_output(
     )
 
     if decision is IdempotencyDecision.REPLAY_SAME_KEY:
-        return json.loads(record.response_json)
+        return _contract(SubmitOutputOut, json.loads(record.response_json))
     if decision is IdempotencyDecision.CONFLICT_SAME_KEY:
         raise ApiError(409, "IDEMPOTENCY_CONFLICT", "幂等键对应不同请求体")
     if decision is IdempotencyDecision.INVALID_STATE:
@@ -271,12 +283,12 @@ def mcp_submit_output(
             session, audit.OUTPUT_REPLAYED, actor_user_id=user_id,
             matter_id=task.matter_id, detail={"task_id": task_id},
         )
-        return {
+        return _contract(SubmitOutputOut, {
             "task_id": task_id,
             "status": "submitted",
             "submitted_at": iso_z(task.submitted_at),
             "output_id": existing_output.id,
-        }
+        })
     if decision is IdempotencyDecision.ALREADY_SUBMITTED:
         raise ApiError(409, "TASK_ALREADY_SUBMITTED",
                        "任务已存在不同内容的提交")
@@ -323,7 +335,7 @@ def mcp_submit_output(
         session, audit.TASK_SUBMITTED, actor_user_id=user_id,
         matter_id=task.matter_id, detail={"task_id": task_id},
     )
-    return response
+    return _contract(SubmitOutputOut, response)
 
 
 def mcp_get_matter_status(
@@ -390,7 +402,7 @@ def mcp_get_matter_status(
             }
             for t in tasks
         ]
-    return result
+    return _contract(MatterStatusOut, result)
 
 
 def _summary_payload(summary: RoundSummary) -> dict:
