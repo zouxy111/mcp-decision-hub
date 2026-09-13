@@ -8,11 +8,46 @@
 `extra="forbid"`：多出来的字段视为契约破坏（宁可产出时报错，不带病出门）。
 """
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class _Strict(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+
+class DeclareItemIn(_Strict):
+    """declare_item 入参（rpQt6D：items 载体 = Matter 扩展 4 列）。
+
+    participant_ids 为 2–5 名参与人（FR-05）；question 复用 Matter.goal；
+    irreversible / options / overall_deadline / item_version 落在 A1 的
+    v4 迁移列上。"""
+
+    title: str = Field(min_length=1, max_length=255)
+    question: str = Field(min_length=1)
+    background: str = ""
+    participant_ids: list[int] = Field(min_length=2, max_length=5)
+    irreversible: bool = False
+    options: list[str] | None = None
+    overall_deadline: str | None = None
+
+
+class DeclareItemOut(_Strict):
+    matter_id: str
+    status: str
+    item_version: int
+    irreversible: bool
+
+
+class RoundSummaryOut(_Strict):
+    """get_summary 出参：最新一轮 ok 摘要（五字段无身份，PRD 9.2）。"""
+
+    round_id: str
+    round_number: int
+    consensus_points: list
+    divergences: list
+    blind_spots: list
+    open_questions: list
+    convergence: str | None
 
 
 class SummaryPayload(_Strict):

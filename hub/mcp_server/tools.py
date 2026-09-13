@@ -114,3 +114,94 @@ def register_tools(mcp: FastMCP, session_factory, settings: Settings,
             settings=settings, user_id=_current_user_id(), matter_id=matter_id,
             rounds_before=rounds_before,
         )
+
+    # ---------------- r5Am9i · 立场层工具（语义明确的 4 个） ----------------
+
+    @mcp.tool
+    def declare_item(
+        title: str,
+        question: str,
+        participant_ids: list[int],
+        background: str = "",
+        irreversible: bool = False,
+        options: list[str] | None = None,
+        overall_deadline: str | None = None,
+    ) -> dict:
+        """Declare a new item (MCP 不可用时的 REST 对应：POST /items 语义)。
+        Caller becomes the initiator; 2-5 participants required (FR-05)."""
+        return _call(
+            session_factory, methods.mcp_declare_item,
+            settings=settings, user_id=_current_user_id(),
+            payload={
+                "title": title, "question": question, "background": background,
+                "participant_ids": participant_ids,
+                "irreversible": irreversible, "options": options,
+                "overall_deadline": overall_deadline,
+            },
+        )
+
+    @mcp.tool
+    def submit_stance(
+        matter_id: str,
+        round_number: int,
+        stance: str,
+        confidence: float,
+        position_summary: str,
+        rationale_summary: str,
+        content_hash: str,
+        non_negotiables: list[str] | None = None,
+        conditions: list[str] | None = None,
+        open_questions: list[str] | None = None,
+        depends_on: list[str] | None = None,
+        questions_for: list[dict] | None = None,
+        disagreement_kind: str | None = None,
+        supersedes: str | None = None,
+        acting_as: str = "human",
+        authority: str | None = None,
+        ttl_seconds: int | None = None,
+        urgency: str = "normal",
+        visibility: str = "participants",
+    ) -> dict:
+        """Submit this user's stance for a round (enums validated, 422 on
+        illegal values; illegal values never reach the database)."""
+        payload = {
+            "round_number": round_number, "stance": stance,
+            "confidence": confidence,
+            "position_summary": position_summary,
+            "rationale_summary": rationale_summary,
+            "non_negotiables": non_negotiables or [],
+            "conditions": conditions or [],
+            "open_questions": open_questions or [],
+            "depends_on": depends_on or [],
+            "questions_for": questions_for or [],
+            "disagreement_kind": disagreement_kind,
+            "supersedes": supersedes, "acting_as": acting_as,
+            "authority": authority, "ttl_seconds": ttl_seconds,
+            "urgency": urgency, "visibility": visibility,
+            "content_hash": content_hash,
+        }
+        return _call(
+            session_factory, methods.mcp_submit_stance,
+            settings=settings, user_id=_current_user_id(),
+            matter_id=matter_id, payload=payload,
+        )
+
+    @mcp.tool
+    def read_stance(matter_id: str, target_user_id: int) -> dict:
+        """Read a participant's latest stance for the item (404 semantics
+        identical to the JSON API; non-members get 404)."""
+        return _call(
+            session_factory, methods.mcp_read_stance,
+            settings=settings, user_id=_current_user_id(),
+            matter_id=matter_id, target_user_id=target_user_id,
+        )
+
+    @mcp.tool
+    def get_summary(matter_id: str) -> dict:
+        """Latest ok round summary for the item (five content fields only,
+        no identity)."""
+        return _call(
+            session_factory, methods.mcp_get_summary,
+            settings=settings, user_id=_current_user_id(),
+            matter_id=matter_id,
+        )

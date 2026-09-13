@@ -1,14 +1,20 @@
-"""Business implementation of the 4 MCP methods. Filled in by tasks 19-21."""
+"""Business implementation of the MCP methods: the 4 M1 agent tools plus the
+r5Am9i stance-layer tools (declare_item / submit_stance / read_stance /
+get_summary; ask_participant / decide_item / get_digest pending product
+decisions — see the handover PRD)."""
 
 import base64
 import json
 from datetime import timedelta
 
+from pydantic import ValidationError
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from hub.api import audit
+from hub.api import matters as matters_svc
+from hub.api import stances as stance_svc
 from hub.api.errors import ApiError
 from hub.api.matters import is_participant
 from hub.api.passwords import sha256_hex
@@ -31,22 +37,35 @@ from hub.domain.limits import (
     validate_content_limits,
     validate_request_body_size,
 )
+from hub.domain.participants import ParticipantValidationError
 from hub.domain.timeutil import iso_z, parse_iso_z, utcnow
 from hub.schemas.mcp_outputs import (
+    DeclareItemIn,
+    DeclareItemOut,
     MatterStatusOut,
     PendingTasksOut,
+    RoundSummaryOut,
     SubmitOutputOut,
     TaskDetailOut,
 )
+from hub.schemas.stance import StanceCreate, StanceRead
 
 DEFAULT_LIMIT = 20
 MAX_LIMIT = 100
 
 
-def _contract(model_cls, data):
+def _contract(model_cls, data, *, mode: str = "python"):
     """返回值先过 Pydantic 输出契约再出门：键漂移/多字段/缺字段在这里炸，
     不带病交给调用方。模型字段与既有 JSON 键逐一对齐，只校验不改形。"""
-    return model_cls.model_validate(data).model_dump(exclude_defaults=True)
+    return model_cls.model_validate(data).model_dump(mode=mode,
+                                                     exclude_defaults=True)
+
+
+def _user(session: Session, user_id: int) -> User:
+    user = session.get(User, user_id)
+    if user is None:
+        raise ApiError(401, "AUTH_INVALID_TOKEN", "令牌对应用户不存在")
+    return user
 
 
 def _encode_cursor(offset: int) -> str:
@@ -471,3 +490,110 @@ def _round_summaries_view(session: Session, round_id: str) -> list[dict]:
         **_summary_payload(ok),
         "created_at": iso_z(ok.created_at),
     }]
+
+
+# --------------------------------------------------------------------------
+# r5Am9i · 立场层 MCP 工具（语义明确的 4 个；ask/decide/digest 待产品口径）
+# --------------------------------------------------------------------------
+
+def mcp_declare_item(
+    session: Session,
+    settings: Settings,
+    *,
+    user_id: int,
+    payload: dict,
+) -> dict:
+    """declare_item：调用方（令牌用户）作为发起人创建事项（items 载体）。"""
+    try:
+        data = DeclareItemIn.model_validate(payload)
+    except ValidationError as e:
+        raise ApiError(422, "VALIDATION_FAILED", str(e)) from e
+    initiator = session.get(User, user_id)
+    if initiator is None:
+        raise ApiError(401, "AUTH_INVALID_TOKEN", "令牌对应用户不存在")
+    deadline = None
+    if data.overall_deadline is not None:
+        try:
+            deadline = parse_iso_z(data.overall_deadline)
+        except ValueError as e:
+            raise ApiError(422, "VALIDATION_FAILED",
+                           "overall_deadline 不是合法 ISO 8601 时间") from e
+    try:
+        matter = matters_svc.create_matter(
+            session, initiator=initiator, title=data.title, goal=data.question,
+            background=data.background, participant_ids=data.participant_ids,
+            initiator_participates=False, timeout_seconds=72 * 3600,
+            max_rounds=10, draft_questions=[],
+        )
+    except ParticipantValidationError as e:
+        raise ApiError(422, "VALIDATION_FAILED", str(e)) from e
+    matter.irreversible = data.irreversible
+    matter.options = data.options
+    matter.overall_deadline = deadline
+    matter.item_version = 1
+    session.flush()
+    return _contract(DeclareItemOut, {
+        "matter_id": matter.id,
+        "status": matter.status,
+        "item_version": matter.item_version,
+        "irreversible": matter.irreversible,
+    })
+
+
+def mcp_submit_stance(
+    session: Session,
+    settings: Settings,
+    *,
+    user_id: int,
+    matter_id: str,
+    payload: dict,
+) -> dict:
+    """submit_stance：提交一条立场，入参/出参共用 JSON API 的同源模型。"""
+    try:
+        data = StanceCreate.model_validate(payload)
+    except ValidationError as e:
+        raise ApiError(422, "VALIDATION_FAILED", str(e)) from e
+    stance = stance_svc.create_stance(session, matter_id=matter_id,
+                                      user=_user(session, user_id),
+                                      payload=data)
+    return _contract(StanceRead, stance, mode="json")
+
+
+def mcp_read_stance(
+    session: Session,
+    settings: Settings,
+    *,
+    user_id: int,
+    matter_id: str,
+    target_user_id: int,
+) -> dict:
+    stance = stance_svc.get_stance(session, matter_id=matter_id,
+                                   user=_user(session, user_id),
+                                   target_user_id=target_user_id)
+    return _contract(StanceRead, stance, mode="json")
+
+
+def mcp_get_summary(
+    session: Session,
+    settings: Settings,
+    *,
+    user_id: int,
+    matter_id: str,
+) -> dict:
+    """get_summary：该事项最新一轮 ok 摘要（五字段无身份）。"""
+    row = session.execute(
+        select(RoundSummary, Round.round_number)
+        .join(Round, RoundSummary.round_id == Round.id)
+        .where(RoundSummary.matter_id == matter_id,
+               RoundSummary.generation_status == "ok")
+        .order_by(Round.round_number.desc())
+        .limit(1)
+    ).first()
+    if row is None:
+        raise ApiError(404, "RESOURCE_NOT_FOUND", "暂无已生成的 ok 摘要")
+    summary, round_number = row
+    return _contract(RoundSummaryOut, {
+        "round_id": summary.round_id,
+        "round_number": round_number,
+        **_summary_payload(summary),
+    }, mode="json")
