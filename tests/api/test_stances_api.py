@@ -350,16 +350,23 @@ def test_立场列表只返回本事项且按可见性过滤(client, db_session)
                      headers=h_bob)
     assert (a1.status_code, a2.status_code, b1.status_code) == (201, 201, 201)
 
-    # 参与人 alice：只拿到本事项 A 的两条，不含事项 B 的
+    # 参与人 alice：本事项 A 且未终态——只见本人立场（延后终态公开裁决）
     resp = client.get(f"/api/items/{matter_a.id}/stances", headers=h_alice)
     assert resp.status_code == 200
     body = resp.json()
-    assert {s["stance_id"] for s in body} == {a1.json()["stance_id"],
-                                              a2.json()["stance_id"]}
+    assert {s["stance_id"] for s in body} == {a1.json()["stance_id"]}
     assert {s["matter_id"] for s in body} == {matter_a.id}
 
-    # A2：发起人 carol（非参与人）也能看到本事项两条 —— 成员内不再按 visibility 细分
+    # A2：发起人 carol（非参与人）不受延后限制，能看到本事项两条
     resp = client.get(f"/api/items/{matter_a.id}/stances", headers=h_carol)
+    assert resp.status_code == 200
+    assert {s["stance_id"] for s in resp.json()} == {a1.json()["stance_id"],
+                                                    a2.json()["stance_id"]}
+
+    # 事项 A 终态后，参与人 alice 可见全部
+    matter_a.status = "completed"
+    db_session.commit()
+    resp = client.get(f"/api/items/{matter_a.id}/stances", headers=h_alice)
     assert resp.status_code == 200
     assert {s["stance_id"] for s in resp.json()} == {a1.json()["stance_id"],
                                                     a2.json()["stance_id"]}

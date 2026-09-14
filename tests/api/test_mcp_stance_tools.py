@@ -125,6 +125,9 @@ def test_read_stance_返回目标参与人最新立场_非成员404(db_session, 
                       matter_id=matter.id, payload=dict(fields))
     db_session.commit()
 
+    # 终态后全员可见（owner 2026-09-14 裁决 B 方案）
+    matter.status = "completed"
+    db_session.commit()
     result = mcp_read_stance(db_session, settings, user_id=carol.id,
                              matter_id=matter.id, target_user_id=bob.id)
     StanceRead.model_validate(result)

@@ -1,8 +1,8 @@
 # MCP 决策中台产品需求文档（PRD）v1.2 修订稿
 
 - 日期：2026-09-13
-- 版本：v1.2（修订稿，待评审）
-- 状态：修订稿 · 未合并
+- 版本：v1.2（定稿）
+- 状态：**定稿 · 已入库**（owner 2026-09-14 按草案定稿）
 - 基准文档：v1.1 `docs/superpowers/specs/2026-08-11-mcp-decision-hub-prd.md`
 - 关联设计：`docs/superpowers/specs/2026-08-11-mcp-decision-hub-design.md`
 - 面向读者：产品、研发、测试、运维

@@ -38,6 +38,12 @@ CONVERGENCE_DEGRADED = "convergence_degraded"
 # 补充决策 A（owner 已批）：迁移步骤应用时写入，detail = {version, name}，
 # actor_user_id/matter_id 均为 NULL（系统事件）。写入守卫在迁移层。
 SCHEMA_MIGRATED = "schema_migrated"
+# owner 2026-09-14 批准：分析视图分发留痕，detail 带 {viewer_user_id,
+# fact_version, content_hash}（不含立场正文）。
+AUDIENCE_VIEW_DELIVERED = "audience_view_delivered"
+# owner 2026-09-14 批准：过期立场被排除时写入，detail 带 {matter_id,
+# round_number, user_id, ttl_seconds}。
+STANCE_EXPIRED = "stance_expired"
 
 # Max chars of a decision rationale stored in audit detail (design decision 12).
 AUDIT_RATIONALE_MAX = 500

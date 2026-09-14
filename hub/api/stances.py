@@ -21,6 +21,7 @@ convergence_eval 用 str 作 user_id，audience 用 int 作 user_id，接缝必�
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import timedelta
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -39,6 +40,7 @@ from hub.domain.convergence_eval import (
     evaluate_convergence_lenient,
 )
 from hub.domain.digest import compute_stance_content_hash
+from hub.domain.timeutil import utcnow
 from hub.schemas.stance import StanceCreate
 
 NOT_FOUND_MESSAGE = "事项不存在"
@@ -149,6 +151,26 @@ def analyze_round(
                Stance.round_number == round_number)
         .order_by(Stance.created_at.asc())
     ).all()
+    # roR8Pk 第 5 条（owner 2026-09-14 批准 stance_expired）：过期立场不进
+    # 收敛判定输入，并逐条写审计；不重新拉人（「由谁重新拉人」仍待 owner 口径）。
+    now = utcnow()
+    fresh_rows, expired_rows = [], []
+    for row in rows:
+        if row.ttl_seconds is not None and row.created_at + timedelta(
+                seconds=row.ttl_seconds) <= now:
+            expired_rows.append(row)
+        else:
+            fresh_rows.append(row)
+    for row in expired_rows:
+        audit.record_audit(
+            session, audit.STANCE_EXPIRED,
+            actor_user_id=None, matter_id=matter_id,
+            detail={
+                "matter_id": matter_id, "round_number": round_number,
+                "user_id": row.user_id, "ttl_seconds": row.ttl_seconds,
+            },
+        )
+    rows = fresh_rows
     # 聚合读同样留痕（roR8Pk 第 3 条收口）：detail 只记范围与行数，
     # 不记任何立场内容。
     audit.record_audit(
@@ -185,6 +207,21 @@ def analyze_round(
     )
     view = build_audience_view(fact, user.id)
     scan = scan_view(fact, view)
+    check_faithfulness(view.sections, fact)
+
+    # rsEXuh ⑥留痕（AUDIENCE_VIEW_DELIVERED，owner 2026-09-14 批准）：
+    # 给某个 viewer 交付了哪个版本的事实视图 + 内容哈希；detail 不含立场正文。
+    audit.record_audit(
+        session, audit.AUDIENCE_VIEW_DELIVERED,
+        actor_user_id=user.id, matter_id=matter_id,
+        detail={
+            "viewer_user_id": user.id,
+            "fact_version": fact.fact_version,
+            "content_hash": compute_stance_content_hash(
+                {"sections": view.sections, "fact_version": fact.fact_version}
+            ),
+        },
+    )
 
     return RoundStanceAnalysis(
         fact_version=fact.fact_version,
@@ -218,17 +255,19 @@ def _is_participant(session: Session, *, matter_id: str, user_id: int) -> bool:
 def _visible(
     session: Session, *, matter: Matter, user: User, stance: Stance
 ) -> bool:
-    """可见性过滤（A2，2026-09-12 按 PRD 第 3 章角色表修正）。
+    """可见性过滤（A2 + owner 2026-09-14 裁决：延后终态公开）。
 
-    调用方须已通过 _require_matter_access —— 也就是说到这里的一定是事项
-    成员（发起人 ∪ 参与人），成员闸门已经在上一层拦过非成员。因此本函数
-    恒为 True：visibility 只作留痕/审计属性，读侧不再产生权限差异。
-
-    曾经这里对 visibility=participants 再判一次「是否在 matter_participants
-    表里」，导致发起人若未勾选参与就看不到任何立场，违反 PRD 角色表。
-    后人不要"修复"成再挡发起人。
+    - 发起人（仲裁者，PRD 第 3 章角色表）恒可见；
+    - 事项终态（completed / cancelled）后，成员全员可见；
+    - 非终态时：成员只见本人立场（user_id 一致）——逐人立场不提前公开，
+      消除 2–5 人规模下的跨轮反推（roR8Pk 第 1 条）。
+    调用方须已通过 _require_matter_access（成员闸门在上一层拦过非成员）。
     """
-    return True
+    if matter.initiator_id == user.id:
+        return True
+    if matter.status in ("completed", "cancelled"):
+        return True
+    return stance.user_id == user.id
 
 
 def create_stance(
@@ -331,3 +370,80 @@ def list_stances(session: Session, *, matter_id: str, user: User) -> list[Stance
         detail={"scope": "list", "returned_rows": len(visible)},
     )
     return visible
+
+
+# rsEXuh · faithfulness 完整校验（owner 2026-09-14 裁决归属 rsEXuh）。
+# 对外消息中凡承载事实的 sections 字段，必须逐字来自 FactBase 的对应字段；
+# 唯一允许的非逐字内容是固定占位文案白名单（结论未定/未记录反对意见/无
+# 行动项/无风险这类空态句式）。校验失败则 raise（产出即拦下，不带病出门）。
+_NO_DECISION_PLACEHOLDER = "这事目前还没定下来。"
+_NO_RECORD_PLACEHOLDER = "这次没有记录下你当时的具体意见。"
+_NO_ACTION_PLACEHOLDER = "这次没有要你做的事。"
+_NO_RISK_PLACEHOLDER = "目前没有特别提到的风险。"
+
+_FIXED_PLACEHOLDERS = frozenset({
+    _NO_DECISION_PLACEHOLDER, _NO_RECORD_PLACEHOLDER,
+    _NO_ACTION_PLACEHOLDER, _NO_RISK_PLACEHOLDER,
+    "这事目前还没定下来，你的意见还在桌面上。",
+})
+
+
+def check_faithfulness(view_sections: dict[str, str], fact: FactBase) -> None:
+    """逐字校验 view.sections 是否忠实于 fact。任一承载事实的字段不在
+    {对应源字段, 白名单} 即抛 FaithfulnessError。"""
+    # 决定事项 / 要解决的问题：逐字 = item_title / question
+    if view_sections.get("决定事项") != fact.item_title:
+        raise FaithfulnessError(
+            f"决定事项不忠实: {view_sections.get('决定事项')!r}"
+            f" != {fact.item_title!r}")
+    if view_sections.get("要解决的问题") != fact.question:
+        raise FaithfulnessError(
+            f"要解决的问题不忠实: {view_sections.get('要解决的问题')!r}"
+            f" != {fact.question!r}")
+
+    # 结论：decision 存在时逐字；否则必须是固定占位文案
+    if fact.decision:
+        if view_sections.get("结论") != fact.decision:
+            raise FaithfulnessError(
+                "结论不忠实于 decision（决策存在但文本被改写）")
+    else:
+        if view_sections.get("结论") != _NO_DECISION_PLACEHOLDER:
+            raise FaithfulnessError("无结论时结论段必须是固定占位文案，不得编结论")
+
+    # 为什么这么定：decision 存在时逐字 = rationale；不存在时该段必须不出现
+    if fact.decision:
+        if view_sections.get("为什么这么定") != fact.rationale:
+            raise FaithfulnessError("为什么这么定不忠实于 rationale")
+    else:
+        if "为什么这么定" in view_sections:
+            raise FaithfulnessError("无结论时不得出现「为什么这么定」")
+
+    # 风险：逐字（_bullets 输出源自 risks；空集 → 固定占位）
+    expected_risks = (
+        _NO_RISK_PLACEHOLDER if not fact.risks
+        else "\n".join(f"- {r}" for r in fact.risks)
+    )
+    if view_sections.get("还要注意的风险") != expected_risks:
+        raise FaithfulnessError("风险段不忠实于 risks")
+
+    # 你当初的意见：只在 viewer 是反对者时出现，逐字 = dissenting[viewer]
+    # 或固定占位；不得编造。viewer 身份不在 sections 里，所以从 dissenting
+    # 反推（逐字忠实校验的对象本来就是内容，不是身份）。
+    if "你当初的意见" in view_sections:
+        candidates = {fact.dissenting.get(uid) or _NO_RECORD_PLACEHOLDER
+                      for uid in fact.opposing_user_ids}
+        if view_sections["你当初的意见"] not in candidates | {_NO_RECORD_PLACEHOLDER}:
+            raise FaithfulnessError(
+                "你当初的意见不忠实于 dissenting（不得替反对者编造异议）")
+
+    # 为什么这次没有采纳 / 什么情况下会重新考虑：decision 存在时逐字由
+    # rationale/risks 派生，但占位结论时不得出现
+    if not fact.decision:
+        for key in ("为什么这次没有采纳", "什么情况下会重新考虑"):
+            if key in view_sections:
+                raise FaithfulnessError(
+                    f"无结论时不得出现「{key}」（没下结论却解释采纳理由）")
+
+
+class FaithfulnessError(ValueError):
+    """sections 承载事实的字段与 FactBase 不一致。"""

@@ -17,7 +17,6 @@
    观察者本人信息 → 绿，钉住「受控通道当前防住了他人身份」。
 """
 
-import pytest
 from sqlalchemy import select
 
 from hub.api import audit
@@ -108,24 +107,13 @@ def _infer_changers_from_public_view(public_rows) -> set[int]:
     return changers
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "roR8Pk 第 1 条（已知未修复，登记于交付报告）：修好读接口粒度"
-        "（聚合 + k 阈值 / 延后公开）需先由 owner 裁定——与 rrBazW 已达成并冻结的"
-        " B22（参与方可互读立场 → 200）正面冲突，见 knowledge/08 §4.5-1。"
-        " 裁定后本用例应转绿并摘除 xfail。"
-    ),
-)
 def test_public_view_does_not_allow_identifying_stance_changer(db_session):
     """隐私期望：观察者（成员 carol）仅从被允许公开的视图，不应能唯一确定
     谁在轮间改了立场。
 
-    当前真实行为：list_stances 把逐人逐轮立场连同 user_id 直给全体成
-    员，反推集合恰为 {bob}，唯一确定 —— 本断言因此为红（xfail 登记），
-    证明 roR8Pk 第 1 条的缺口真实存在。读审计缺口（第 3 条）已收口，
-    由 test_批量读取立场会写读取审计 单独钉住。
-    """
+    roR8Pk 第 1 条：owner 2026-09-14 裁决 B 方案（延后终态公开），
+    list_stances 在非终态下只返回本人立场 → 公开视图无他人立场可比对，
+    反推集合为空 → 断言转绿。原 xfail 登记摘除（见交付报告翻转台账）。"""
     matter, _ivy, _alice, bob, carol = _build_three_person_two_round_matter(
         db_session
     )
@@ -195,3 +183,36 @@ def test_analysis_view_scopes_identity_to_viewer(db_session):
     assert str(alice.id) not in text
     assert str(bob.id) not in text
     assert analysis.violations == []
+
+
+def test_过期立场不进收敛判定且写审计(db_session):
+    """roR8Pk 第 5 条（owner 2026-09-14 批准 stance_expired）：ttl 过期的立场
+    从 analyze_round 输入剔除并写审计；不重新拉人（该口径仍待 owner）。"""
+    from datetime import timedelta as _td
+
+    from hub.api import audit as audit_mod
+    from hub.db.models import AuditEvent, Stance
+
+    matter, _ivy, alice, bob, carol = _build_three_person_two_round_matter(
+        db_session
+    )
+    # 把 alice 的 round2 立场改为「已过期」（created_at 回拨超过 ttl）
+    expired = db_session.scalar(
+        select(Stance).where(Stance.user_id == alice.id,
+                             Stance.round_number == 2)
+    )
+    expired.ttl_seconds = 60
+    expired.created_at = expired.created_at - _td(seconds=120)
+    db_session.commit()
+
+    analysis = stance_svc.analyze_round(
+        db_session, matter_id=matter.id, round_number=2, user=carol
+    )
+    assert str(alice.id) not in "\n".join(analysis.sections.values())
+
+    events = db_session.scalars(
+        select(AuditEvent).where(AuditEvent.event_type == audit_mod.STANCE_EXPIRED)
+    ).all()
+    assert len(events) == 1
+    assert events[0].detail["user_id"] == alice.id
+    assert events[0].detail["ttl_seconds"] == 60
