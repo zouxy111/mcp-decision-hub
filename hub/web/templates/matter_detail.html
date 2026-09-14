@@ -140,12 +140,24 @@
 <h3>我的任务</h3>
 {% if rv.task_views %}
 <table>
-  <tr><th>任务</th><th>状态</th><th>截止(UTC)</th></tr>
+  <tr><th>任务</th><th>状态</th><th>截止(UTC)</th><th>我的回答</th></tr>
   {% for tv in rv.task_views %}
   <tr>
     <td><code>{{ tv.task.id }}</code></td>
     <td>{{ tv.task.status }}</td>
     <td>{{ tv.task.deadline_at.strftime("%Y-%m-%dT%H:%M:%SZ") if tv.task.deadline_at else "-" }}</td>
+    <td>
+      {% if tv.output %}
+      <details>
+        <summary>查看（approved_at={{ tv.output.approved_at.strftime("%Y-%m-%dT%H:%M:%SZ") }}）</summary>
+        <p>content_digest: <code>{{ tv.output.content_digest }}</code></p>
+        {% for a in tv.output.answers %}
+        <p><code>{{ a.question_id }}</code>：{{ a.content }}</p>
+        {% endfor %}
+        {% if tv.output.notes %}<p>备注：{{ tv.output.notes }}</p>{% endif %}
+      </details>
+      {% else %}-{% endif %}
+    </td>
   </tr>
   {% endfor %}
 </table>

@@ -82,6 +82,42 @@ def test_participant_sees_summary_but_not_others_answers(
     assert "都认可方向 X" in resp.text  # 摘要参与人可见（FR-07）
 
 
+def test_participant_sees_own_submitted_answers_on_detail_page(
+    client, db_session, matter, users
+):
+    """r9rCtH（FR-07）：参与人可见本人已提交的原始回答——当前参与人分支
+    硬编码 output=None，本人原文永远不可见。"""
+    from hub.db.models import Output, Task
+
+    init, alice, _bob = users
+    task = db_session.scalar(select(Task).where(Task.assignee_id == alice.id))
+    db_session.add(Output(task_id=task.id,
+                          answers=[{"question_id": "q1",
+                                    "content": "我的选型结论：采用方案 X"}],
+                          notes="本人备注-38f2", approved_at=task.created_at,
+                          content_digest="c" * 64))
+    db_session.commit()
+
+    _login(client, "alice")
+    resp = client.get(f"/matters/{matter.id}")
+    assert resp.status_code == 200
+    assert "我的选型结论：采用方案 X" in resp.text  # 本人原文可见（FR-07）
+    assert "本人备注-38f2" in resp.text
+
+    # 他人的输出不能出现在参与人视图：给 bob 也放一条
+    bob_task = db_session.scalar(
+        select(Task).where(Task.assignee_id == users[2].id))
+    db_session.add(Output(task_id=bob_task.id,
+                          answers=[{"question_id": "q1",
+                                    "content": "他人内容-不应可见-7c1d"}],
+                          notes=None, approved_at=bob_task.created_at,
+                          content_digest="d" * 64))
+    db_session.commit()
+    resp2 = client.get(f"/matters/{matter.id}")
+    assert resp2.status_code == 200
+    assert "他人内容-不应可见-7c1d" not in resp2.text
+
+
 def test_blocked_shows_reason_and_error_details(client, db_session, matter):
     rnd = _round1(db_session, matter)
     db_session.execute(update(Round).where(Round.id == rnd.id).values(status="failed"))

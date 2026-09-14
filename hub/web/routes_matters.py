@@ -138,8 +138,13 @@ def _build_detail(db: Session, matter: Matter, user: User, settings: Settings) -
                                    "output": output})
         else:
             own = [t for t in tasks if t.assignee_id == user.id]
-            task_views = [{"task": t, "assignee": user.username, "output": None}
-                          for t in own]
+            # FR-07：参与人可见本人内容——本人的 Output 原文要随任务带出，
+            # 他人 Output 绝不出现在视图里（r9rCtH 修复：此前硬编码 None）。
+            task_views = []
+            for t in own:
+                output = db.scalar(select(Output).where(Output.task_id == t.id))
+                task_views.append({"task": t, "assignee": user.username,
+                                   "output": output})
         ok_summary = db.scalar(
             select(RoundSummary).where(RoundSummary.round_id == rnd.id,
                                        RoundSummary.generation_status == "ok")
