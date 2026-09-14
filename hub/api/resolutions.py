@@ -68,6 +68,16 @@ def decide_resolution(
                            actor_user_id=actor.id, matter_id=matter_id,
                            detail={"action": "decide_resolution"})
         raise ApiError(403, "FORBIDDEN_SCOPE", "仅发起人可拍板")
+    # 裁决 2（2026-09-14）：irreversible 事项不允许 Agent 终裁——
+    # 涉及不可逆后果的决策必须由真人拍板。
+    if matter.irreversible:
+        audit.record_audit(
+            session, audit.FORBIDDEN_DENIED, actor_user_id=actor.id,
+            matter_id=matter_id,
+            detail={"action": "decide_resolution", "reason": "irreversible"},
+        )
+        raise ApiError(403, "FORBIDDEN_SCOPE",
+                       "不可逆事项不允许经 MCP 终裁，须发起人本人拍板")
     if matter.status != "awaiting_decision":
         audit.record_audit(session, audit.INVALID_STATE_TRANSITION,
                            actor_user_id=actor.id, matter_id=matter_id,

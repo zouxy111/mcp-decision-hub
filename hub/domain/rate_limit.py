@@ -91,3 +91,13 @@ def rate_limit_key_login_username(username: str) -> str:
 
 def rate_limit_key_login_ip(ip: str) -> str:
     return f"login:ip:{ip}"
+
+
+# 裁决 1（2026-09-14，ask 配额 N=100）：定向提问按 (matter, actor, target)
+# 三元组滑窗限流，超限 429。
+ASK_QUOTA_LIMIT = 100
+
+
+def rate_limit_key_ask(matter_id: str, actor_user_id: int,
+                       target_user_id: int) -> str:
+    return f"ask:{matter_id}:{actor_user_id}:{target_user_id}"

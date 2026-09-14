@@ -27,7 +27,13 @@ def create_matter(
     timeout_seconds: int,
     max_rounds: int,
     draft_questions: list[str],
+    irreversible: bool = False,
+    irreversible_reason: str | None = None,
 ) -> Matter:
+    # 裁决 5a（2026-09-14）：勾选 irreversible 必须填写理由（重大决策留痕）
+    if irreversible and not (irreversible_reason and irreversible_reason.strip()):
+        raise ApiError(422, "VALIDATION_FAILED",
+                       "勾选「不可逆事项」必须填写变更理由")
     try:
         validate_participants(participant_ids, initiator.id, initiator_participates)
     except ParticipantValidationError as e:
@@ -52,6 +58,9 @@ def create_matter(
         initiator_participates=initiator_participates,
         draft_questions=questions,
     )
+    matter.irreversible = irreversible
+    if irreversible_reason is not None:
+        matter.irreversible_reason = irreversible_reason.strip()
     session.add(matter)
     session.flush()
     for uid in unique_ids:
@@ -324,3 +333,34 @@ def cancel_matter(session: Session, *, matter_id: str, actor: User) -> Matter:
                                "rounds_closed": len(open_rounds)})
     session.flush()
     return matter
+
+
+def set_agent_authority(
+    session: Session,
+    *,
+    matter_id: str,
+    user_id: int,
+    agent_authority: str,
+) -> MatterParticipant:
+    """开通/调整某参与人在该事项上的代理授权档位（Q1/Q2 两档）。
+
+    裁决 5b（2026-09-14）：开通限非终态事项——事项已终态
+    （completed / cancelled）后决议已定型，开通 can_commit 无意义。
+    """
+    matter = session.get(Matter, matter_id)
+    if matter is None:
+        raise ApiError(404, "RESOURCE_NOT_FOUND", "事项不存在")
+    if matter.status in ("completed", "cancelled"):
+        audit.record_audit(
+            session, audit.INVALID_STATE_TRANSITION, actor_user_id=user_id,
+            matter_id=matter_id,
+            detail={"action": "set_agent_authority", "current": matter.status},
+        )
+        raise ApiError(409, "INVALID_STATE_TRANSITION",
+                       "事项已终态，不再允许开通 can_commit")
+    row = session.get(MatterParticipant, (matter_id, user_id))
+    if row is None:
+        raise ApiError(404, "RESOURCE_NOT_FOUND", "该用户不是本事项参与人")
+    row.agent_authority = agent_authority
+    session.flush()
+    return row

@@ -597,3 +597,34 @@ def mcp_get_summary(
         "round_number": round_number,
         **_summary_payload(summary),
     }, mode="json")
+
+
+def mcp_get_digest(
+    session: Session,
+    settings,
+    *,
+    user_id: int,
+    matter_id: str,
+) -> dict:
+    """get_digest（裁决 3，2026-09-14 选 A 简单形态）：最新 ok 摘要 + 事项
+    状态 + 收敛结果。五字段无身份（PRD 9.2），成员闸门复用。"""
+    matters_svc.get_matter_for_user(session, matter_id=matter_id,
+                                    user=_user(session, user_id))
+    row = session.execute(
+        select(RoundSummary, Round.round_number)
+        .join(Round, RoundSummary.round_id == Round.id)
+        .where(RoundSummary.matter_id == matter_id,
+               RoundSummary.generation_status == "ok")
+        .order_by(Round.round_number.desc())
+        .limit(1)
+    ).first()
+    matter = session.get(Matter, matter_id)
+    if row is None:
+        raise ApiError(404, "RESOURCE_NOT_FOUND", "暂无已生成的 ok 摘要")
+    summary, round_number = row
+    return {
+        "matter_id": matter_id,
+        "status": matter.status,
+        "round_number": round_number,
+        **_summary_payload(summary),
+    }

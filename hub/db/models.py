@@ -70,6 +70,8 @@ class Matter(Base):
     blocked_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
     # 中转站 v1（rpQt6D 载体映射，v4 迁移同步）：items ← Matter 扩展 4 列
     irreversible: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    # 裁决 5a（2026-09-14）：irreversible 变更理由必填，随事项留痕
+    irreversible_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     options: Mapped[list | None] = mapped_column(JSON, nullable=True)
     overall_deadline: Mapped[datetime | None] = mapped_column(nullable=True)
     item_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
