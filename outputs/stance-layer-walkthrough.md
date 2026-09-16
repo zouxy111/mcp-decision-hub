@@ -201,8 +201,11 @@ violations == ["出现了未授权的用户 id: 2"]     # 2 来自 "v2"，不是
 如实登记 `skipped_stance_user_ids`。生产装配入口 `analyze_round` 用宽容版，并对每个
 被跳过的脏行写一条 `convergence_degraded` 审计（`detail={"stance", "user_id"}`）。
 同时给 `stances` 表补了 4 条 CHECK 约束（stance / acting_as / urgency / visibility）。
-**但 CHECK 只对新建库生效**：本仓库无迁移工具，存量库的 stances 表没有该约束，
-历史脏行 / 外部直写 / 新增立场类型忘了同步都会产生未知 stance，所以宽容分支不是死代码。
+**但 CHECK 对存量库不是自动生效**：迁移机制（`hub/db/migrations/`）靠重建表来补约束，
+而重建用的 `INSERT INTO stances_new SELECT ... FROM stances` 一旦遇到未知 stance 行，
+就会被新表的 CHECK 拒绝、使整个迁移回滚（`migrations.py:123` 的 `raise`）——库于是停在
+无约束状态。历史脏行 / 外部直写 / 新增立场类型忘了同步，都会产生未知 stance，
+所以宽容分支不是死代码。
 严格版 `evaluate_convergence` 保留，仍对未知 stance 抛错，供「宁可炸也不要静默」的调用方用。
 
 ### 5.4【仍存在，已降级】`convergence_eval` 的分布是封闭硬编码集合

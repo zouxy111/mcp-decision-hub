@@ -608,9 +608,11 @@ def test_analyze_round脏数据降级并逐条写审计(db_session):
     SQLite 的 ignore_check_constraints 模拟「历史遗留/外部导入的脏数据入库」
     —— 这正是宽容分支存在的理由。
 
-    ignore_check_constraints 对应的真实场景是**存量库**：本仓库无迁移工具，
-    CHECK 只对新建库生效，老库的 stances 表没有该约束。所以这不是在测一个
-    假想分支。
+    ignore_check_constraints 对应的真实场景是**无 CHECK 约束的存量库**：
+    迁移机制（hub/db/migrations/）靠 `INSERT INTO stances_new SELECT ... FROM
+    stances` 重建表来补约束，老库若已含未知 stance 行，该 INSERT 会被新表的
+    CHECK 拒绝、整个迁移回滚（`hub/db/migrations/migrations.py:123-125` 的
+    `raise`），库就停留在无约束状态。所以这不是在测一个假想分支。
     """
     alice = make_user(db_session, "alice")
     matter = _make_matter(db_session, alice)
