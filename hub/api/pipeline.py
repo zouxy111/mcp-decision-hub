@@ -20,8 +20,10 @@ from hub.db.models import (
     Resolution,
     Round,
     RoundSummary,
+    Stance,
     Task,
 )
+from hub.domain import stall_detect as stall
 from hub.domain.collection import count_submitted, is_round_collected
 from hub.domain.convergence import (
     CONVERGENCE_BLOCKED,
@@ -51,6 +53,8 @@ BLOCKED_REASON_FOLLOWUP_FAILED = "定向追问出题失败（LLM 重试耗尽）
 BLOCKED_REASON_LLM_BLOCKED = "收敛判定为 blocked"
 BLOCKED_REASON_FIRST_ROUND_FAILED = "首轮出题失败（LLM 重试耗尽）"
 BLOCKED_REASON_DRAFT_FAILED = "决议草案生成失败（LLM 重试耗尽）"
+# rUdiTJ 片 1：不收敛且本轮相对上轮无任何内容差异 → 判僵持、立即拉人，不空转。
+BLOCKED_REASON_STALLED = "无新增信息（僵持）"
 
 
 def resolve_round_matter(session: Session, *, round_id: str) -> str | None:
@@ -106,14 +110,25 @@ def run_round_pipeline(
     drive_matter_tick(session_factory, settings, matter_id=matter_id, llm=llm)
 
 
-def _block_matter(session: Session, matter: Matter, reason: str) -> None:
+def _block_matter(session: Session, matter: Matter, reason: str, *,
+                  extra: dict | None = None) -> None:
     session.execute(
         update(Matter)
         .where(Matter.id == matter.id, Matter.status == "in_progress")
         .values(status="blocked", blocked_reason=reason, updated_at=utcnow())
     )
     audit.record_audit(session, audit.MATTER_BLOCKED, matter_id=matter.id,
-                       detail={"reason": reason})
+                       detail={"reason": reason, **(extra or {})})
+
+
+def _stances_of_round(session: Session, *, matter_id: str,
+                      round_number: int) -> dict:
+    """某一轮的立场快照（按 user_id 归集）。轮次不存在/无立场 → 空 dict。"""
+    rows = session.scalars(
+        select(Stance).where(Stance.matter_id == matter_id,
+                             Stance.round_number == round_number)
+    ).all()
+    return stall.snapshots_from_rows(rows)
 
 
 def _submissions_for_llm(session: Session, tasks: list[Task]) -> list[dict]:
@@ -265,6 +280,21 @@ def _branch_phase(session: Session, rnd: Round, llm) -> None:
         granted_extra_rounds=matter.granted_extra_rounds,
     ):
         _block_matter(session, matter, BLOCKED_REASON_ROUND_LIMIT)
+        return
+    # rUdiTJ 片 1（验收切片）：达成「本可以开下一轮」之后、真开之前，先问一句
+    # 「本轮相对上轮有没有新增信息」。没有 → 判僵持、立即拉人、**不开下一轮**。
+    # 「拉人」不另起一套：置 blocked 后由发起人走既有换人流程
+    # （hub/api/reassignment.py，FR-16），与轮次上限那条路径同一出口。
+    verdict = stall.detect_stall(
+        _stances_of_round(session, matter_id=matter.id,
+                          round_number=rnd.round_number - 1),
+        _stances_of_round(session, matter_id=matter.id,
+                          round_number=rnd.round_number),
+    )
+    if verdict.stalled:
+        _block_matter(session, matter, BLOCKED_REASON_STALLED,
+                      extra={"round_number": rnd.round_number,
+                             "stall_detail": verdict.reason})
         return
     _open_followup_round(session, matter, rnd, summary, llm)
 

@@ -1,19 +1,20 @@
 """roR8Pk 配套用例：3 人 2 轮局，能否从「公开摘要视图」反推出谁改了立场。
 
-⚠️ 本文件记录的是**当前真实行为**，不是期望行为。三个用例分别钉住公开面的
-三个层次（均为代码里真实存在的构造，非凭空捏造）：
+三个用例分别钉住公开面的三个层次（均为代码里真实存在的构造，非凭空捏造）：
 
 1. `test_public_view_does_not_allow_identifying_stance_changer`
-   —— 成员可见的立场列表（stance_svc.list_stances，hub/api/stances.py:307-316）
-   是当前代码对全体成员公开的真实视图。当前它逐人逐轮带 user_id 直给，
-   因此可以唯一反推改动者 → **按设计为红**，证明缺口真实存在。修好读接口
-   粒度（聚合 + k 阈值 / 延后公开）后本测试应转绿。
+   —— 成员可见的立场列表（`stance_svc.list_stances`）。
+   **现状：绿。** 这条路径曾能唯一反推改动者（当时逐人逐轮带 `user_id` 直给），
+   即「按设计为红」；owner 2026-09-14 裁决「延后终态公开」后，非终态下
+   列表只返回本人立场 → 公开视图无他人立场可比对、反推集合为空 → **已转绿**，
+   原 `xfail` 已于 `649be9c` 摘除。**当前它是一条防回归的对照用例**：
+   若哪天列表又逐人直给，它会立刻变红。
 2. `test_round_summary_payload_carries_no_identity`
    —— LLM 轮次摘要的真实外发载荷（pipeline._summary_to_dict，
-   hub/api/pipeline.py:150-157）只含五字段、无身份 → 绿，钉住「摘要层
+   hub/api/pipeline.py）只含五字段、无身份 → 绿，钉住「摘要层
    本身不带身份」这一已成立事实。
 3. `test_analysis_view_scopes_identity_to_viewer`
-   —— analyze_round 的 audience 视图（hub/domain/audience.py:61-97）只含
+   —— analyze_round 的 audience 视图（hub/domain/audience.py）只含
    观察者本人信息 → 绿，钉住「受控通道当前防住了他人身份」。
 """
 
