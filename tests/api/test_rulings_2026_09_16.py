@@ -16,8 +16,10 @@ roR8Pk 第 1 条 / ttl 过期归属）。owner 于 2026-09-16 重新裁定，本
     由 r2EOiO 承载，不在本文件范围内。
 """
 
+from sqlalchemy import select
+
 from hub.api.tokens import issue_token
-from hub.db.models import Matter, MatterParticipant
+from hub.db.models import Matter, MatterParticipant, Stance
 from hub.domain.digest import compute_stance_content_hash
 from tests.conftest import make_user
 
@@ -105,3 +107,70 @@ def test_ttl过期不产生重分配池出口():
         "重分配池出口仍在：ttl 过期的归属已改判为「发起人负责拉人 + "
         "系统提醒」，系统不应再暴露自动换人入口"
     )
+
+
+def _stance_payload(*, authority: str | None = None,
+                    acting_as: str = "human") -> dict:
+    """通用立场载荷；authority / acting_as 可变，供授权档位相关用例使用。"""
+    data = {
+        "round_number": 1,
+        "stance": "support",
+        "confidence": 0.8,
+        "position_summary": "支持采用方案 X",
+        "rationale_summary": "成本可控且可回退",
+        "non_negotiables": [],
+        "conditions": [],
+        "open_questions": [],
+        "depends_on": [],
+        "questions_for": [],
+        "disagreement_kind": None,
+        "supersedes": None,
+        "acting_as": acting_as,
+        "authority": authority,
+        "ttl_seconds": None,
+        "urgency": "normal",
+        "visibility": "participants",
+    }
+    data["content_hash"] = compute_stance_content_hash(data)
+    return data
+
+
+def test_不可逆事项上代理承诺提交被拒(client, db_session):
+    """`r5Am9i` 验收第 4 条 = `rRSEcS` 验收第 3 条（同一条）。
+
+    口径（09-11 owner 放开 can_commit 时同时加的两道锁之一）：
+    **irreversible = true 的事项一律强制拉人，代理不得自行承诺不可逆决定。**
+
+    切面：事项 irreversible=True，提交方声明 authority=can_commit 且
+    acting_as=agent_on_behalf —— 必须被拒，且**不落库**。
+    """
+    alice = make_user(db_session, "alice")
+    bob = make_user(db_session, "bob")
+    matter = _matter_with(db_session, bob, alice)  # bob 发起、不参与
+    matter.irreversible = True
+    matter.irreversible_reason = "涉及对外承诺，不可回退"
+    db_session.commit()
+    headers = _headers(db_session, alice, "alice")
+
+    resp = client.post(
+        f"/api/items/{matter.id}/stances",
+        json=_stance_payload(authority="can_commit",
+                             acting_as="agent_on_behalf"),
+        headers=headers,
+    )
+
+    assert resp.status_code == 403, resp.json()
+    assert resp.json()["error_code"] == "FORBIDDEN_DENIED"
+    assert db_session.scalars(
+        select(Stance).where(Stance.matter_id == matter.id)
+    ).all() == [], "被拒的代理承诺不得落库"
+
+    # 对照：同一不可逆事项上，未声明 can_commit 档位的普通提交**不受影响**。
+    # 没有这条对照，守卫被写成「不可逆事项一律拒」也能让上面的断言通过
+    # —— 那就成了过度拒绝，而不是「只拦代理自行承诺」。
+    ok = client.post(
+        f"/api/items/{matter.id}/stances",
+        json=_stance_payload(),
+        headers=headers,
+    )
+    assert ok.status_code == 201, ok.json()

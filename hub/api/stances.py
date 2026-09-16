@@ -284,10 +284,27 @@ def create_stance(
     再按 B3 口径重算 content_hash 并比对 —— 摘要必须绑定正文，客户端传
     什么不再等于存什么。
     """
-    if session.get(Matter, matter_id) is None:
+    matter = session.get(Matter, matter_id)
+    if matter is None:
         raise ApiError(404, "RESOURCE_NOT_FOUND", NOT_FOUND_MESSAGE)
     if not _is_participant(session, matter_id=matter_id, user_id=user.id):
         raise ApiError(404, "RESOURCE_NOT_FOUND", NOT_FOUND_MESSAGE)
+
+    # 09-11 owner 放开 can_commit 时同时加的两道锁之一
+    # （r5Am9i 验收第 4 条 = rRSEcS 验收第 3 条）：**irreversible 事项一律
+    # 强制拉人**，代理不得自行承诺不可逆决定。与「decide_resolution 不允许
+    # Agent 终裁」（hub/api/resolutions.py:71-77）是同一口径的两侧落点 ——
+    # 那边管终裁，这边管承诺。
+    if matter.irreversible and payload.authority == "can_commit":
+        audit.record_audit(
+            session, audit.FORBIDDEN_DENIED,
+            actor_user_id=user.id, matter_id=matter_id,
+            detail={"action": "submit_stance", "reason": "irreversible",
+                    "authority": payload.authority,
+                    "acting_as": payload.acting_as.value},
+        )
+        raise ApiError(403, "FORBIDDEN_DENIED",
+                       "不可逆事项强制拉人：代理不得自行承诺不可逆决定")
 
     fields = payload.model_dump(mode="json")
     if payload.content_hash != compute_stance_content_hash(fields):
