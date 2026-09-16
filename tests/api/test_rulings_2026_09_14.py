@@ -8,6 +8,14 @@ irreversible_reason）。
 裁决 3：get_digest = 最新 ok 摘要 + 状态 + 收敛结果（简单形态）。
 裁决 4：ttl 过期立场进重分配池（标 reassignable）而非静默当结论用。
 裁决 1：ask 配额 N=100（(matter_id, actor, target) 滑窗超限 429）。
+
+【2026-09-16 更正】裁决 1（ask 配额）与裁决 4（ttl 进重分配池）已被 owner
+重新裁定推翻，两条对应的测试随之移除（红测试不留仓）。更正后的口径由
+tests/api/test_rulings_2026_09_16.py 钉住：
+- 裁决 1 → 定向提问不设上限（回退本次落地）；
+- 裁决 4 → ttl 过期不进重分配池，改由发起人负责重新拉人 + 系统提醒，
+  新实现由 r2EOiO 承载。
+本文件不再包含这两条的断言。
 """
 
 import pytest
@@ -15,9 +23,6 @@ from sqlalchemy import select
 
 from hub.api import matters as matter_svc
 from hub.api.errors import ApiError
-from hub.db.models import Stance
-from hub.domain.digest import compute_stance_content_hash
-from hub.schemas.stance import StanceCreate
 from tests.conftest import make_user
 
 
@@ -109,73 +114,3 @@ def test_get_digest返回最新摘要与状态(db_session, users):
     assert result["status"] == matter.status
     assert result["consensus_points"] == ["共识X"]
     assert result["convergence"] == "continue"
-
-
-def test_ttl过期立场进重分配池(db_session, users):
-    from datetime import timedelta
-
-    from hub.api import stances as stance_svc
-
-    matter = matter_svc.create_matter(
-        db_session, initiator=users["init"], title="T", goal="G",
-        background="B", participant_ids=[users["alice"].id, users["bob"].id],
-        initiator_participates=False, timeout_seconds=3600, max_rounds=10,
-        draft_questions=["Q?"],
-    )
-    matter_svc.start_matter(db_session, matter_id=matter.id,
-                            actor=users["init"])
-    fields = {"round_number": 1, "stance": "support", "confidence": 0.6,
-              "position_summary": "p", "rationale_summary": "r",
-              "non_negotiables": [], "conditions": [], "open_questions": [],
-              "depends_on": [], "questions_for": [], "disagreement_kind": None,
-              "supersedes": None, "acting_as": "human", "authority": None,
-              "ttl_seconds": 60, "urgency": "normal", "visibility": "participants"}
-    fields["content_hash"] = compute_stance_content_hash(fields)
-    stance_svc.create_stance(db_session, matter_id=matter.id,
-                             user=users["alice"], payload=StanceCreate(**fields))
-    db_session.commit()
-    stance = db_session.scalar(select(Stance).where(
-        Stance.user_id == users["alice"].id))
-    stance.created_at = stance.created_at - timedelta(seconds=120)
-    db_session.commit()
-
-    pool = stance_svc.list_reassignable_expired(
-        db_session, matter_id=matter.id)
-    assert {r.user_id for r in pool} == {users["alice"].id}
-
-
-def test_ask配额超限返回429并写审计(db_session, users):
-    from hub.domain.rate_limit import ASK_QUOTA_LIMIT
-
-    matter = matter_svc.create_matter(
-        db_session, initiator=users["init"], title="T", goal="G",
-        background="B", participant_ids=[users["alice"].id, users["bob"].id],
-        initiator_participates=False, timeout_seconds=3600, max_rounds=10,
-        draft_questions=["Q?"],
-    )
-    matter_svc.start_matter(db_session, matter_id=matter.id,
-                            actor=users["init"])
-    db_session.commit()
-
-    fields = {"round_number": 1, "stance": "support", "confidence": 0.6,
-              "position_summary": "p", "rationale_summary": "r",
-              "non_negotiables": [], "conditions": [], "open_questions": [],
-              "depends_on": [],
-              "questions_for": [{"participant_id": str(users["bob"].id),
-                                 "question": "Q?"}],
-              "disagreement_kind": None, "supersedes": None,
-              "acting_as": "human", "authority": None, "ttl_seconds": None,
-              "urgency": "normal", "visibility": "participants"}
-    fields["content_hash"] = compute_stance_content_hash(fields)
-
-    # 直接灌满配额（不打 DB）：同一 (matter, actor, target) 调用 100 次后，
-    # 第 101 次必须 429 —— 配额判定独立于落库成败。
-    from hub.api.stances import _ask_limiter
-    from hub.domain.rate_limit import rate_limit_key_ask
-
-    key = rate_limit_key_ask(matter.id, users["alice"].id, users["bob"].id)
-    for _ in range(ASK_QUOTA_LIMIT):
-        allowed, _ = _ask_limiter.allow(key, limit=ASK_QUOTA_LIMIT)
-        assert allowed
-    allowed, retry = _ask_limiter.allow(key, limit=ASK_QUOTA_LIMIT)
-    assert not allowed and retry > 0

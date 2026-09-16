@@ -40,11 +40,8 @@ from hub.domain.convergence_eval import (
     evaluate_convergence_lenient,
 )
 from hub.domain.digest import compute_stance_content_hash
-from hub.domain.rate_limit import RateLimiter
 from hub.domain.timeutil import utcnow
 from hub.schemas.stance import StanceCreate
-
-_ask_limiter = RateLimiter()
 
 NOT_FOUND_MESSAGE = "事项不存在"
 STANCE_NOT_FOUND_MESSAGE = "立场不存在"
@@ -292,27 +289,6 @@ def create_stance(
     if not _is_participant(session, matter_id=matter_id, user_id=user.id):
         raise ApiError(404, "RESOURCE_NOT_FOUND", NOT_FOUND_MESSAGE)
 
-    # 裁决 1（2026-09-14，ask 配额 N=100）：对每条 questions_for 定向提问
-    # 按 (matter, actor, target) 滑窗配额超限 429。
-    if payload.questions_for:
-        from hub.domain.rate_limit import ASK_QUOTA_LIMIT, rate_limit_key_ask
-
-        for q in payload.questions_for:
-            key = rate_limit_key_ask(matter_id, user.id, q.participant_id)
-            allowed, retry_after = _ask_limiter.allow(key, limit=ASK_QUOTA_LIMIT)
-            if not allowed:
-                audit.record_audit(
-                    session, audit.LOGIN_RATE_LIMITED, actor_user_id=user.id,
-                    matter_id=matter_id,
-                    detail={"action": "ask_quota", "target_user_id":
-                            q.participant_id, "retry_after": retry_after},
-                )
-                raise ApiError(
-                    429, "RATE_LIMITED",
-                    f"定向提问超过配额（{ASK_QUOTA_LIMIT}/滑窗），"
-                    f"请 {retry_after}s 后重试",
-                    details={"retry_after": retry_after})
-
     fields = payload.model_dump(mode="json")
     if payload.content_hash != compute_stance_content_hash(fields):
         raise ApiError(422, "VALIDATION_FAILED",
@@ -471,20 +447,3 @@ def check_faithfulness(view_sections: dict[str, str], fact: FactBase) -> None:
 
 class FaithfulnessError(ValueError):
     """sections 承载事实的字段与 FactBase 不一致。"""
-
-
-def list_reassignable_expired(
-    session: Session, *, matter_id: str
-) -> list[Stance]:
-    """roR8Pk 第 5 条（owner 2026-09-14 裁决 B 进重分配池）：列出该事项中
-    ttl 已过期的立场——供换人机制（reassignment）把对应参与人标记为可替换。
-    过期立场本身不进收敛判定（analyze_round 已排除），此处只列池子。"""
-    now = utcnow()
-    rows = session.scalars(
-        select(Stance).where(Stance.matter_id == matter_id,
-                             Stance.ttl_seconds.is_not(None))
-    ).all()
-    return [
-        r for r in rows
-        if r.created_at + timedelta(seconds=r.ttl_seconds) <= now
-    ]
