@@ -427,14 +427,37 @@ v1.2 的执行方式与歧义纠正：`irreversible` 与 `agent_authority` 的�
 
 #### 9.6.1 契约边界（O2）
 
-对外可调用契约限定为**两组**，且全部以 Pydantic 模型声明，不得裸返回 `dict`：
+对外可调用契约全部以 Pydantic 模型声明，**不得裸返回 `dict`**。
 
-1. **JSON API 4 个端点**（请求/响应分别为 `hub.schemas.stance.StanceCreate` / `StanceRead`）：
-   - `POST /api/items/{matter_id}/stances`
-   - `GET /api/items/{matter_id}/stances`
-   - `GET /api/items/{matter_id}/stances/analysis`
-   - `GET /api/items/{matter_id}/stances/{user_id}`
-2. **MCP 4 个工具返回值**：`list_pending_tasks`、`get_task`、`submit_output`、`get_matter_status`。
+> ⚠️ **2026-09-17 更新（本小节原写「限定为两组 = 4 端点 + 4 工具」，与事实不符）**
+> 本节最初起草时立场层尚未落地，之后 `/api/items/*` 与 7 个立场层工具陆续补入，
+> **本节一直没跟着更新** —— 而 `get_digest` 没有 `DigestOut` 契约这件事，
+> 很可能就是因为**它不在下面那份名单里**，没人按契约边界去核它。
+> 下列清单按 2026-09-17 实测（12 个 JSON 端点 / 11 个 MCP 工具）重写。
+> **变更纪律**：新增任一对外接口，必须同步登记到本节，否则视为未完成。
+
+**1. JSON API 端点（请求/响应均以 Pydantic 模型声明）**
+
+- `/api/items/*`（立场层，`hub/web/routes_api.py`）：
+  `POST /api/items`、`GET /api/items`、`POST /api/items/{id}/stances`、
+  `GET /api/items/{id}/stances`、`GET /api/items/{id}/stances/analysis`、
+  `GET /api/items/{id}/stances/{user_id}`、`POST /api/items/{id}/ask`、
+  `GET /api/items/{id}/summary`、`GET /api/items/{id}/digest`、
+  `POST /api/items/{id}/decide`
+- `/api/agent/*`（任务流水线，`hub/web/routes_agent_rest.py`）：
+  `GET /api/agent/tasks`、`GET /api/agent/tasks/{id}`、
+  `POST /api/agent/tasks/{id}/output`、`GET /api/agent/matters/{id}/status`
+
+**2. MCP 工具返回值**
+
+- 任务流水线 4 个：`list_pending_tasks`、`get_task`、`submit_output`、`get_matter_status`
+- 立场层 7 个：`declare_item`、`submit_stance`、`read_stance`、`get_summary`、
+  `ask_participant`、`decide_item`、`get_digest`
+
+> **注**：`methods` 层里另有仅供 REST 使用的实现函数（如 `mcp_list_stances`、
+> `mcp_read_stance_analysis`），它们**不注册为 MCP 工具** —— 「唯一实现层」与
+> 「工具壳」是两层，不必一一对应（`get_digest` 也曾长期只有实现层、没有工具壳，
+> 直到 2026-09-16 才补注册）。
 
 **明确不在契约边界内**（不要为它们引入 Pydantic 模型）：
 
@@ -448,6 +471,24 @@ v1.2 的执行方式与歧义纠正：`irreversible` 与 `agent_authority` 的�
 - **`visibility` 只作留痕/审计属性，读侧不产生权限差异**（维持 A2 结论）：`Stance.visibility` 取 `participants` 或 `all`，两者在 V1 读侧**同义**；不得因 `visibility = participants` 而把事项发起人挡在任何列表之外。任何「按 `visibility` 过滤读结果」的实现都属回归，**后世不要"修复"成再挡发起人**。
 - **列表响应不含私有字段（保留并强化）**：所有列表类响应（`list_pending_tasks`、`get_matter_status`、`GET /api/items/{matter_id}/stances`、Web 列表页）只返回调用方有权看到的字段；**任何情形下**不含他人原始回答（`answers`）、个人模型、本地资料、Token 明文、密钥与凭据。条目级鉴权通过时，也不得以「列表已鉴权」为由放宽字段级最小化。注：`GET /api/items/{matter_id}/stances/analysis` 与 `get_matter_status` 按既有设计返回差异化的**摘要型**视图（如立场摘要、分歧方立场摘要），这是「摘要可见」而非「原始回答可见」，两者不得混同。
 - **术语边界提示**：§6.2 FR-07 与第 8 章页面表中的「可见性过滤」指的是**参与关系可见性**（发起人 ∪ 参与人），与 `Stance.visibility` 字段**不是同一回事**。本次修订**不改动** FR-07 与第 8 章的相关表述；两者混用会导致误改，见 §15.1 的字段说明。
+
+> **以下两条为 2026-09-17 追加**，用于把两处**既有分叉正式文档化** ——
+> 它们不是新裁定，是把实现里已经存在、且各自有据的口径写下来，免得后人
+> 读到两处矛盾去「修」其中一处。
+
+- **非成员的状态码在两层不同，且这是有意的**：
+  - 立场层（`/api/items/*`）非成员一律 **404 `RESOURCE_NOT_FOUND`**，文案
+    「事项不存在」——**不泄露事项是否存在**（本小节上一段的要求）。
+  - 任务流水线（`/api/agent/*`，含 `get_matter_status`）非成员保持 **403
+    `FORBIDDEN_SCOPE`** 并按 §9.5 错误码表执行。
+  - 两层是不同时期的产物：403 沿用 v1.1，404 是隐私评估（roR8pK）之后所立，
+    **没有一份文档同时管两层**，分叉因此长期未被发现。若要统一，属**行为
+    变更**（会翻转既有断言），须走修订流程，不得顺手改。
+
+- **`get_summary` 的读侧闸门 = 事项成员**（发起人 ∪ 参与人），非成员 404、
+  文案同「事项不存在」，与立场层其余读口同口径。
+  该闸门是 **2026-09-16 补上的**（原实现**没有任何闸门**，任何持令牌用户都能读到
+  任意事项的摘要 —— 属越权读缺陷），此前本节对读权限未作规定。**不得放宽回去。**
 ```
 
 ### 1.10 §13 验收场景（追加 26–35，替换 §13.1 矩阵相关行）
@@ -606,7 +647,7 @@ v1.1 原文（第 667 行）：
 | `ttl_seconds` | integer ≥ 60，可为空 | 入参 | 有效期 |
 | `urgency` | 枚举 `low` / `normal` / `high`，默认 `normal` | 入参 | 紧急度 |
 | `visibility` | 枚举 `participants` / `all`，默认 `participants` | 入参 | **只作留痕/审计属性，读侧不产生权限差异**（A2 结论，见 9.6.2）；`all` 为保留值，V1 与 `participants` 同义 |
-| `content_hash` | 64 位小写十六进制 | 入参 | 服务端按同一口径重算并强校验（即路径② 的 `content_digest` 对应物）；不匹配返回 `422 VALIDATION_FAILED`（摘要不匹配） |
+| `content_hash` | 64 位小写十六进制 | 入参 | 服务端按同一口径重算并强校验（即路径② 的 `content_digest` 对应物）；不匹配返回 `422 HUMAN_APPROVAL_REQUIRED`（摘要不匹配） |
 | `created_at` | datetime (UTC) | 出参 | 服务端生成 |
 
 **枚举与 CHECK 的落地说明**：上表枚举取值由 `stances` 表的 CHECK 约束与 `hub.schemas.stance` 的 `StrEnum` 两侧保持一致。本次修订新增或收紧的字段（`matters.irreversible`、`matter_participants.agent_authority`、`outputs.acting_as`、`outputs.authority`、`outputs.approved_at` 可空、`stances.approved_at` 新增可空、`stances.authority` 收紧为枚举、`stances.authority_legacy` 新增只读）**都随 2.4.6 的同一条 v3 迁移落地**，同样要求「PRD 本节（或 2.4.6）— ORM 枚举 — CHECK 约束」三处一致。`authority_legacy` 不受 CHECK 约束（自由文本），但**必须保证只读**：写入路径不得更新它。
@@ -681,7 +722,7 @@ v1.1 原文（第 667 行）：
 
 | # | 章节 | 本稿原状 | 追加变更 | 依据 |
 |---|---|---|---|---|
-| 38 | **6.2 FR-20（v1.1 条款）** | 本稿沿用 v1.1 的 FR-20「仅发起人可以拍板｜参与人和 Agent 无拍板权限」，**未列出该行的修订**（漏项） | **FR-20 语义修订 → 见 §2.4**：`can_commit` 成为**显式例外** —— 普通事项下 Agent 经 `decide_item` 可代本人终裁；`irreversible` 事项仍强制拉本人、Agent 无终裁权。v1.1 的 FR-20 行已加注「已被 v1.2 修订」，**其条款正文不改** | owner 2026-09-14 裁决 2；本稿 §2.4 |
+| 38 | **6.2 FR-20（v1.1 条款）** | 本稿沿用 v1.1 的 FR-20「仅发起人可以拍板｜参与人和 Agent 无拍板权限」，**未列出该行的修订**（漏项） | **FR-20 语义修订**：`can_commit` 成为**显式例外** —— 普通事项下 Agent 经 `decide_item` 可代本人终裁；`irreversible` 事项仍强制拉本人、Agent 无终裁权。**本条即为该修订的正文**（授权开关的机制见 §2.4，拍板闸门的落地见 `hub/api/resolutions.py`）。v1.1 的 FR-20 行已加注「已被 v1.2 修订」，**其条款正文不改** | owner 2026-09-14 裁决 2 |
 | 39 | 4.3 告知义务（§1.4） | 两处文案草案均标注【待 owner 定稿】 | **文案定稿**：采用交接稿 §8.2-S4 的现有草案措辞；摘除两处【待 owner 定稿】标记（§2.1 / §0.5 R4 的历史记录行不改） | owner 2026-09-14 §8.4-1 |
 | 40 | §4.2 待办 1 / 4（前半）/ 5 / 6 | 列为待确认 | **四条关闭**，移入 §4.1：① 4.3 文案定稿；② `irreversible` 变更理由**必填**；③ 开通 `can_commit` **限非终态事项**；④ §1.1 定位句**维持现状** | owner 2026-09-14 §8.4-1/2/3/4 |
 | 41 | §4.2 待办 1 / 4 的**后半问句** | 与各自前半并列写在同一条内 | **拆出并保留在 §4.2**，因为两问都**没被答**：① 开通 `can_commit` 的一次性告知是否还需「我已阅读」勾选确认 —— 09-14 §8.4-1 只答「措辞定稿」，未涉勾选；② 撤销 `can_commit` 后历史代理提交是否需在 Web 标注「授权已撤销」 —— 09-14 §8.4-2 只答「理由必填」。**此为如实拆分，非 owner 裁定** | 复核 09-14《裁决答复》原文，两问均未涉及 |
