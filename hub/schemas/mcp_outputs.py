@@ -8,6 +8,8 @@
 `extra="forbid"`：多出来的字段视为契约破坏（宁可产出时报错，不带病出门）。
 """
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -29,6 +31,25 @@ class DeclareItemIn(_Strict):
     irreversible: bool = False
     options: list[str] | None = None
     overall_deadline: str | None = None
+
+
+class DecideItemIn(_Strict):
+    """decide_item 入参（rpQt6D：`POST /items/{id}/decide`）。
+
+    与 ``decide_resolution`` 的守卫分工：本模型只管**形状与枚举**——
+    非法 decision 值在这里就 422，永远到不了服务层；「仅发起人可拍板」
+    「irreversible 拒绝」「非 awaiting_decision 拒绝」属状态判定，归
+    ``hub/api/resolutions.py``。
+
+    decision 取 ``hub/domain/resolution.py`` 的 DECISIONS 字面值；
+    expected_version 是 version+status 乐观锁的显式期望值（FR-21b），
+    调用方须回传它看到的版本号，冲突返回 RESOLUTION_VERSION_CONFLICT。
+    """
+
+    decision: Literal["approved", "modified", "rejected"]
+    expected_version: int = Field(ge=1)
+    final_text: str | None = None
+    rationale: str | None = None
 
 
 class DeclareItemOut(_Strict):

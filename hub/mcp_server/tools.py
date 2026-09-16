@@ -205,3 +205,28 @@ def register_tools(mcp: FastMCP, session_factory, settings: Settings,
             settings=settings, user_id=_current_user_id(),
             matter_id=matter_id,
         )
+
+    @mcp.tool
+    def decide_item(
+        matter_id: str,
+        decision: str,
+        expected_version: int,
+        final_text: str | None = None,
+        rationale: str | None = None,
+    ) -> dict:
+        """Decide the item's resolution draft (initiator only).
+
+        Allowed decisions: approved / modified / rejected. Irreversible items
+        are refused — the initiator must decide those in person, not through
+        this channel. REST 对应：POST /api/items/{id}/decide。"""
+        return _call(
+            session_factory, methods.mcp_decide_item,
+            settings=settings, user_id=_current_user_id(),
+            matter_id=matter_id,
+            payload={
+                "decision": decision,
+                "expected_version": expected_version,
+                "final_text": final_text,
+                "rationale": rationale,
+            },
+        )

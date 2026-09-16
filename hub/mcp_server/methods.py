@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from hub.api import audit
 from hub.api import matters as matters_svc
+from hub.api import resolutions as resolutions_svc
 from hub.api import stances as stance_svc
 from hub.api.errors import ApiError
 from hub.api.matters import is_participant
@@ -40,10 +41,12 @@ from hub.domain.limits import (
 from hub.domain.participants import ParticipantValidationError
 from hub.domain.timeutil import iso_z, parse_iso_z, utcnow
 from hub.schemas.mcp_outputs import (
+    DecideItemIn,
     DeclareItemIn,
     DeclareItemOut,
     MatterStatusOut,
     PendingTasksOut,
+    ResolutionView,
     RoundSummaryOut,
     SubmitOutputOut,
     TaskDetailOut,
@@ -628,3 +631,48 @@ def mcp_get_digest(
         "round_number": round_number,
         **_summary_payload(summary),
     }
+
+
+def mcp_decide_item(
+    session: Session,
+    settings: Settings,
+    *,
+    user_id: int,
+    matter_id: str,
+    payload: dict,
+) -> dict:
+    """decide_item：发起人对决议草案拍板（FR-21）。
+
+    **本函数是唯一实现。** MCP 工具 ``decide_item`` 与 REST 端点
+    ``POST /api/items/{id}/decide`` 都调它 —— test_rest_fallback.py 的 D3
+    定死了「两条通道调用同一个 methods 函数、产出经同一组契约」，各写一份
+    会让两侧守卫与错误形状各自漂移。
+
+    守卫全部复用 ``resolutions.decide_resolution``，本函数不重复判：
+    - 非发起人 → 403 FORBIDDEN_SCOPE
+    - irreversible 事项 → 403 FORBIDDEN_SCOPE（不可逆不让通道终裁）
+    - 非 awaiting_decision → 409 INVALID_STATE_TRANSITION
+    - expected_version 过期 → 409 RESOLUTION_VERSION_CONFLICT
+    本函数只多管一件事：**入参形状与枚举**（非法 decision 值在 DecideItemIn
+    就 422，永远到不了服务层）。
+    """
+    try:
+        data = DecideItemIn.model_validate(payload)
+    except ValidationError as e:
+        raise ApiError(422, "VALIDATION_FAILED", str(e)) from e
+
+    resolutions_svc.decide_resolution(
+        session,
+        matter_id=matter_id,
+        actor=_user(session, user_id),
+        decision=data.decision,
+        expected_version=data.expected_version,
+        final_text=data.final_text,
+        rationale=data.rationale,
+    )
+    # decide_resolution 成功即留下决议；下面的 None 分支不可达，留作契约守卫
+    # 而不是新增错误码（hub/api/errors.py 明写「Do NOT add others」）。
+    view = _resolution_view(session, matter_id)
+    if view is None:
+        raise ApiError(409, "INVALID_STATE_TRANSITION", "拍板后未找到决议")
+    return _contract(ResolutionView, view, mode="json")

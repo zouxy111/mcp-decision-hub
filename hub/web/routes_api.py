@@ -4,20 +4,27 @@
 Authorization: Bearer（无 Cookie 会话），错误经全局 ApiError handler 序列化。
 """
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Body, Depends, Response
 from sqlalchemy.orm import Session
 
 from hub.api import stances as stance_svc
+from hub.config import Settings
 from hub.db.models import User
+from hub.mcp_server import methods
 from hub.schemas.stance import (
     StanceAnalysisRead,
     StanceCreate,
     StanceListItem,
     StanceRead,
 )
-from hub.web.deps import get_db, require_bearer
+from hub.web.deps import get_db, get_settings, require_bearer
 
 router = APIRouter()
+
+# 与 routes_agent_rest.py 同一标头语义（r5Am9i D4：降级显式可观测）。
+# 立场层工具同样有 MCP / REST 两条出口，所以这里也标。
+CHANNEL_HEADER = "X-Hub-Channel"
+CHANNEL = "rest"
 
 
 @router.post("/api/items/{matter_id}/stances", status_code=201,
@@ -78,3 +85,26 @@ def list_stances(
     stances = stance_svc.list_stances(db, matter_id=matter_id, user=user)
     db.commit()
     return stances
+
+
+@router.post("/api/items/{matter_id}/decide")
+def decide_item(
+    matter_id: str,
+    response: Response,
+    payload: dict = Body(...),
+    user: User = Depends(require_bearer),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    """发起人对决议草案拍板（rpQt6D 端点缺口之一）。
+
+    与 MCP 工具 ``decide_item`` 调用**同一个** ``methods.mcp_decide_item``
+    —— D3 单一事实源。本路由不含任何业务判断，只做身份注入与提交。
+    """
+    response.headers[CHANNEL_HEADER] = CHANNEL
+    result = methods.mcp_decide_item(
+        db, settings, user_id=user.id, matter_id=matter_id,
+        payload=dict(payload),
+    )
+    db.commit()
+    return result
