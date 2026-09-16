@@ -210,16 +210,16 @@ def analyze_round(
     check_faithfulness(view.sections, fact)
 
     # rsEXuh ⑥留痕（AUDIENCE_VIEW_DELIVERED，owner 2026-09-14 批准）：
-    # 给某个 viewer 交付了哪个版本的事实视图 + 内容哈希；detail 不含立场正文。
+    # 给某个 viewer 交付了哪个版本的事实视图。**detail 只记两个键**
+    # （PRD-06 原话：「只记这两个键，不记视图内容」）——不要再加 `content_hash`
+    # 之类的派生键：`fact_version` 已经是「交付的是哪一版」的标识，多记一个
+    # 会让契约面与验收（「恰为两键」）对不上。
     audit.record_audit(
         session, audit.AUDIENCE_VIEW_DELIVERED,
         actor_user_id=user.id, matter_id=matter_id,
         detail={
             "viewer_user_id": user.id,
             "fact_version": fact.fact_version,
-            "content_hash": compute_stance_content_hash(
-                {"sections": view.sections, "fact_version": fact.fact_version}
-            ),
         },
     )
 

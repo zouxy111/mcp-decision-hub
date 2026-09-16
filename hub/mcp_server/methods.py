@@ -48,6 +48,7 @@ from hub.schemas.mcp_outputs import (
     DecideItemIn,
     DeclareItemIn,
     DeclareItemOut,
+    DigestOut,
     ItemListOut,
     MatterStatusOut,
     PendingTasksOut,
@@ -56,7 +57,7 @@ from hub.schemas.mcp_outputs import (
     SubmitOutputOut,
     TaskDetailOut,
 )
-from hub.schemas.stance import StanceCreate, StanceRead
+from hub.schemas.stance import StanceCreate, StanceListItem, StanceRead
 
 DEFAULT_LIMIT = 20
 MAX_LIMIT = 100
@@ -611,6 +612,50 @@ def _directed_questions_view(session: Session, *, matter_id: str,
     ]
 
 
+def mcp_list_stances(
+    session: Session,
+    settings: Settings,
+    *,
+    user_id: int,
+    matter_id: str,
+) -> list[dict]:
+    """list_stances：本事项下当前用户可见的立场列表（私有字段已裁剪，B27）。
+
+    与 REST 端点 ``GET /api/items/{id}/stances`` 调用**同一个**本函数 ——
+    D3 单一事实源。此前该路由直接调 ``stance_svc``，是既存漂移，2026-09-17
+    按最新约定回填。
+
+    **不注册为 MCP 工具**：`r5Am9i` 的工具清单是 7 个，没有它。methods 层是
+    「唯一实现层」，工具壳是另一层，两者不必一一对应（`get_digest` 也曾长期
+    只有 methods 层、没有工具壳）。
+    """
+    stances = stance_svc.list_stances(session, matter_id=matter_id,
+                                      user=_user(session, user_id))
+    return [StanceListItem.model_validate(s).model_dump(mode="json")
+            for s in stances]
+
+
+def mcp_read_stance_analysis(
+    session: Session,
+    settings: Settings,
+    *,
+    user_id: int,
+    matter_id: str,
+    round_number: int,
+):
+    """read_stance_analysis：本轮立场分析（只读聚合）。
+
+    与 REST 端点 ``GET /api/items/{id}/stances/analysis`` 同一个本函数
+    （D3 单一事实源）。返回 ``RoundStanceAnalysis`` 本体，由路由的
+    `response_model` / `_contract` 决定序列化 —— 这里不再套一层形状，
+    避免与既有出参漂移。**不注册为 MCP 工具**（理由见上）。
+    """
+    return stance_svc.analyze_round(
+        session, matter_id=matter_id, round_number=round_number,
+        user=_user(session, user_id),
+    )
+
+
 def mcp_ask_participant(
     session: Session,
     settings: Settings,
@@ -810,6 +855,48 @@ def mcp_get_summary(
     }, mode="json")
 
 
+def _digest_decision_view(session: Session, matter_id: str) -> dict | None:
+    """最新版本决议的摘要视图；无决议返回 None（键仍在、值 None）。
+
+    `final` 由状态派生（approved / modified / rejected 为已定稿），
+    未定稿时 `text` 给 `recommendation`（草案摘要）——PRD-03「pending_review
+    时给草案，标注状态」。**不含** user_id / confidence。
+    """
+    res = session.scalar(
+        select(Resolution)
+        .where(Resolution.matter_id == matter_id)
+        .order_by(Resolution.version.desc())
+        .limit(1)
+    )
+    if res is None:
+        return None
+    final = res.status in ("approved", "modified", "rejected")
+    return {
+        "decision_id": res.id,
+        "status": res.status,
+        "final": final,
+        "version": res.version,
+        "cited_rounds": res.cited_rounds,
+        "text": (res.final_text or res.recommendation) if final
+        else res.recommendation,
+    }
+
+
+def _digest_open_items(matter: Matter, summary: RoundSummary) -> list[str]:
+    """未决开口：摘要已聚合的 open_questions（去重保序）+ 事项阻塞原因。
+
+    不直接读各参与人立场 —— 见 `mcp_get_digest` docstring 里的口径说明。
+    """
+    items: list[str] = []
+    seen: set[str] = set()
+    for q in list(summary.open_questions or []) + (
+            [matter.blocked_reason] if matter.blocked_reason else []):
+        if isinstance(q, str) and q and q not in seen:
+            seen.add(q)
+            items.append(q)
+    return items
+
+
 def mcp_get_digest(
     session: Session,
     settings,
@@ -817,8 +904,21 @@ def mcp_get_digest(
     user_id: int,
     matter_id: str,
 ) -> dict:
-    """get_digest（裁决 3，2026-09-14 选 A 简单形态）：最新 ok 摘要 + 事项
-    状态 + 收敛结果。五字段无身份（PRD 9.2），成员闸门复用。
+    """get_digest：一页纸现状（裁决 3，owner 2026-09-14 定，09-16 复核「不变」）。
+
+    形状 = 开工包 PRD-03 的三个节：`current_round` / `decision` / `open_items`，
+    另保留既有摘要五字段。出参过 `DigestOut` 契约（PRD-03 验收第 2 条：
+    手工塞一个 `user_id` 进去必须炸）。
+
+    **历史偏差更正**：`873ff8d` 曾把它落成「最新 ok 摘要 + 状态 + 收敛」的
+    「简单形态」，`decision`（最新决议/草案）整节缺失 —— 而那正是「这个事项
+    进行到哪了」最该回答的一节。此处补齐。
+
+    `open_items` 的来源说明：PRD-03 原文写「本轮立场的 `open_questions` 去重
+    聚合」，但 2026-09-16 的延后公开口径规定「进行中只见本人立场」，digest 直接
+    聚合他人立场会绕过那条口径。故取**摘要里已聚合的 `open_questions`**
+    （摘要本身即本轮立场的汇总，且五字段无身份），另并入事项的阻塞原因 ——
+    口径变更晚于 PRD-03，按最新的来。
 
     闸门必须在取摘要**之前**：非成员拿到的应是「事项不存在」的 404，而不是
     「暂无摘要」——后者会泄露「该事项存在、只是还没出摘要」。
@@ -835,12 +935,21 @@ def mcp_get_digest(
     if row is None:
         raise ApiError(404, "RESOURCE_NOT_FOUND", "暂无已生成的 ok 摘要")
     summary, round_number = row
-    return {
+    rnd = session.scalar(
+        select(Round).where(Round.matter_id == matter_id,
+                            Round.round_number == round_number)
+    )
+    return _contract(DigestOut, {
         "matter_id": matter_id,
         "status": matter.status,
-        "round_number": round_number,
+        "current_round": {
+            "round_number": round_number,
+            "status": rnd.status if rnd is not None else "unknown",
+        },
+        "decision": _digest_decision_view(session, matter_id),
+        "open_items": _digest_open_items(matter, summary),
         **_summary_payload(summary),
-    }
+    }, mode="json")
 
 
 def mcp_decide_item(

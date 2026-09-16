@@ -11,6 +11,8 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from hub.domain.confidence import confidence_band
+
 ShortText = Annotated[str, Field(min_length=1, max_length=500)]
 
 
@@ -93,7 +95,7 @@ class StanceRead(BaseModel):
     round_number: int
     user_id: int
     stance: StanceKind
-    confidence: float
+    confidence_band: str
     position_summary: str
     rationale_summary: str
     non_negotiables: list[str]
@@ -110,6 +112,37 @@ class StanceRead(BaseModel):
     visibility: Visibility
     content_hash: str
     created_at: datetime
+
+    @model_validator(mode="before")
+    @classmethod
+    def _band_instead_of_raw(cls, data):
+        """**原值不外发**（PRD-07 / roR8pK 第 2 条）：把 `confidence` 换成分档。
+
+        两种输入都要吃得下：
+        - ORM 行（`from_attributes`）—— 路由的 `response_model=` 与
+          `methods._contract` 都直接喂 `Stance` 对象；
+        - 已序列化的 dict —— 测试里用 `StanceRead.model_validate(body)` 复验。
+
+        所以这里是**唯一**的转换点；改 `StanceRead` 字段必须从这儿过，
+        否则原值会漏回去（档位与「0.7 硬阻断」组合起来能反推「谁在卡结论」）。
+        """
+        if isinstance(data, dict):
+            src = dict(data)
+        else:
+            src = {name: getattr(data, name)
+                   for name in cls.model_fields if hasattr(data, name)}
+            # `confidence` 已不在 `cls.model_fields` 里（本类就是要把它挡掉），
+            # 所以要**单独**从 ORM 行上取原值 —— 漏了这行就等于「静默地拿不到
+            # 原值」，最终表现为 `confidence_band Field required`。
+            if hasattr(data, "confidence"):
+                src["confidence"] = data.confidence
+        raw = src.pop("confidence", None)        # 原值一律不外发
+        if "confidence_band" not in src and raw is not None:
+            # 已转换过的 dict（`_contract` 出口 + 路由的 `response_model=`
+            # 会把同一份出参过两遍）不带 `confidence`，此时 raw 为 None，
+            # 不能当成「原值是 None」去分档 —— 直接沿用已有档位。
+            src["confidence_band"] = confidence_band(raw)
+        return src
 
 
 # 与 hub/domain/audience.py 的占位文案保持一致（domain 层是纯函数、零依赖，
@@ -154,9 +187,10 @@ class StanceAnalysisRead(BaseModel):
 class StanceListItem(BaseModel):
     """立场列表出参：StanceRead 去掉私有字段后的公开子集（B27）。
 
-    私有字段默认清单【待 owner 确认】：confidence / rationale_summary /
-    non_negotiables / conditions / disagreement_kind —— 内部把握度与依据、
-    底线与条件属「内部」信息，不进列表；单读端点（StanceRead）不受影响。
+    私有字段清单（`confidence` / `rationale_summary` / `non_negotiables` /
+    `conditions` / `disagreement_kind`）**已由 owner 2026-09-14 认可**
+    （《裁决答复》§8.4-5），不再是待确认项 —— 内部把握度与依据、底线与条件
+    属「内部」信息，不进列表。单读端点见 `StanceRead` 的 `confidence_band`。
     """
 
     model_config = ConfigDict(extra="forbid", from_attributes=True)

@@ -59,7 +59,7 @@ def _two_stances(db_session, matter, alice, bob):
     db_session.commit()
 
 
-def test_未终态时成员列表只见本人加聚合计数(db_session, three_person_matter):
+def test_未终态时成员列表只见本人(db_session, three_person_matter):
     m = three_person_matter
     _two_stances(db_session, m["matter"], m["alice"], m["bob"])
     rows = stance_svc.list_stances(

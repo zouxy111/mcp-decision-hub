@@ -92,6 +92,52 @@ class DirectedQuestionItem(_Strict):
     asked_by_user_id: int
 
 
+class DigestCurrentRound(_Strict):
+    """digest 的「当前轮次」一节（PRD-03）。"""
+
+    round_number: int
+    status: str
+
+
+class DigestDecision(_Strict):
+    """digest 的「最新结论 / 决议草案」一节（PRD-03）。
+
+    `final=False` 表示还只是草案（`pending_review`），此时 `text` 给
+    `recommendation`（草案摘要）。**不含** `user_id` / `confidence` /
+    逐人立场 —— 与 PRD-03 的「边界（不做）」逐条对齐。
+    """
+
+    decision_id: str
+    status: str
+    final: bool
+    version: int
+    cited_rounds: list
+    text: str
+
+
+class DigestOut(_Strict):
+    """`get_digest` 出参 = **一页纸现状**（裁决 3，owner 2026-09-14 定，
+    2026-09-16 复核「**不变**」；开工包 PRD-03 给出三个节名）：
+
+    - `current_round`：当前轮次号与状态
+    - `decision`：最新决议（已定稿）或决议草案摘要，**标注状态**；无则 None
+    - `open_items`：未决开口清单
+
+    另保留既有的摘要五字段与事项状态（实现先有、无害，且是「一页纸」的补充）。
+    """
+
+    matter_id: str
+    status: str
+    current_round: DigestCurrentRound
+    decision: DigestDecision | None
+    open_items: list[str]
+    consensus_points: list
+    divergences: list
+    blind_spots: list
+    open_questions: list
+    convergence: str | None
+
+
 class ItemBrief(_Strict):
     """列表项（rpQt6D：`GET /items?participant=me&state=open`）。
 

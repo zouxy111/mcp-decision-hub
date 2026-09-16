@@ -7,7 +7,6 @@ Authorization: Bearer（无 Cookie 会话），错误经全局 ApiError handler 
 from fastapi import APIRouter, Body, Depends, Response
 from sqlalchemy.orm import Session
 
-from hub.api import stances as stance_svc
 from hub.config import Settings
 from hub.db.models import User
 from hub.mcp_server import methods
@@ -31,15 +30,23 @@ CHANNEL = "rest"
              response_model=StanceRead)
 def submit_stance(
     matter_id: str,
+    response: Response,
     payload: StanceCreate,
     user: User = Depends(require_bearer),
     db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
 ):
-    stance = stance_svc.create_stance(
-        db, matter_id=matter_id, user=user, payload=payload
+    """提交一条立场。与 MCP 工具 `submit_stance` 同一个 `methods.mcp_submit_stance`。
+
+    2026-09-17 回填：此前本路由直接调 `stance_svc`，是 D3 单一事实源的既存漂移。
+    """
+    response.headers[CHANNEL_HEADER] = CHANNEL
+    result = methods.mcp_submit_stance(
+        db, settings, user_id=user.id, matter_id=matter_id,
+        payload=payload.model_dump(),
     )
     db.commit()
-    return stance
+    return result
 
 
 # 注意：本路由必须声明在 /stances/{user_id} 之前，否则 "analysis" 会被当成
@@ -48,15 +55,22 @@ def submit_stance(
             response_model=StanceAnalysisRead)
 def read_stance_analysis(
     matter_id: str,
+    response: Response,
     round_number: int = 1,
     user: User = Depends(require_bearer),
     db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
 ):
-    """本轮立场分析（只读）。鉴权与 404 语义复用 stance 既有路由。"""
-    analysis = stance_svc.analyze_round(
-        db, matter_id=matter_id, round_number=round_number, user=user
+    """本轮立场分析（只读）。鉴权与 404 语义复用 stance 既有路由。
+
+    2026-09-17 回填：与 MCP 侧同一个 `methods.mcp_read_stance_analysis`。
+    """
+    response.headers[CHANNEL_HEADER] = CHANNEL
+    analysis = methods.mcp_read_stance_analysis(
+        db, settings, user_id=user.id, matter_id=matter_id,
+        round_number=round_number,
     )
-    db.commit()  # 落脏数据的收敛降级审计
+    db.commit()  # 落脏数据的收敛降级审计 + 读取留痕
     return analysis
 
 
@@ -65,26 +79,43 @@ def read_stance_analysis(
 def read_stance(
     matter_id: str,
     user_id: int,
+    response: Response,
     user: User = Depends(require_bearer),
     db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
 ):
-    stance = stance_svc.get_stance(
-        db, matter_id=matter_id, user=user, target_user_id=user_id
+    """读取某位参与人最新一轮立场（原值不出门，只出分档，PRD-07）。
+
+    2026-09-17 回填：与 MCP 工具 `read_stance` 同一个 `methods.mcp_read_stance`。
+    """
+    response.headers[CHANNEL_HEADER] = CHANNEL
+    result = methods.mcp_read_stance(
+        db, settings, user_id=user.id, matter_id=matter_id,
+        target_user_id=user_id,
     )
     db.commit()  # 落审计（读也留痕）
-    return stance
+    return result
 
 
 @router.get("/api/items/{matter_id}/stances",
             response_model=list[StanceListItem])
 def list_stances(
     matter_id: str,
+    response: Response,
     user: User = Depends(require_bearer),
     db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
 ):
-    stances = stance_svc.list_stances(db, matter_id=matter_id, user=user)
+    """本事项下当前用户可见的立场列表（私有字段已裁剪）。
+
+    2026-09-17 回填：与 `methods.mcp_list_stances` 同一个实现。
+    """
+    response.headers[CHANNEL_HEADER] = CHANNEL
+    result = methods.mcp_list_stances(
+        db, settings, user_id=user.id, matter_id=matter_id,
+    )
     db.commit()
-    return stances
+    return result
 
 
 @router.post("/api/items/{matter_id}/decide")

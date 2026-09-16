@@ -11,7 +11,7 @@ from hub.db.models import Matter, MatterParticipant, Stance
 from hub.domain.digest import compute_stance_content_hash
 from tests.conftest import make_user
 
-# 私有字段默认清单【待 owner 确认】：内部把握/依据类信息不进列表。
+# 私有字段清单 —— 已由 owner 2026-09-14 认可（《裁决答复》§8.4-5），非待确认项。
 PRIVATE_FIELDS = {
     "confidence",
     "rationale_summary",

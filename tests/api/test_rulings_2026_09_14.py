@@ -5,7 +5,10 @@ irreversible_reason）。
 裁决 5b：can_commit 开通限非终态事项（终态后不允许开通）。
 裁决 2：decide_item 仅生成决议草稿（不写 completed；irreversible 事项直接
 拒绝终裁）+ 授权范围可配置（用户自定义哪些问题可授权 AI 拍板）。
-裁决 3：get_digest = 最新 ok 摘要 + 状态 + 收敛结果（简单形态）。
+裁决 3：get_digest = 一页纸现状（当前轮次 + 最新结论/决议草案 + 未决开口）。
+注：`873ff8d` 落地时简化成「最新 ok 摘要 + 状态 + 收敛」的简单形态，
+`decision` 一节缺失；2026-09-17 按 owner 口径补齐（口径自 09-14 起未变，
+09-16 复核件亦明写「不变」）。本文件保留对摘要五字段的回归断言。
 裁决 4：ttl 过期立场进重分配池（标 reassignable）而非静默当结论用。
 裁决 1：ask 配额 N=100（(matter_id, actor, target) 滑窗超限 429）。
 

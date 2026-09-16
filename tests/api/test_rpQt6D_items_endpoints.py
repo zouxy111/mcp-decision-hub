@@ -100,8 +100,7 @@ def test_摘要两通道字段集合逐字段相同(client, db_session, settings
 
 def test_一页纸两通道字段集合逐字段相同(client, db_session, settings,
                                        items_scenario):
-    """`get_digest` 目前无 Pydantic 契约模型，故此处直接断言两通道逐字段
-    相等（比只校验契约更强：契约缺失也拦不住漂移）。"""
+    """两通道逐字段相等（比只校验契约更强：契约存在也拦不住两侧各写一份）。"""
     s = items_scenario
     rest_body = client.get(
         f"/api/items/{s['matter'].id}/digest", headers=s["init_headers"]
@@ -111,7 +110,7 @@ def test_一页纸两通道字段集合逐字段相同(client, db_session, setti
     )
 
     assert rest_body == mcp_body
-    assert set(rest_body) >= {"matter_id", "status", "round_number"}
+    assert set(rest_body) >= {"matter_id", "status", "current_round", "decision"}
 
 
 @pytest.mark.parametrize("path_fn,mcp_fn", [
