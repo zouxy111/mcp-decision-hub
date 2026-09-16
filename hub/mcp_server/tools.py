@@ -230,3 +230,32 @@ def register_tools(mcp: FastMCP, session_factory, settings: Settings,
                 "rationale": rationale,
             },
         )
+
+    @mcp.tool
+    def get_digest(matter_id: str) -> dict:
+        """One-page status of the item: latest ok summary + item status +
+        convergence. No per-person stances, no identity.
+        REST 对应：GET /api/items/{id}/digest。
+
+        注：`methods.mcp_get_digest` 自 2026-09-14（提交 `873ff8d`）就存在，
+        但直到现在才注册成 MCP 工具——此前只有 HTTP 出口。"""
+        return _call(
+            session_factory, methods.mcp_get_digest,
+            settings=settings, user_id=_current_user_id(),
+            matter_id=matter_id,
+        )
+
+    @mcp.tool
+    def list_items(participant: str | None = None,
+                   state: str | None = None) -> dict:
+        """List the items you can see, newest first.
+
+        participant="me" narrows to items you are a participant of;
+        state="open" excludes terminal items. Visibility is derived from your
+        own identity only — you cannot ask for someone else's list.
+        REST 对应：GET /api/items?participant=me&state=open。"""
+        return _call(
+            session_factory, methods.mcp_list_items,
+            settings=settings, user_id=_current_user_id(),
+            participant=participant, state=state,
+        )

@@ -23,6 +23,7 @@ from hub.config import Settings
 from hub.db.models import (
     IdempotencyRecord,
     Matter,
+    MatterParticipant,
     Output,
     Resolution,
     Round,
@@ -44,6 +45,7 @@ from hub.schemas.mcp_outputs import (
     DecideItemIn,
     DeclareItemIn,
     DeclareItemOut,
+    ItemListOut,
     MatterStatusOut,
     PendingTasksOut,
     ResolutionView,
@@ -515,8 +517,65 @@ def _round_summaries_view(session: Session, round_id: str) -> list[dict]:
 
 
 # --------------------------------------------------------------------------
-# r5Am9i · 立场层 MCP 工具（语义明确的 4 个；ask/decide/digest 待产品口径）
+# r5Am9i · 立场层 MCP 工具（6/7 已落地；ask_participant 待口径）
 # --------------------------------------------------------------------------
+
+# 「未终态」= 非 completed / cancelled（与 set_agent_authority 的终态判定同口径）。
+_TERMINAL_MATTER_STATUSES = ("completed", "cancelled")
+
+
+def _item_brief(matter: Matter) -> dict:
+    return {
+        "matter_id": matter.id,
+        "title": matter.title,
+        "status": matter.status,
+        "item_version": matter.item_version or 1,
+        "irreversible": bool(matter.irreversible),
+        "overall_deadline": (iso_z(matter.overall_deadline)
+                             if matter.overall_deadline else None),
+    }
+
+
+def mcp_list_items(
+    session: Session,
+    settings: Settings,
+    *,
+    user_id: int,
+    participant: str | None = None,
+    state: str | None = None,
+) -> dict:
+    """list_items：列出本人可见的事项（rpQt6D：`GET /items`）。
+
+    筛选口径（rpQt6D 原文只给了 `?participant=me&state=open` 两个取值，
+    其余一律 422，不开自由文本口）：
+    - ``participant="me"``：只列**本人是参与人**的事项（仅发起的不算）；
+      缺省 = 本人可见的全部（发起 ∪ 参与），即 ``list_matters_for_user``。
+    - ``state="open"``：排除终态（completed / cancelled）；缺省 = 不限状态。
+
+    可见性**只由本人身份派生**，不接受调用方传入他人 user_id——没有越权面。
+    """
+    if participant is not None and participant != "me":
+        raise ApiError(422, "VALIDATION_FAILED", "participant 只接受 'me'")
+    if state is not None and state != "open":
+        raise ApiError(422, "VALIDATION_FAILED", "state 只接受 'open'")
+
+    user = _user(session, user_id)
+    matters = matters_svc.list_matters_for_user(session, user=user)
+    if participant == "me":
+        joined = set(session.scalars(
+            select(MatterParticipant.matter_id)
+            .where(MatterParticipant.user_id == user.id)
+        ).all())
+        matters = [m for m in matters if m.id in joined]
+    if state == "open":
+        matters = [m for m in matters
+                   if m.status not in _TERMINAL_MATTER_STATUSES]
+    return _contract(
+        ItemListOut,
+        {"items": [_item_brief(m) for m in matters]},
+        mode="json",
+    )
+
 
 def mcp_declare_item(
     session: Session,

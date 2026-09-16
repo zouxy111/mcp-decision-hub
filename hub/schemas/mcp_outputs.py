@@ -59,6 +59,26 @@ class DeclareItemOut(_Strict):
     irreversible: bool
 
 
+class ItemBrief(_Strict):
+    """列表项（rpQt6D：`GET /items?participant=me&state=open`）。
+
+    只给「用来认领/挑选哪一条」的最小字段，不塞正文——正文读
+    `GET /items/{id}/digest`。`item_version` / `irreversible` 在库里是
+    nullable（v4 迁移前建的行），对外统一收敛为与 `DeclareItemOut` 同型。
+    """
+
+    matter_id: str
+    title: str
+    status: str
+    item_version: int
+    irreversible: bool
+    overall_deadline: str | None
+
+
+class ItemListOut(_Strict):
+    items: list[ItemBrief]
+
+
 class RoundSummaryOut(_Strict):
     """get_summary 出参：最新一轮 ok 摘要（五字段无身份，PRD 9.2）。"""
 

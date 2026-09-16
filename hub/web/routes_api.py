@@ -132,6 +132,27 @@ def declare_item(
     return result
 
 
+@router.get("/api/items")
+def list_items(
+    response: Response,
+    participant: str | None = None,
+    state: str | None = None,
+    user: User = Depends(require_bearer),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    """列出本人可见的事项（rpQt6D 端点缺口之一）。
+
+    与 MCP 工具 ``list_items`` 调用**同一个** ``methods.mcp_list_items``；
+    筛选值白名单（``participant=me`` / ``state=open``）也在那一侧，本路由
+    只转交 query 参数，不再判一遍。
+    """
+    response.headers[CHANNEL_HEADER] = CHANNEL
+    return methods.mcp_list_items(
+        db, settings, user_id=user.id, participant=participant, state=state,
+    )
+
+
 @router.get("/api/items/{matter_id}/summary")
 def get_item_summary(
     matter_id: str,
