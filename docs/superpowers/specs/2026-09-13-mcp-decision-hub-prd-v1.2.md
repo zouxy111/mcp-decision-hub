@@ -453,11 +453,19 @@ v1.2 的执行方式与歧义纠正：`irreversible` 与 `agent_authority` 的�
 - 任务流水线 4 个：`list_pending_tasks`、`get_task`、`submit_output`、`get_matter_status`
 - 立场层 7 个：`declare_item`、`submit_stance`、`read_stance`、`get_summary`、
   `ask_participant`、`decide_item`、`get_digest`
+- 另 1 个：`list_items`（REST `GET /api/items` 的同源实现，一并注册）
+  —— **合计 12 个**，以 `tools/list` 的实际返回为准
+  （2026-09-17 真进程实测：12 个全部在线路上列出，见
+  `outputs/2026-09-17-真进程冒烟记录.md`）
 
 > **注**：`methods` 层里另有仅供 REST 使用的实现函数（如 `mcp_list_stances`、
 > `mcp_read_stance_analysis`），它们**不注册为 MCP 工具** —— 「唯一实现层」与
 > 「工具壳」是两层，不必一一对应（`get_digest` 也曾长期只有实现层、没有工具壳，
 > 直到 2026-09-16 才补注册）。
+>
+> ⚠️ **数量口径的教训**：本节的工具数改过两次（4 → 11 → 12），两次都是**凭记忆数**。
+> 数工具/端点这类清单，**一律以 `tools/list` 或路由表的实际输出为准**，
+> 不要手数。
 
 **明确不在契约边界内**（不要为它们引入 Pydantic 模型）：
 
