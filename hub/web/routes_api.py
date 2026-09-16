@@ -108,3 +108,64 @@ def decide_item(
     )
     db.commit()
     return result
+
+
+@router.post("/api/items")
+def declare_item(
+    response: Response,
+    payload: dict = Body(...),
+    user: User = Depends(require_bearer),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    """声明一个事项（rpQt6D 端点缺口之一）。
+
+    与 MCP 工具 ``declare_item`` 调用**同一个** ``methods.mcp_declare_item``
+    —— D3 单一事实源：入参过 ``DeclareItemIn``、出参过 ``DeclareItemOut``，
+    参与人数 2–5 与不可逆标记等判定全在那一侧，本路由不重复判。
+    """
+    response.headers[CHANNEL_HEADER] = CHANNEL
+    result = methods.mcp_declare_item(
+        db, settings, user_id=user.id, payload=dict(payload),
+    )
+    db.commit()
+    return result
+
+
+@router.get("/api/items/{matter_id}/summary")
+def get_item_summary(
+    matter_id: str,
+    response: Response,
+    user: User = Depends(require_bearer),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    """事项最新一轮 ok 摘要（rpQt6D 端点缺口之一）。
+
+    与 MCP 工具 ``get_summary`` 调用**同一个** ``methods.mcp_get_summary``，
+    产出过 ``RoundSummaryOut`` 契约。无摘要时那一侧抛 404
+    ``RESOURCE_NOT_FOUND``，本路由不做兜底（两侧错误形状逐字段相同）。
+    """
+    response.headers[CHANNEL_HEADER] = CHANNEL
+    return methods.mcp_get_summary(
+        db, settings, user_id=user.id, matter_id=matter_id,
+    )
+
+
+@router.get("/api/items/{matter_id}/digest")
+def get_item_digest(
+    matter_id: str,
+    response: Response,
+    user: User = Depends(require_bearer),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    """一页纸现状：最新 ok 摘要 + 事项状态 + 收敛结果（裁决 3，选 A 简单形态）。
+
+    与 MCP 工具 ``get_digest`` 调用**同一个** ``methods.mcp_get_digest``；
+    成员闸门（非成员 403 ``FORBIDDEN_SCOPE``）也在那一侧，本路由不重复判。
+    """
+    response.headers[CHANNEL_HEADER] = CHANNEL
+    return methods.mcp_get_digest(
+        db, settings, user_id=user.id, matter_id=matter_id,
+    )

@@ -71,6 +71,25 @@ def _user(session: Session, user_id: int) -> User:
     return user
 
 
+def _require_matter(session: Session, *, matter_id: str, user_id: int) -> Matter:
+    """读侧成员闸门：事项成员（发起人 ∪ 参与人）放行，其余一律 404。
+
+    ``matters.get_matter_for_user`` 对非成员返回 **None 而不是抛错**，所以
+    调用方必须自己判。历史上有两处只调不判，闸门等于不存在——任何持令牌的
+    用户都能读到别人事项的摘要与一页纸（2026-09-16 由
+    ``tests/api/test_rpQt6D_items_endpoints.py`` 抓到）。新写的读侧方法一律
+    走本函数，不要直接调 ``get_matter_for_user``。
+
+    用 404 而非 403：避免泄露「该事项存在」，与 ``hub/api/stances.py`` 的
+    ``_require_matter_access`` 同一口径、同一句文案。
+    """
+    matter = matters_svc.get_matter_for_user(session, matter_id=matter_id,
+                                             user=_user(session, user_id))
+    if matter is None:
+        raise ApiError(404, "RESOURCE_NOT_FOUND", "事项不存在")
+    return matter
+
+
 def _encode_cursor(offset: int) -> str:
     return base64.urlsafe_b64encode(str(offset).encode()).decode()
 
@@ -583,7 +602,12 @@ def mcp_get_summary(
     user_id: int,
     matter_id: str,
 ) -> dict:
-    """get_summary：该事项最新一轮 ok 摘要（五字段无身份）。"""
+    """get_summary：该事项最新一轮 ok 摘要（五字段无身份）。
+
+    读侧闸门：事项成员（发起人 ∪ 参与人）可见；**非成员一律 404**（不用
+    403，避免泄露「该事项存在」），与 ``hub/api/stances.py`` 读侧同一口径。
+    """
+    _require_matter(session, matter_id=matter_id, user_id=user_id)
     row = session.execute(
         select(RoundSummary, Round.round_number)
         .join(Round, RoundSummary.round_id == Round.id)
@@ -610,9 +634,12 @@ def mcp_get_digest(
     matter_id: str,
 ) -> dict:
     """get_digest（裁决 3，2026-09-14 选 A 简单形态）：最新 ok 摘要 + 事项
-    状态 + 收敛结果。五字段无身份（PRD 9.2），成员闸门复用。"""
-    matters_svc.get_matter_for_user(session, matter_id=matter_id,
-                                    user=_user(session, user_id))
+    状态 + 收敛结果。五字段无身份（PRD 9.2），成员闸门复用。
+
+    闸门必须在取摘要**之前**：非成员拿到的应是「事项不存在」的 404，而不是
+    「暂无摘要」——后者会泄露「该事项存在、只是还没出摘要」。
+    """
+    matter = _require_matter(session, matter_id=matter_id, user_id=user_id)
     row = session.execute(
         select(RoundSummary, Round.round_number)
         .join(Round, RoundSummary.round_id == Round.id)
@@ -621,7 +648,6 @@ def mcp_get_digest(
         .order_by(Round.round_number.desc())
         .limit(1)
     ).first()
-    matter = session.get(Matter, matter_id)
     if row is None:
         raise ApiError(404, "RESOURCE_NOT_FOUND", "暂无已生成的 ok 摘要")
     summary, round_number = row
