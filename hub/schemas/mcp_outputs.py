@@ -59,6 +59,39 @@ class DeclareItemOut(_Strict):
     irreversible: bool
 
 
+class AskParticipantIn(_Strict):
+    """ask_participant 入参（r5Am9i 第 5 个工具 / rpQt6D `POST /items/{id}/ask`）。
+
+    **刻意不含任何配额字段**：owner 2026-09-14 裁决「ask 先不限制」，
+    roR8Pk 第 4 条以「owner 决定不做」关闭。不要往这里加计数 / 滑窗 / 频率。
+    """
+
+    target_user_id: int
+    question: str = Field(min_length=1, max_length=2000)
+    round_number: int | None = Field(default=None, ge=1)
+
+
+class AskParticipantOut(_Strict):
+    """ask_participant 出参。重复提交同一问题返回首次那一行的同一个 id。"""
+
+    question_id: str
+    matter_id: str
+    round_number: int
+    target_user_id: int
+    asked_by_user_id: int
+    question: str
+    created_at: str
+
+
+class DirectedQuestionItem(_Strict):
+    """挂到某人任务上下文里的「别人问我的问题」（待其提交立场时回答）。"""
+
+    question_id: str
+    round_number: int
+    question: str
+    asked_by_user_id: int
+
+
 class ItemBrief(_Strict):
     """列表项（rpQt6D：`GET /items?participant=me&state=open`）。
 
@@ -177,6 +210,10 @@ class TaskDetailOut(_Strict):
     previous_summary: PreviousSummaryView | None
     deadline_at: str | None
     llm_provider: str
+    # ask_participant 的投递口：别人对本任务归属人的定向提问（当前轮）。
+    # 默认空列表 —— _contract 用 exclude_defaults，所以「没有提问」时这个键
+    # 根本不出现在出参里，既有消费端的字段集合不变。
+    directed_questions: list[DirectedQuestionItem] = []
 
 
 class SubmitOutputOut(_Strict):

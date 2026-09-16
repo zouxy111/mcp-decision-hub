@@ -209,6 +209,39 @@ class Resolution(Base):
     created_at: Mapped[datetime] = mapped_column(default=utcnow, nullable=False)
 
 
+class ParticipantQuestion(Base):
+    """定向提问（r5Am9i · ask_participant）：一行 = 「谁在第几轮问谁什么」。
+
+    为什么单独建表、而不是写进 ``stances.questions_for``：那一列语义是
+    **本人向他人提问**，且 ``stances`` 按 (matter_id, round_number, user_id)
+    唯一 —— 目标本轮尚未提交立场时连行都不存在，无处可挂；强行写别人的行
+    还会破坏 ``Stance.content_hash``。详见
+    ``outputs/2026-09-16-r5Am9i-ask_participant-阻塞.md``。
+
+    ``question_hash`` 是正文的稳定摘要，承担幂等：同一 (事项, 轮次, 被问人,
+    提问人, 问题正文) 只落一行，重发返回首次结果，不产生第二条。
+    """
+
+    __tablename__ = "participant_questions"
+    __table_args__ = (
+        UniqueConstraint("matter_id", "round_number", "target_user_id",
+                         "asked_by_user_id", "question_hash"),
+    )
+
+    id: Mapped[str] = mapped_column(String(48), primary_key=True,
+                                    default=lambda: new_id("pqt"))
+    matter_id: Mapped[str] = mapped_column(ForeignKey("matters.id"),
+                                           nullable=False, index=True)
+    round_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    target_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"),
+                                                nullable=False, index=True)
+    asked_by_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"),
+                                                  nullable=False)
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+    question_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(default=utcnow, nullable=False)
+
+
 class Stance(Base):
     """立场层：某参与人在某轮次对议题的结构化立场（新增表，不改既有表）。
 

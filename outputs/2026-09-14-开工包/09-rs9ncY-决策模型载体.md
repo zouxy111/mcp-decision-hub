@@ -19,7 +19,7 @@
 ## 做什么
 
 1. **决策日志表 + Schema**：
-   - 新表 `decision_logs`（走迁移机制新增 v9；字段按 agent-decisions 六字段 + 状态字段 + 版本字段）
+   - 新表 `decision_logs`（走迁移机制新增 **v10**；字段按 agent-decisions 六字段 + 状态字段 + 版本字段）
    - Pydantic 模型 `DecisionLogEntry` / `PrincipleEntry`（`extra="forbid"`）
    - 版本化：决策行不可变，修订 = 新行 + 旧行状态置 superseded（同 stances.supersedes 模式）
    - Brier 分计算纯函数（校准：`predicted_confidence` vs `outcome`）
@@ -34,7 +34,12 @@
 
 ## 文件所有权
 
-- `hub/db/migrations/migrations.py`（v9）+ `hub/db/models.py`（新表）
+> ⚠️ **2026-09-17 编号顺延**：本 PRD 原写「走迁移机制新增 v9」，但 **v9 已被
+> `r5Am9i` 的 `participant_questions`（`ask_participant` 落点）占用**
+> （owner 2026-09-17 裁定）。**本项的 `decision_logs` 改用 v10**，其余不变。
+> 依据：`outputs/2026-09-16-r5Am9i-ask_participant-阻塞.md` 第五节。
+
+- `hub/db/migrations/migrations.py`（**v10**）+ `hub/db/models.py`（新表）
 - `hub/schemas/decision_log.py`（新建）
 - `hub/domain/calibration.py`（Brier 分，新建纯函数）
 - `scripts/distill_principles.py`（离线提炼）
@@ -45,7 +50,7 @@
 
 | 片 | 红测试 | 绿实现 |
 |---|---|---|
-| 1 | 迁移 v9：新表就位 + 可单独回滚 | 迁移 |
+| 1 | 迁移 v10：新表就位 + 可单独回滚 | 迁移 |
 | 2 | 决策日志写入 → Pydantic 校验；自由文本注入被拒 | Schema |
 | 3 | 不可变性：对同一决策追加修订 → 新行 + 旧行 superseded，旧行内容不变 | 版本化 |
 | 4 | Brier 分：已知输入算出已知值（手算用例） | 纯函数 |
@@ -56,6 +61,6 @@
 
 1. 6 切片全绿
 2. 决策日志/原则条目**零自由文本入库**（所有写入路径过 Pydantic）
-3. v9 迁移可单独回滚（沿用 rollback_step 机制）
+3. v10 迁移可单独回滚（沿用 rollback_step 机制）
 4. skill 能被 WorkBuddy 加载（frontmatter 校验）
 5. 全量门槛绿

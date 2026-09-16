@@ -507,3 +507,48 @@ def downgrade_add_output_authority(conn: sqlite3.Connection) -> None:
     if not _table_exists(conn, "outputs"):
         return
     _drop_columns(conn, "outputs", tuple(_OUTPUT_AUTHORITY_COLUMNS))
+
+
+# v9：participant_questions（r5Am9i · ask_participant 的落点）
+#
+# 为什么不挂到 stances.questions_for：那一列是「本人向他人提问」，且该表按
+# (matter_id, round_number, user_id) 唯一 —— 目标本轮尚未提交立场时连行都
+# 不存在，承载不了「待其提交立场时需回答的问题」。详见
+# outputs/2026-09-16-r5Am9i-ask_participant-阻塞.md。
+#
+# 注：开工包 PRD-09（rs9ncY 决策日志）原定 v9 → 顺延 v10。
+
+_NEW_PARTICIPANT_QUESTIONS_DDL = """
+CREATE TABLE participant_questions (
+    id VARCHAR(48) NOT NULL,
+    matter_id VARCHAR(48) NOT NULL,
+    round_number INTEGER NOT NULL,
+    target_user_id INTEGER NOT NULL,
+    asked_by_user_id INTEGER NOT NULL,
+    question TEXT NOT NULL,
+    question_hash VARCHAR(64) NOT NULL,
+    created_at DATETIME NOT NULL,
+    PRIMARY KEY (id),
+    UNIQUE (matter_id, round_number, target_user_id, asked_by_user_id,
+            question_hash),
+    FOREIGN KEY(matter_id) REFERENCES matters (id),
+    FOREIGN KEY(target_user_id) REFERENCES users (id),
+    FOREIGN KEY(asked_by_user_id) REFERENCES users (id)
+)
+"""
+
+
+def upgrade_add_participant_questions(conn: sqlite3.Connection) -> None:
+    """建 participant_questions。幂等：表已存在直接返回。"""
+    if _table_exists(conn, "participant_questions"):
+        return
+    conn.execute(_NEW_PARTICIPANT_QUESTIONS_DDL)
+    conn.execute(
+        "CREATE INDEX ix_participant_questions_matter_target"
+        " ON participant_questions (matter_id, target_user_id, round_number)"
+    )
+
+
+def downgrade_add_participant_questions(conn: sqlite3.Connection) -> None:
+    conn.execute("DROP INDEX IF EXISTS ix_participant_questions_matter_target")
+    conn.execute("DROP TABLE IF EXISTS participant_questions")

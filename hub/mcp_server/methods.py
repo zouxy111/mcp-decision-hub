@@ -25,6 +25,7 @@ from hub.db.models import (
     Matter,
     MatterParticipant,
     Output,
+    ParticipantQuestion,
     Resolution,
     Round,
     RoundSummary,
@@ -42,6 +43,8 @@ from hub.domain.limits import (
 from hub.domain.participants import ParticipantValidationError
 from hub.domain.timeutil import iso_z, parse_iso_z, utcnow
 from hub.schemas.mcp_outputs import (
+    AskParticipantIn,
+    AskParticipantOut,
     DecideItemIn,
     DeclareItemIn,
     DeclareItemOut,
@@ -179,6 +182,8 @@ def mcp_get_task(
         "previous_summary": _previous_summary_view(session, rnd),
         "deadline_at": iso_z(task.deadline_at) if task.deadline_at else None,
         "llm_provider": settings.llm_provider_name,
+        "directed_questions": _directed_questions_view(
+            session, matter_id=matter.id, target_user_id=task.assignee_id),
     })
 
 
@@ -575,6 +580,126 @@ def mcp_list_items(
         {"items": [_item_brief(m) for m in matters]},
         mode="json",
     )
+
+
+def _directed_questions_view(session: Session, *, matter_id: str,
+                             target_user_id: int) -> list[dict]:
+    """别人问「我」的问题（当前最新轮），挂进任务上下文。空则返回 []。"""
+    round_number = session.scalar(
+        select(Round.round_number)
+        .where(Round.matter_id == matter_id)
+        .order_by(Round.round_number.desc())
+        .limit(1)
+    )
+    if round_number is None:
+        return []
+    rows = session.scalars(
+        select(ParticipantQuestion)
+        .where(ParticipantQuestion.matter_id == matter_id,
+               ParticipantQuestion.round_number == round_number,
+               ParticipantQuestion.target_user_id == target_user_id)
+        .order_by(ParticipantQuestion.created_at)
+    ).all()
+    return [
+        {
+            "question_id": q.id,
+            "round_number": q.round_number,
+            "question": q.question,
+            "asked_by_user_id": q.asked_by_user_id,
+        }
+        for q in rows
+    ]
+
+
+def mcp_ask_participant(
+    session: Session,
+    settings: Settings,
+    *,
+    user_id: int,
+    matter_id: str,
+    payload: dict,
+) -> dict:
+    """ask_participant：就某事项向某位参与人发起定向追问（r5Am9i 第 5 个工具）。
+
+    **无配额**（owner 2026-09-14 裁决「先不限制」）—— 本函数不含任何计数 /
+    限流 / 429 逻辑，任何为此加计数闸门的改动都违背该裁决。
+
+    守卫全部复用既有件，不重写：
+    - 调用方非事项成员 → 404「事项不存在」（``_require_matter``，不泄露存在性）
+    - 目标不是该事项参与人 → 422 VALIDATION_FAILED
+    - 未给 round_number → 取该事项当前最大轮次；给了但该轮不存在 → 422
+
+    幂等：同一 (事项, 轮次, 被问人, 提问人, 问题正文) 只落一行，重发返回
+    首次那一行（``question_hash`` + 唯一约束兜底，不引入外部幂等键）。
+
+    落点说明：问题存 ``participant_questions``，由 ``mcp_get_task`` 在**被问人
+    自己的任务上下文**里回传 —— 这才是「待其提交立场时需回答」的投递口。
+    没有写进 ``stances.questions_for``（那是「本人向他人提问」，且目标未提交
+    立场时该行不存在）。见 ``outputs/2026-09-16-r5Am9i-ask_participant-阻塞.md``。
+    """
+    try:
+        data = AskParticipantIn.model_validate(payload)
+    except ValidationError as e:
+        raise ApiError(422, "VALIDATION_FAILED", str(e)) from e
+
+    asker = _user(session, user_id)
+    _require_matter(session, matter_id=matter_id, user_id=user_id)
+
+    if not is_participant(session, matter_id=matter_id,
+                          user_id=data.target_user_id):
+        raise ApiError(422, "VALIDATION_FAILED",
+                       "target_user_id 不是该事项的参与人")
+
+    if data.round_number is None:
+        round_number = session.scalar(
+            select(Round.round_number)
+            .where(Round.matter_id == matter_id)
+            .order_by(Round.round_number.desc())
+            .limit(1)
+        )
+        if round_number is None:
+            raise ApiError(409, "INVALID_STATE_TRANSITION", "该事项尚无轮次")
+    else:
+        round_number = data.round_number
+        exists = session.scalar(
+            select(Round.id).where(Round.matter_id == matter_id,
+                                   Round.round_number == round_number)
+        )
+        if exists is None:
+            raise ApiError(422, "VALIDATION_FAILED",
+                           "round_number 不在该事项的轮次里")
+
+    question_hash = sha256_hex(data.question)
+    row = session.scalar(
+        select(ParticipantQuestion).where(
+            ParticipantQuestion.matter_id == matter_id,
+            ParticipantQuestion.round_number == round_number,
+            ParticipantQuestion.target_user_id == data.target_user_id,
+            ParticipantQuestion.asked_by_user_id == asker.id,
+            ParticipantQuestion.question_hash == question_hash,
+        )
+    )
+    if row is None:
+        row = ParticipantQuestion(
+            matter_id=matter_id,
+            round_number=round_number,
+            target_user_id=data.target_user_id,
+            asked_by_user_id=asker.id,
+            question=data.question,
+            question_hash=question_hash,
+        )
+        session.add(row)
+        session.flush()
+
+    return _contract(AskParticipantOut, {
+        "question_id": row.id,
+        "matter_id": row.matter_id,
+        "round_number": row.round_number,
+        "target_user_id": row.target_user_id,
+        "asked_by_user_id": row.asked_by_user_id,
+        "question": row.question,
+        "created_at": iso_z(row.created_at),
+    }, mode="json")
 
 
 def mcp_declare_item(

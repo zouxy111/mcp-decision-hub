@@ -206,6 +206,11 @@ def test_每一项结构变更可单独回滚且数据保留(tmp_path):
         assert "irreversible" not in _columns(conn, "matters")
         assert _pk(conn, "idempotency_records") == ["task_id", "idempotency_key"]
         assert "approved_at" not in _columns(conn, "stances")
+        # v9 回滚要真的把表摘掉，不能只退版本号
+        assert conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table'"
+            " AND name='participant_questions'"
+        ).fetchone() is None
         # 回滚不丢历史授权：authority_legacy 的值回到 authority
         assert conn.execute(
             "SELECT authority FROM stances WHERE stance_id='stn_1'"

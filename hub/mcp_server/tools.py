@@ -259,3 +259,29 @@ def register_tools(mcp: FastMCP, session_factory, settings: Settings,
             settings=settings, user_id=_current_user_id(),
             participant=participant, state=state,
         )
+
+    @mcp.tool
+    def ask_participant(
+        matter_id: str,
+        target_user_id: int,
+        question: str,
+        round_number: int | None = None,
+    ) -> dict:
+        """Ask one participant of the item a targeted follow-up question.
+
+        No quota and no rate limit — by owner ruling (2026-09-14) this channel
+        is intentionally uncapped. round_number defaults to the item's current
+        round. The question is delivered to that participant's own task
+        context (`get_task.directed_questions`), to be answered when they next
+        submit a stance. Repeatedly sending the same question is idempotent.
+        REST 对应：POST /api/items/{id}/ask。"""
+        return _call(
+            session_factory, methods.mcp_ask_participant,
+            settings=settings, user_id=_current_user_id(),
+            matter_id=matter_id,
+            payload={
+                "target_user_id": target_user_id,
+                "question": question,
+                "round_number": round_number,
+            },
+        )

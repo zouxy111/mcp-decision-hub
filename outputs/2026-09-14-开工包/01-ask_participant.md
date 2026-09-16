@@ -1,5 +1,12 @@
 # PRD-01 · ask_participant（MCP 工具：定向提问）
 
+> ✅ **2026-09-17 已落地**。落点与本文原文有一处差异：问题**不写进**
+> `stances.questions_for`（那是「本人向他人提问」的列，且目标未提交立场时该行
+> 不存在），改为独立表 `participant_questions`（迁移 v9），并经
+> `get_task.directed_questions` 投递给被问人。幂等改由「正文摘要 + 四元组唯一
+> 约束」承担，入参不含外部幂等键。详见
+> `outputs/2026-09-16-r5Am9i-ask_participant-阻塞.md`（owner 2026-09-17 裁定选 A）。
+
 ## 目标
 
 `r5Am9i` 7 个立场层工具的第 5 个：让 Agent 能就某事项向某位参与人发起**定向追问**。

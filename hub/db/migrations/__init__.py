@@ -139,6 +139,12 @@ MIGRATIONS: tuple[Migration, ...] = (
         _steps.upgrade_add_output_authority,
         _steps.downgrade_add_output_authority,
     ),
+    Migration(
+        9,
+        "add_participant_questions",
+        _steps.upgrade_add_participant_questions,
+        _steps.downgrade_add_participant_questions,
+    ),
 )
 
 _VERSION_TABLE = "schema_migrations"

@@ -153,6 +153,30 @@ def list_items(
     )
 
 
+@router.post("/api/items/{matter_id}/ask")
+def ask_participant(
+    matter_id: str,
+    response: Response,
+    payload: dict = Body(...),
+    user: User = Depends(require_bearer),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    """向某位参与人发起定向追问（r5Am9i 第 5 个工具 / rpQt6D 端点「ask」）。
+
+    与 MCP 工具 ``ask_participant`` 调用**同一个**
+    ``methods.mcp_ask_participant`` —— D3 单一事实源。**无配额**（owner
+    2026-09-14 裁决）；本路由只做身份注入，不判配额、不判参与人。
+    """
+    response.headers[CHANNEL_HEADER] = CHANNEL
+    result = methods.mcp_ask_participant(
+        db, settings, user_id=user.id, matter_id=matter_id,
+        payload=dict(payload),
+    )
+    db.commit()
+    return result
+
+
 @router.get("/api/items/{matter_id}/summary")
 def get_item_summary(
     matter_id: str,
