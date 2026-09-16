@@ -71,9 +71,10 @@ class StanceSnapshot:
     是为了让**任何构造路径**（含测试里手搓的快照）都过同一道归一，不会出现
     「从 ORM 来的归一了、手搓的没归一」这种半截口径。
 
-    去重用的 `set` 本身就让顺序无关，所以这里**不额外排序** ——
-    元检验实测：加 `sorted()` 与不加，没有任何用例的断言会变（空洞行为），
-    故删掉。
+    **必须 `sorted()`**：`set` 只保证「同一批元素去重」，**不保证迭代顺序** ——
+    两个元素相同的 set 若插入顺序不同，迭代顺序可能不同，于是归一化结果
+    不确定、比较结果随进程漂移（实测踩过：同提交同锁文件，我这边 714 全绿、
+    干净环境 713 passed + 1 failed）。`sorted()` 是让归一化**确定**的那一步。
     """
 
     user_id: int
@@ -112,7 +113,7 @@ class StanceSnapshot:
 
 
 def _normalize(values: Iterable | None) -> tuple[str, ...]:
-    return tuple({v for v in (values or []) if isinstance(v, str)})
+    return tuple(sorted({v for v in (values or []) if isinstance(v, str)}))
 
 
 @dataclass(frozen=True)

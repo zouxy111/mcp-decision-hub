@@ -71,10 +71,28 @@ def test_五类字段变更各自成信号(field, expected):
 
 
 def test_集合顺序与重复不算差异():
-    """同一批条件换个次序、或重复写一遍，不是「新信息」。"""
-    prev = _as_dict(_snap(1, conditions=("甲", "乙")))
-    curr = _as_dict(_snap(1, conditions=("乙", "甲", "甲")))
+    """同一批条件换个次序、或重复写一遍，不是「新信息」。
+
+    ⚠️ **这条为什么刻意用 6 个元素 + 反向输入**：只断言「两种输入相等」是不够的。
+    归一化里若挪掉 `sorted()`，两个 `tuple(set(...))` 的迭代顺序**受插入顺序影响**，
+    有时相同、有时不同 → 测试变成**随机失败**，而随机失败在单机跑一次时看不出来。
+    实测踩过：同一个提交、同一份 `uv.lock`，一台机器 `714 passed`、
+    另一台 `713 passed + 1 failed`。
+
+    元素给到 6 个并反序输入后，`set` 迭代顺序**恰好等于**排序结果的概率极低
+    （1/720 量级），所以这条断言能把「挪掉 sorted」稳定地抓住。
+
+    注意：断言的是 `sorted(keys)` 而**不是** `keys` —— 中文串按码位排序，
+    与声明顺序不同（丁<丙<乙<己<戊<甲）。
+    """
+    keys = ("甲", "乙", "丙", "丁", "戊", "己")
+    prev = _as_dict(_snap(1, conditions=keys))
+    curr = _as_dict(_snap(1, conditions=tuple(reversed(keys)) + (keys[0],)))
+
     assert detect_stall(prev, curr).stalled is True
+    # 归一化结果必须是**确定值**（排序后的字面量），而不是 set 的任意迭代顺序
+    assert _snap(1, conditions=tuple(reversed(keys))).conditions == \
+        tuple(sorted(keys))
 
 
 def test_凭空多一条未决问题就算新信息():
