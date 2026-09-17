@@ -394,6 +394,27 @@ def upgrade_add_participant_authority_columns(conn: sqlite3.Connection) -> None:
     _add_columns(conn, "matter_participants", _PARTICIPANT_AUTHORITY_COLUMNS)
 
 
+# v10：matters +1 列（irreversible_reason）
+# 背景：873ff8d（2026-09-15）把这列加进 models.py 但没写迁移——v9 及以前
+# 的存量库启动即炸 no such column（2026-09-18 测试服务器部署实录）。
+
+_MATTER_IRREVERSIBLE_REASON = {
+    "irreversible_reason": "TEXT",
+}
+
+
+def upgrade_add_matter_irreversible_reason(conn: sqlite3.Connection) -> None:
+    if not _table_exists(conn, "matters"):
+        return
+    _add_columns(conn, "matters", _MATTER_IRREVERSIBLE_REASON)
+
+
+def downgrade_add_matter_irreversible_reason(conn: sqlite3.Connection) -> None:
+    if not _table_exists(conn, "matters"):
+        return
+    _drop_columns(conn, "matters", tuple(_MATTER_IRREVERSIBLE_REASON))
+
+
 def downgrade_add_participant_authority_columns(conn: sqlite3.Connection) -> None:
     if not _table_exists(conn, "matter_participants"):
         return

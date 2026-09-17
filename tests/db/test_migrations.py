@@ -396,6 +396,48 @@ def _stances_ddl(conn: sqlite3.Connection) -> str:
     return row[0] if row else ""
 
 
+def _matters_columns(conn: sqlite3.Connection) -> set[str]:
+    return {r[1] for r in conn.execute("PRAGMA table_info(matters)")}
+
+
+def test_v9存量库补上matters的irreversible_reason列(tmp_path):
+    """873ff8d（2026-09-15）把 irreversible_reason 加进 models.py 却**没写迁移**
+    ——v9 及以前的存量库缺这一列，新版代码启动即炸
+    `no such column: matters.irreversible_reason`（2026-09-18 测试服务器
+    部署 358fd1c 时实录）。v10 补上。
+
+    场景构造：全列新库 → DROP 该列 + 版本表标到 v9 =「873ff8d 之后、
+    v10 之前」的真实存量库形状。
+    """
+    db = tmp_path / "v9legacy.db"
+    engine = make_engine(f"sqlite:///{db}")
+    init_db(engine)  # 全新建库：列全在、版本到最新
+
+    conn = _connect(db)
+    try:
+        conn.execute("ALTER TABLE matters DROP COLUMN irreversible_reason")
+        conn.execute("DELETE FROM schema_migrations WHERE version >= 10")
+        conn.commit()
+        assert "irreversible_reason" not in _matters_columns(conn)
+    finally:
+        conn.close()
+
+    report = run_migrations(engine, backup=False)
+
+    assert report.from_version == 9
+    assert report.applied == (10,)
+    conn = _connect(db)
+    try:
+        assert "irreversible_reason" in _matters_columns(conn)
+        assert current_version(conn) == 10
+    finally:
+        conn.close()
+
+    # 幂等：再跑一次不产生任何动作
+    second = run_migrations(engine, backup=False)
+    assert second.applied == ()
+
+
 def test_存量库升级后stances的CHECK约束生效且数据保留(tmp_path):
     db = tmp_path / "legacy.db"
     engine = _make_legacy_db(db)
