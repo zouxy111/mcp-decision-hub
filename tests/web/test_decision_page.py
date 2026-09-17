@@ -220,3 +220,31 @@ def test_post_accept_enters_awaiting_decision(client, db_session, scenario):
     assert resp.status_code == 303
     db_session.expire_all()
     assert db_session.get(Matter, scenario.id).status == "awaiting_decision"
+
+
+def test_post_approve_irreversible_completes(client, db_session,
+                                             session_factory, scenario):
+    """裁定 2（2026-09-17）：不可逆事项可由发起人本人在网页完结——
+    此前 decide_resolution 对 irreversible 无条件 403，连网页通道也拒
+    （柠檬果 2026-09-17 源码推断，本测试把它钉成回归）。"""
+    db_session.execute(
+        update(Matter).where(Matter.id == scenario.id)
+        .values(irreversible=True, irreversible_reason="涉及生产数据删除")
+    )
+    db_session.commit()
+    _login(client, "init")
+    resp = client.post(
+        f"/matters/{scenario.id}/decision",
+        data={"action": "decide", "decision": "approved", "version": "1",
+              "final_text": "", "rationale": ""},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        with session_factory() as s:
+            if s.get(Matter, scenario.id).status == "completed":
+                break
+        time.sleep(0.1)
+    with session_factory() as s:
+        assert s.get(Matter, scenario.id).status == "completed"

@@ -22,13 +22,15 @@ class DeclareItemIn(_Strict):
 
     participant_ids 为 2–5 名参与人（FR-05）；question 复用 Matter.goal；
     irreversible / options / overall_deadline / item_version 落在 A1 的
-    v4 迁移列上。"""
+    v4 迁移列上。irreversible=true 时 irreversible_reason 必填
+    （裁决 5a，2026-09-14；裁定 2，2026-09-17：校验在全通道生效）。"""
 
     title: str = Field(min_length=1, max_length=255)
     question: str = Field(min_length=1)
     background: str = ""
     participant_ids: list[int] = Field(min_length=2, max_length=5)
     irreversible: bool = False
+    irreversible_reason: str | None = None
     options: list[str] | None = None
     overall_deadline: str | None = None
 

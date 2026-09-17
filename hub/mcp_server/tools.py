@@ -47,7 +47,8 @@ def _rate_limit_error(retry_after: int) -> ToolError:
 
 
 def register_tools(mcp: FastMCP, session_factory, settings: Settings,
-                   drive_queue=None, limiter: RateLimiter | None = None) -> None:
+                   drive_queue=None, resume_queue=None,
+                   limiter: RateLimiter | None = None) -> None:
     from hub.api import pipeline
     from hub.mcp_server import methods
 
@@ -217,9 +218,9 @@ def register_tools(mcp: FastMCP, session_factory, settings: Settings,
         """Decide the item's resolution draft (initiator only).
 
         Allowed decisions: approved / modified / rejected. Irreversible items
-        are refused — the initiator must decide those in person, not through
-        this channel. REST 对应：POST /api/items/{id}/decide。"""
-        return _call(
+        are refused — the initiator must decide those on the web page in
+        person. REST 对应：POST /api/items/{id}/decide。"""
+        result = _call(
             session_factory, methods.mcp_decide_item,
             settings=settings, user_id=_current_user_id(),
             matter_id=matter_id,
@@ -230,6 +231,12 @@ def register_tools(mcp: FastMCP, session_factory, settings: Settings,
                 "rationale": rationale,
             },
         )
+        # 裁定 1（2026-09-17）：拍板成功（_call 已 commit）后入
+        # resume_queue，与网页路由同一完结链路——此前 MCP 通道只写库
+        # 不入队，事项滞留 awaiting_decision（柠檬果 2026-09-17 报的 P0）。
+        if resume_queue is not None:
+            resume_queue.put_nowait((matter_id, "decide"))
+        return result
 
     @mcp.tool
     def get_digest(matter_id: str) -> dict:

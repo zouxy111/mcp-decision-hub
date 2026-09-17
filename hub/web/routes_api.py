@@ -4,7 +4,7 @@
 Authorization: Bearer（无 Cookie 会话），错误经全局 ApiError handler 序列化。
 """
 
-from fastapi import APIRouter, Body, Depends, Response
+from fastapi import APIRouter, Body, Depends, Request, Response
 from sqlalchemy.orm import Session
 
 from hub.config import Settings
@@ -121,6 +121,7 @@ def list_stances(
 @router.post("/api/items/{matter_id}/decide")
 def decide_item(
     matter_id: str,
+    request: Request,
     response: Response,
     payload: dict = Body(...),
     user: User = Depends(require_bearer),
@@ -131,6 +132,11 @@ def decide_item(
 
     与 MCP 工具 ``decide_item`` 调用**同一个** ``methods.mcp_decide_item``
     —— D3 单一事实源。本路由不含任何业务判断，只做身份注入与提交。
+
+    裁定 1（2026-09-17）：拍板成功后入 ``resume_queue``，与网页路由
+    （routes_decision.py）同一完结链路——commit 之后入队，时序与网页
+    路径逐字同构。此前本通道只写库不入队，事项滞留 awaiting_decision
+    （柠檬果 2026-09-17 报的 P0）。
     """
     response.headers[CHANNEL_HEADER] = CHANNEL
     result = methods.mcp_decide_item(
@@ -138,6 +144,7 @@ def decide_item(
         payload=dict(payload),
     )
     db.commit()
+    request.app.state.resume_queue.put_nowait((matter_id, "decide"))
     return result
 
 

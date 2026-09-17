@@ -34,9 +34,12 @@ def users(db_session):
 
 
 def _declare_payload(participant_ids):
+    # 裁定 2（2026-09-17）：irreversible=true 必须带理由（此前校验被绕过，
+    # 本 payload 恰好依赖那个漏洞行为）。
     return {"title": "是否上线新结算系统", "question": "本季度要不要切换？",
             "background": "B", "participant_ids": participant_ids,
-            "irreversible": True, "options": ["A 方案", "B 方案"]}
+            "irreversible": True, "irreversible_reason": "结算切换不可回滚",
+            "options": ["A 方案", "B 方案"]}
 
 
 def test_declare_item_创建事项并落地新列(db_session, settings, users):
@@ -50,6 +53,7 @@ def test_declare_item_创建事项并落地新列(db_session, settings, users):
     matter = db_session.get(Matter, result["matter_id"])
     assert matter is not None
     assert matter.irreversible is True
+    assert matter.irreversible_reason == "结算切换不可回滚"
     assert matter.options == ["A 方案", "B 方案"]
     assert matter.item_version == 1
     rows = db_session.scalars(select(MatterParticipant).where(

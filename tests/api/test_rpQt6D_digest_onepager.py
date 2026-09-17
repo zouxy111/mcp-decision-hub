@@ -154,3 +154,26 @@ def test_阻塞原因并入未决开口(client, db_session, settings, digest_sce
     body = methods.mcp_get_digest(db_session, settings, user_id=s["init"].id,
                                   matter_id=s["matter"].id)
     assert body["open_items"] == ["还差预算口径", "参与人甲逾期未交"]
+
+
+def test_current_round为当前已开启的最新轮次(client, db_session, settings,
+                                             digest_scenario):
+    """裁定 3（2026-09-17）：current_round = 当前已开启的最新轮次——
+    第 2 轮一开即显示 2，不等出摘要（owner 16:09 定语义并明言「行为不符
+    就算 bug」；柠檬果实测旧行为：第 2 轮已开无摘要时仍报 1）。
+
+    注意区分：摘要五字段仍来自最新一轮 ok 摘要（第 1 轮）——一页纸的
+    内容基于摘要不变，变的只是 current_round 这一节的语义。
+    """
+    s = digest_scenario
+    db_session.add(Round(matter_id=s["matter"].id, round_number=2,
+                         status="open"))
+    db_session.commit()
+
+    body = methods.mcp_get_digest(db_session, settings,
+                                  user_id=s["init"].id,
+                                  matter_id=s["matter"].id)
+
+    assert body["current_round"]["round_number"] == 2
+    assert body["current_round"]["status"] == "open"
+    assert body["consensus_points"] == ["共识X"]  # 摘要仍取自第 1 轮

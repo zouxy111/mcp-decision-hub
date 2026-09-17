@@ -97,6 +97,7 @@ def decision_submit(
                 db, matter_id=matter_id, actor=user, decision=decision,
                 expected_version=version,
                 final_text=final_text or None, rationale=rationale or None,
+                channel="web",  # 裁定 2（2026-09-17）：不可逆事项仅本通道可完结
             )
         elif action == "accept":
             accept_provisional(db, matter_id=matter_id, actor=user)

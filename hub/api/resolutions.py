@@ -55,10 +55,15 @@ def decide_resolution(
     expected_version: int,
     final_text: str | None = None,
     rationale: str | None = None,
+    channel: str = "api",
 ) -> Resolution:
     """Apply the initiator's decision with a version+status optimistic lock
     (FR-21b). Raises ApiError on any guard failure; never writes on
-    conflict."""
+    conflict.
+
+    channel：调用通道标识。``"api"``（默认，REST/MCP 共用入口）或
+    ``"web"``（网页表单）。仅用于不可逆事项的通道判定——其余守卫
+    两通道完全一致。"""
     matter = session.get(Matter, matter_id)
     if matter is None:
         raise ApiError(404, "RESOURCE_NOT_FOUND", "事项不存在")
@@ -68,16 +73,19 @@ def decide_resolution(
                            actor_user_id=actor.id, matter_id=matter_id,
                            detail={"action": "decide_resolution"})
         raise ApiError(403, "FORBIDDEN_SCOPE", "仅发起人可拍板")
-    # 裁决 2（2026-09-14）：irreversible 事项不允许 Agent 终裁——
-    # 涉及不可逆后果的决策必须由真人拍板。
-    if matter.irreversible:
+    # 裁决 2（2026-09-14）+ 裁定 2（2026-09-17）：irreversible 事项不允许
+    # 经 API/MCP 通道终裁——涉及不可逆后果的决策必须由真人拍板；
+    # 09-17 起明确「真人拍板」的承载通道 = 网页 + 发起人本人（此前本守卫
+    # 无条件拒绝，连网页也进不来，属无裁定背书的落地偏差）。
+    if matter.irreversible and channel != "web":
         audit.record_audit(
             session, audit.FORBIDDEN_DENIED, actor_user_id=actor.id,
             matter_id=matter_id,
             detail={"action": "decide_resolution", "reason": "irreversible"},
         )
         raise ApiError(403, "FORBIDDEN_SCOPE",
-                       "不可逆事项不允许经 MCP 终裁，须发起人本人拍板")
+                       "不可逆事项须在网页由发起人本人确认，"
+                       "不支持经 API/MCP 通道终裁")
     if matter.status != "awaiting_decision":
         audit.record_audit(session, audit.INVALID_STATE_TRANSITION,
                            actor_user_id=actor.id, matter_id=matter_id,

@@ -70,7 +70,8 @@ def create_app(settings: Settings | None = None, *, llm=None) -> FastAPI:
     limiter = RateLimiter()
     if create_mcp_asgi is not None:
         mcp_asgi, mcp_inner_lifespan = create_mcp_asgi(
-            session_factory, settings, drive_queue, limiter=limiter,
+            session_factory, settings, drive_queue, resume_queue=resume_queue,
+            limiter=limiter,
         )
 
     @asynccontextmanager

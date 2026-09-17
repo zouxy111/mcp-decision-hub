@@ -774,11 +774,17 @@ def mcp_declare_item(
             session, initiator=initiator, title=data.title, goal=data.question,
             background=data.background, participant_ids=data.participant_ids,
             initiator_participates=False, timeout_seconds=72 * 3600,
-            max_rounds=10, draft_questions=[],
+            max_rounds=settings.max_rounds, draft_questions=[],
+            irreversible=data.irreversible,
+            irreversible_reason=data.irreversible_reason,
         )
     except ParticipantValidationError as e:
         raise ApiError(422, "VALIDATION_FAILED", str(e)) from e
-    matter.irreversible = data.irreversible
+    # 裁定 2 / 顺带项（2026-09-17）：irreversible 与理由随 create_matter
+    # 一并传入——此前在创建之后才赋值 `matter.irreversible`，恰好绕过
+    # matters.py 的「必填理由」校验（唯一能置 True 的通道绕过唯一那处校验，
+    # 柠檬果 2026-09-17 实测 4/4）；max_rounds 改读 settings（原硬编码 10，
+    # 运维改 MAX_ROUNDS 兜不住 agent 通道）。
     matter.options = data.options
     matter.overall_deadline = deadline
     matter.item_version = 1
@@ -935,16 +941,22 @@ def mcp_get_digest(
     if row is None:
         raise ApiError(404, "RESOURCE_NOT_FOUND", "暂无已生成的 ok 摘要")
     summary, round_number = row
-    rnd = session.scalar(
-        select(Round).where(Round.matter_id == matter_id,
-                            Round.round_number == round_number)
+    # 裁定 3（2026-09-17）：current_round = 当前已开启的最新轮次（owner
+    # 16:09 定语义，「第 2 轮一开即显示 2」）——不再从「最新 ok 摘要所在轮」
+    # 反推（旧行为：第 2 轮已开无摘要时仍报 1，柠檬果实测确认不符）。
+    # 摘要五字段仍取自最新 ok 摘要（上面的 row），两节语义各自独立。
+    current = session.scalar(
+        select(Round).where(Round.matter_id == matter_id)
+        .order_by(Round.round_number.desc())
+        .limit(1)
     )
     return _contract(DigestOut, {
         "matter_id": matter_id,
         "status": matter.status,
         "current_round": {
-            "round_number": round_number,
-            "status": rnd.status if rnd is not None else "unknown",
+            "round_number": (current.round_number
+                             if current is not None else round_number),
+            "status": current.status if current is not None else "unknown",
         },
         "decision": _digest_decision_view(session, matter_id),
         "open_items": _digest_open_items(matter, summary),
