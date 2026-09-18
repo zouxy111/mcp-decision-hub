@@ -9,9 +9,10 @@
 返回，通道本身不做任何「换一条路」的兜底）。
 """
 
-from fastapi import APIRouter, Body, Depends, Response
+from fastapi import APIRouter, Body, Depends, Request, Response
 from sqlalchemy.orm import Session
 
+from hub.api import pipeline
 from hub.config import Settings
 from hub.db.models import User
 from hub.mcp_server import methods
@@ -57,18 +58,32 @@ def rest_get_task(
 @router.post("/api/agent/tasks/{task_id}/outputs", status_code=201)
 def rest_submit_output(
     task_id: str,
+    request: Request,
     response: Response,
     payload: dict = Body(...),
     user: User = Depends(require_bearer),
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ):
+    """提交产出。收齐本轮后由本通道自己驱动管线。
+
+    2026-09-18 回填：此前本路由只写库不入队——MCP 工具 `submit_output`
+    （tools.py:103-106）那句 ``maybe_drive_round`` + ``drive_queue.put_nowait``
+    是 2026-08-12（2380632）加的，本通道（f27c8c6）后建时没跟着搬。实测：
+    参与人全走 REST 提交后轮次停在 open、事项停在 collecting，且重启也救不回。
+    与裁定 1（REST 拍板不入队）同源同型，故按同一口径修。
+    """
     _mark_degraded(response)
     payload = dict(payload)
     payload["task_id"] = task_id
     result = methods.mcp_submit_output(db, settings, user_id=user.id,
                                        payload=payload)
     db.commit()
+    # 先 commit 再入队：worker 读到的永远是已提交状态（与 scheduler.py 同口径）。
+    round_id = pipeline.maybe_drive_round(db, task_id=task_id)
+    db.commit()
+    if round_id is not None:
+        request.app.state.drive_queue.put_nowait(round_id)
     return result
 
 
