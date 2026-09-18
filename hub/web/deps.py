@@ -10,6 +10,11 @@ from hub.api.errors import ApiError
 from hub.api.tokens import resolve_user_and_token
 from hub.config import Settings
 from hub.db.models import User
+from hub.domain.rate_limit import (
+    rate_limit_key_account,
+    rate_limit_key_submit,
+    rate_limit_key_token,
+)
 
 SESSION_COOKIE = "hub_session"
 
@@ -136,18 +141,100 @@ async def require_csrf_admin(request: Request,
     return admin
 
 
-def require_bearer(request: Request, db: Session = Depends(get_db)) -> User:
-    """JSON API 依赖：从 Authorization: Bearer 解析身份。
+def _enforce_rate_limit(request: Request, *, key: str, limit: int,
+                        message: str) -> None:
+    """PRD 9.1：滑动窗口超限即 429，并回 Retry-After。
+
+    与 MCP 入口（``mcp_server/auth.py``）共用 ``app.state.limiter`` 实例与
+    同一套 key（``token:{id}`` / ``account:{uid}``），所以两个通道的计数
+    互相可见——**换通道绕不过配额**。
+    """
+    limiter = getattr(request.app.state, "limiter", None)
+    if limiter is None:            # 未装配限流器的 app（部分单测）直接放行
+        return
+    ok, retry = limiter.allow(key, limit=limit)
+    if not ok:
+        raise ApiError(429, "RATE_LIMITED", message,
+                       details={"retry_after": retry},
+                       headers={"Retry-After": str(retry)})
+
+
+def enforce_submit_rate_limit(request: Request) -> None:
+    """提交产出专属限流（PRD 9.1，10/min per token）。
+
+    与 MCP 侧同型：MCP 在工具层做（``tools.py:83-89``，避开 ASGI body 缓冲），
+    这里在路由函数里做。token_id 由 ``require_bearer`` 提前写入 request.state。
+    """
+    _enforce_rate_limit(request,
+                        key=rate_limit_key_submit(request.state.token_id),
+                        limit=get_settings(request).rate_limit_submit_per_minute,
+                        message="提交产出过于频繁，请稍后重试")
+
+
+def _resolve_bearer(request: Request, db: Session) -> User:
+    """Bearer 认证本体（不含配额校验）。
 
     复用 resolve_user_and_token（SHA-256 比对 + 吊销/停用校验）作为唯一事实源；
     失败一律 401 AUTH_INVALID_TOKEN，交由全局 ApiError handler 序列化。
-    成功后提交以持久化 last_used_at。
+    成功后提交以持久化 last_used_at，并把 token_id 挂到 request.state
+    供配额（token/submit 两层 key）使用。
     """
     header = request.headers.get("authorization", "")
     plaintext = header[7:].strip() if header.lower().startswith("bearer ") else ""
     resolved = resolve_user_and_token(db, plaintext) if plaintext else None
     if resolved is None:
         raise ApiError(401, "AUTH_INVALID_TOKEN", "Token 缺失、无效或已吊销")
-    user, _agent_token = resolved
+    user, agent_token = resolved
     db.commit()  # 持久化 last_used_at
+    request.state.token_id = agent_token.id
     return user
+
+
+def _enforce_bearer_quota(request: Request, user: User) -> None:
+    """PRD 9.1 的 token + account 双层配额。"""
+    settings = get_settings(request)
+    _enforce_rate_limit(request, key=rate_limit_key_token(request.state.token_id),
+                        limit=settings.rate_limit_token_per_minute,
+                        message="请求过于频繁，请稍后重试")
+    _enforce_rate_limit(request, key=rate_limit_key_account(user.id),
+                        limit=settings.rate_limit_account_per_minute,
+                        message="请求过于频繁，请稍后重试")
+
+
+def require_bearer(request: Request, db: Session = Depends(get_db)) -> User:
+    """JSON API 依赖：Bearer 认证 + PRD 9.1 配额（token/account 两层）。
+
+    2026-09-18 补齐：此前这两层限流只写在 MCP 入口中间件里，REST 通道
+    （本依赖 + routes_api/routes_agent_rest）一处未接。提交端点还会驱动
+    轮次进而触发 LLM 调用，无配额 = 无上限刷账单。
+
+    顺序：认证在前、配额在后。无效令牌永远 401，不会因为反复试错变 429
+    （否则可用 401/429 的差异探测令牌是否存在）。
+
+    需要「不设配额」的入口用 ``require_bearer_unlimited``，别在此处加路径判断。
+    """
+    user = _resolve_bearer(request, db)
+    _enforce_bearer_quota(request, user)
+    return user
+
+
+def require_bearer_unlimited(request: Request,
+                             db: Session = Depends(get_db)) -> User:
+    """只认证、不校验配额的 Bearer 依赖（配额体系上的明确豁免口）。
+
+    用于 owner 已明确裁定「不设配额」的入口——这些入口的业务语义本就是
+    「可连续追问」，通用配额会把它们掐死：
+
+    - ``POST /api/items/{mid}/stances``：定向提问（questions_for）。
+      owner 2026-09-16 更正裁定 1「定向提问**不设配额**」，撤销 09-14 误落地
+      的 (matter, actor, target) 滑窗 N=100。守卫：
+      ``tests/api/test_rulings_2026_09_16.py::test_定向提问不设配额_超过历史阈值仍可提交``
+    - ``POST /api/items/{mid}/ask``：独立追问端点。rpQt6D 验收第 4 条
+      「**不存在**针对 ask 的计数/限流」。守卫：
+      ``tests/api/test_rpQt6D_ask_endpoint.py::test_无配额_连问一百一十条全部成功``
+
+    ⚠ 已知代价：这两个入口对配额完全豁免，等于配额体系上留了两个口子。
+    2026-09-18 补限流时实测发现此冲突（通用配额会拦下它们的连发场景），
+    按「既有裁定优先」处理，未自行收口——如需收紧，须 owner 重新裁定。
+    """
+    return _resolve_bearer(request, db)

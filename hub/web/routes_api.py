@@ -16,7 +16,12 @@ from hub.schemas.stance import (
     StanceListItem,
     StanceRead,
 )
-from hub.web.deps import get_db, get_settings, require_bearer
+from hub.web.deps import (
+    get_db,
+    get_settings,
+    require_bearer,
+    require_bearer_unlimited,
+)
 
 router = APIRouter()
 
@@ -32,7 +37,7 @@ def submit_stance(
     matter_id: str,
     response: Response,
     payload: StanceCreate,
-    user: User = Depends(require_bearer),
+    user: User = Depends(require_bearer_unlimited),
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ):
@@ -196,7 +201,7 @@ def ask_participant(
     matter_id: str,
     response: Response,
     payload: dict = Body(...),
-    user: User = Depends(require_bearer),
+    user: User = Depends(require_bearer_unlimited),
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ):

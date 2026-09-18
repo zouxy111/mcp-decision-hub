@@ -117,8 +117,10 @@ def create_app(settings: Settings | None = None, *, llm=None) -> FastAPI:
         """统一错误形状 {error_code, message, details?}（PRD 9.5）。
 
         既有 HTML 路由均自行 try/except 捕获，故此处不影响其行为。
+        ``exc.headers`` 供限流回 ``Retry-After``（PRD 9.1）。
         """
-        return JSONResponse(error_payload(exc), status_code=exc.status_code)
+        return JSONResponse(error_payload(exc), status_code=exc.status_code,
+                            headers=exc.headers or None)
 
     @app.exception_handler(RequestValidationError)
     async def _validation_error_handler(request, exc: RequestValidationError):

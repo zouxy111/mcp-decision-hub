@@ -16,7 +16,12 @@ from hub.api import pipeline
 from hub.config import Settings
 from hub.db.models import User
 from hub.mcp_server import methods
-from hub.web.deps import get_db, get_settings, require_bearer
+from hub.web.deps import (
+    enforce_submit_rate_limit,
+    get_db,
+    get_settings,
+    require_bearer,
+)
 
 router = APIRouter()
 
@@ -72,8 +77,13 @@ def rest_submit_output(
     是 2026-08-12（2380632）加的，本通道（f27c8c6）后建时没跟着搬。实测：
     参与人全走 REST 提交后轮次停在 open、事项停在 collecting，且重启也救不回。
     与裁定 1（REST 拍板不入队）同源同型，故按同一口径修。
+
+    2026-09-18 补齐限流：本路由（与 routes_api 共 15 个端点）此前只有认证、
+    没有配额。提交会驱动轮次进而触发 LLM 调用，无上限刷提交 = 无上限刷账单。
+    故在 token/account 之外补上第三层 submit 专属限流（PRD 9.1，10/min）。
     """
     _mark_degraded(response)
+    enforce_submit_rate_limit(request)
     payload = dict(payload)
     payload["task_id"] = task_id
     result = methods.mcp_submit_output(db, settings, user_id=user.id,
