@@ -22,7 +22,10 @@ class Settings:
     request_body_limit: int = 96 * 1024
     deepseek_api_key: str | None = None
     llm_base_url: str = "https://api.deepseek.com"
-    llm_model: str = "deepseek-chat"
+    # 2026-09-19 修正：原值 "deepseek-chat" 已于 2026-07-24 15:59 UTC 下线，
+    # 照原样发出去只会拿到上游 400。官方现役推荐档是 deepseek-flash
+    # （另一档为 deepseek-v4-pro）。可选项与白名单见 hub.llm.runtime。
+    llm_model: str = "deepseek-flash"
     llm_request_timeout_seconds: int = 120
     timeout_scan_interval_seconds: int = 60
     rate_limit_token_per_minute: int = 60
@@ -56,7 +59,7 @@ def load_settings() -> Settings:
         llm_provider_name=os.environ.get("LLM_PROVIDER_NAME", "DeepSeek"),
         deepseek_api_key=os.environ.get("DEEPSEEK_API_KEY") or None,
         llm_base_url=os.environ.get("LLM_BASE_URL", "https://api.deepseek.com"),
-        llm_model=os.environ.get("LLM_MODEL", "deepseek-chat"),
+        llm_model=os.environ.get("LLM_MODEL", "deepseek-flash"),
         llm_request_timeout_seconds=int(
             os.environ.get("LLM_REQUEST_TIMEOUT_SECONDS", "120")
         ),

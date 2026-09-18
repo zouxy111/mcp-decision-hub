@@ -211,6 +211,10 @@ def test_每一项结构变更可单独回滚且数据保留(tmp_path):
             "SELECT 1 FROM sqlite_master WHERE type='table'"
             " AND name='participant_questions'"
         ).fetchone() is None
+        # v11 同理：llm_config 是新建表，回滚必须真删
+        assert conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='llm_config'"
+        ).fetchone() is None
         # 回滚不丢历史授权：authority_legacy 的值回到 authority
         assert conn.execute(
             "SELECT authority FROM stances WHERE stance_id='stn_1'"

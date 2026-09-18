@@ -151,6 +151,12 @@ MIGRATIONS: tuple[Migration, ...] = (
         _steps.upgrade_add_matter_irreversible_reason,
         _steps.downgrade_add_matter_irreversible_reason,
     ),
+    Migration(
+        11,
+        "add_llm_config",
+        _steps.upgrade_add_llm_config,
+        _steps.downgrade_add_llm_config,
+    ),
 )
 
 _VERSION_TABLE = "schema_migrations"

@@ -123,10 +123,21 @@ def test_app_startup_reconciles_interrupted_round(
 
 
 def test_create_app_default_llm_uses_settings(settings):
-    from hub.llm.client import DeepSeekClient
+    """不传 llm= 时，app 装的是按 settings 解析的**真实门面**，不是替身。
+
+    2026-09-19 起这层由 DeepSeekClient 换成 RuntimeLlm：配置改存 DB 后要
+    「保存即生效」，app 上挂的就必须是每次调用前解析一次配置的门面，而不是
+    启动时构造一次的 client。断言因此从「是哪个类」改成「解析结果 == settings」
+    —— 后者更严：它连值一起对上了。
+    """
+    from hub.llm.runtime import RuntimeLlm
 
     app = create_app(settings)
-    assert isinstance(app.state.llm, DeepSeekClient)
+    assert isinstance(app.state.llm, RuntimeLlm)
+    effective = app.state.llm.current()
+    assert effective.model == settings.llm_model
+    assert effective.base_url == settings.llm_base_url
+    assert effective.api_key == settings.deepseek_api_key
     assert app.state.drive_queue is not None
 
 

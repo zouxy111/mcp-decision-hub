@@ -1,0 +1,1394 @@
+@charset "utf-8";
+/* ============================================================================
+   mcp-decision-hub — Console UI
+   设计语言：素印（Plain Impression）— 决策台账，把信号色收敛回记号
+     · 暖炭底 + 暖白字：色相整体偏暖，避开「蓝黑 + 薄荷/紫」这套默认值
+     · 零圆角：圆角是消费级 App 语言，方角是仪器与台账语言
+     · 结构靠「线」不靠「卡片」：区块由印刷式双线分隔，没有填充色块堆叠
+     · 墨是主色，朱红是例外：朱红只承载「你在这里」+「需要你动手」二义
+     · 不发光：无光晕、无毛玻璃、无高斯模糊——发光是屏幕语汇，不是印刷语汇
+     · 状态 = 实心或空心方标 + 原始枚举文本，不做胶囊、不做淡色底
+     · 状态色的实际用法是「11px 徽章文字 + 7px 方标」（见 .badge），
+       所以每支信号色对底色与面板色都必须过 4.5:1——这是硬门槛，不是审美偏好。
+
+   2026-09-19 改色（朱印）：主信号色由琥珀 #ffa03c 改为银朱 #e85c28。
+     改色同时**必须**把危险色一并迁移，原因是可量化的：朱红与旧绯红 #e8554a
+     在 OKLab 里 ΔE 仅 2.9（色相角差 8.8°），在列表里视觉上是同一个颜色。
+     逐支试算后，危险色采用玫绛 #da5cac：它是唯一同时满足
+       (a) 对底色/面板 ≥4.5:1、(b) 与朱红 ΔE ≥16 的解 —— 见下：
+         accent × danger  ΔE 16.9    accent 对底色 5.34:1   danger 对底色 5.44:1
+         accent × wait    ΔE 23.5    wait   对底色 6.55:1
+         accent × ok      ΔE 25.6    ok     对底色 9.35:1
+       → 四支信号色两两最小 ΔE = 16.9，高于改色前设计自身的最弱一对（15.8）。
+     注意：「既克制（低彩度）又过得了 11px 文字门槛的深酒红」在这块底色上不存在——
+     深到像样就得 3.0:1 上下，过不了 4.5:1。这是被门槛逼出来的选择，不是口味。
+
+   结构：tokens → base → layout → typography → components → utilities → a11y
+   单文件单请求，无外部字体/CDN 依赖。
+   ========================================================================= */
+
+/* ---------------------------------------------------------------- 1. Tokens */
+:root {
+  /* 表面：明度阶梯压得很近——台账是一张整纸，不是一叠卡片 */
+  --bg:            #131211;
+  --surface:       #191816;
+  --surface-2:     #201e1b;
+  --surface-3:     #2a2723;
+  --surface-hi:    #332f2a;
+
+  /* 线：这套视觉的主要结构语言。line 是行分隔，line-3 是区块分隔 */
+  --line:          #2b2825;
+  --line-2:        #39342e;
+  --line-3:        #4c453c;
+
+  /* 文字：暖白三级，对比度 15.9 / 7.2 / 4.8 : 1（均过 AA） */
+  --fg:            #f2ece3;
+  --fg-2:          #a89f92;
+  --fg-3:          #8a8274;
+
+  /* 信号色：四色 + 中性。朱红独占暖区，wait 一支刻意偏冷以区分「等人」 */
+  --accent:        #e85c28;   /* 银朱 · 当前位 / 需要你行动 */
+  --accent-2:      #c94c1e;   /* 银朱 · 按下 / 深一档 */
+  --accent-ink:    #1c0f01;   /* 银朱底上的字（对银朱 5.36:1） */
+  --accent-dim:    rgba(232, 92, 40, 0.10);
+  --accent-edge:   rgba(232, 92, 40, 0.40);
+
+  --wait:          #7c9db5;   /* 石蓝 · 等待他人 / 收集进行中 */
+  --ok:            #9dc45f;   /* 橄榄 · 完成 / 收敛 */
+  --danger:        #da5cac;   /* 玫绛 · 危险 / 阻塞 / 驳回（须与银朱 ΔE≥16） */
+
+  --danger-edge:   rgba(218, 92, 172, 0.42);
+  --ok-edge:       rgba(157, 196, 95, 0.42);
+  --wait-edge:     rgba(124, 157, 181, 0.42);
+
+  /* 兼容旧名：全部归到新语义，避免遗留引用取到 undefined */
+  --warn:          var(--accent);
+  --warn-wash:     var(--accent-dim);
+  --warn-edge:     var(--accent-edge);
+  --info:          var(--wait);
+  --info-wash:     var(--accent-dim);
+  --info-edge:     var(--wait-edge);
+  --violet:        var(--accent);
+  --violet-wash:   var(--accent-dim);
+  --violet-edge:   var(--accent-edge);
+  --danger-wash:   rgba(218, 92, 172, 0.10);
+  --ok-wash:       rgba(157, 196, 95, 0.10);
+  --accent-wash:   var(--accent-dim);
+
+  /* 排版：界面字走系统栈（中文观感最稳），数据字等宽 + 表格数字 */
+  --font: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text",
+          "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI",
+          "Microsoft YaHei", "Source Han Sans SC", "Noto Sans CJK SC", sans-serif;
+  --mono: ui-monospace, "SF Mono", SFMono-Regular, "JetBrains Mono", "Cascadia Mono",
+          Menlo, Consolas, "Liberation Mono", monospace;
+
+  /* 零圆角：这是整套语言里最硬的一条，不要为了「柔和一点」改回去 */
+  --r-sm: 0px;
+  --r:    0px;
+  --r-lg: 0px;
+
+  --t: 130ms cubic-bezier(0.2, 0, 0.2, 1);
+
+  --shadow-pop: 0 24px 60px -14px rgba(0, 0, 0, 0.82);
+  --shadow-card: none;
+}
+
+/* ------------------------------------------------------------------ 2. Base */
+*, *::before, *::after { box-sizing: border-box; }
+
+html {
+  color-scheme: dark;
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font);
+  font-size: 14px;
+  line-height: 1.6;
+  font-feature-settings: "kern" 1;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* 无底纹。旧版的网格是纯装饰，删掉——留白本身就是材质 */
+/* 选区用墨色淡染，不用信号色：琥珀是全页最稀缺的资源，不做选区底色 */
+::selection { background: rgba(242, 236, 227, 0.20); color: var(--fg); }
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-radius: 0;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-3) transparent;
+}
+*::-webkit-scrollbar { width: 12px; height: 12px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  background: var(--line-2);
+  border: 4px solid var(--bg);
+  border-radius: 0;
+}
+*::-webkit-scrollbar-thumb:hover { background: var(--line-3); }
+
+/* ---------------------------------------------------------------- 3. Layout */
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  background: var(--bg);
+  border-bottom: 1px solid var(--line-2);
+}
+/* 印刷式双线：顶栏底部再压一道细线，把「页眉」和「正文」明确切开 */
+.topbar::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 3px;
+  height: 1px;
+  background: var(--line);
+}
+
+.topbar-inner {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0 26px;
+  height: 58px;
+  display: flex;
+  align-items: center;
+  gap: 22px;
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+  color: var(--fg);
+  text-decoration: none;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  white-space: nowrap;
+}
+/* 实心琥珀方标：像一枚印章，而不是常见的描边圆角图标位 */
+.brand-mark {
+  width: 22px;
+  height: 22px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 0;
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+.brand-mark svg { width: 14px; height: 14px; display: block; }
+.brand-sub {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+  padding-left: 10px;
+  margin-left: 2px;
+  border-left: 1px solid var(--line-2);
+}
+
+.nav {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.nav::-webkit-scrollbar { display: none; }
+
+/* 左侧常驻一个 4px 位：它是「当前位置」指示器，不是装饰 */
+.nav-link {
+  position: relative;
+  padding: 7px 12px 7px 17px;
+  border-radius: 0;
+  color: var(--fg-2);
+  font-size: 13px;
+  font-weight: 500;
+  text-decoration: none;
+  white-space: nowrap;
+  transition: color var(--t);
+}
+.nav-link::before {
+  content: "";
+  position: absolute;
+  left: 7px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 4px;
+  height: 4px;
+  background: transparent;
+  transition: background var(--t);
+}
+.nav-link:hover { color: var(--fg); }
+.nav-link:hover::before { background: var(--line-3); }
+.nav-link[aria-current="page"] { color: var(--accent); }
+.nav-link[aria-current="page"]::before { background: var(--accent); }
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: none;
+}
+
+.who {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--fg-3);
+  padding-left: 14px;
+  border-left: 1px solid var(--line-2);
+  white-space: nowrap;
+}
+.who-name { color: var(--fg); font-weight: 500; }
+/* 角色标签退回描边：顶栏里已经有一枚实心琥珀印章，
+   再放一块实心色块就是两个印章抢同一面墙 */
+.who-role {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+  background: transparent;
+  border: 1px solid var(--line-3);
+  padding: 1px 5px;
+}
+
+.wrap {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 34px 26px 88px;
+}
+.wrap--narrow { max-width: 760px; }
+/* 登录页：把整组内容在视口里垂直居中。
+   列方向 flex + justify-content:center 才吃得到纵向自由空间
+   （默认 row 会让交叉轴 stretch，纵向没有任何余地）；
+   容器用 min-height 而非 height，内容变高时自然撑开、不会被裁。 */
+.wrap--auth {
+  max-width: 1120px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-height: calc(100vh - 58px);
+  padding-top: 48px;
+  padding-bottom: 48px;
+}
+.wrap--auth > .auth { width: 100%; }
+
+.page-head { margin: 0 0 26px; }
+.page-head--row {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.crumbs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--fg-3);
+  margin-bottom: 12px;
+}
+.crumbs a { color: var(--fg-2); text-decoration: none; }
+.crumbs a:hover { color: var(--fg); text-decoration: none; }
+.crumbs .sep { color: var(--line-3); }
+
+.grid { display: grid; gap: 40px; }
+.grid--2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.grid--3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.grid--4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.grid--main { grid-template-columns: minmax(0, 1fr) 330px; align-items: start; }
+.stack { display: flex; flex-direction: column; gap: 34px; }
+.stack--sm { gap: 14px; }
+.row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.row--between { justify-content: space-between; }
+.spacer { flex: 1 1 auto; }
+
+/* 登录页：左「说明」右「表单」，刻意不做居中卡片 */
+.auth {
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.82fr);
+  gap: 84px;
+  align-items: start;
+}
+.auth-intro h1 {
+  font-size: 38px;
+  line-height: 1.08;
+  letter-spacing: -0.035em;
+  margin-bottom: 16px;
+}
+.auth-lede {
+  font-size: 14.5px;
+  line-height: 1.72;
+  color: var(--fg-2);
+  max-width: 44ch;
+  margin-bottom: 30px;
+}
+.auth-steps {
+  margin: 0 0 34px;
+  padding: 0;
+  list-style: none;
+  counter-reset: s;
+  border-top: 1px solid var(--line-2);
+}
+.auth-steps li {
+  display: flex;
+  gap: 14px;
+  padding: 11px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+  color: var(--fg-2);
+  counter-increment: s;
+}
+.auth-steps li::before {
+  content: counter(s, decimal-leading-zero);
+  flex: none;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--fg-3);
+  padding-top: 2px;
+}
+.auth-panel { max-width: 420px; }
+
+@media (max-width: 880px) {
+  .auth { grid-template-columns: minmax(0, 1fr); gap: 40px; }
+  .auth-intro h1 { font-size: 29px; }
+  .wrap--auth { min-height: 0; padding-top: 30px; padding-bottom: 56px; }
+  .auth-panel { max-width: none; }
+}
+
+/* ------------------------------------------------------------ 4. Typography */
+h1, h2, h3, h4 {
+  margin: 0;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.28;
+}
+h1 { font-size: 25px; letter-spacing: -0.028em; }
+h2 { font-size: 15.5px; }
+h3 { font-size: 13.5px; }
+h4 { font-size: 12.5px; }
+
+p { margin: 0 0 10px; }
+p:last-child { margin-bottom: 0; }
+
+/* 链接靠下划线成立，不靠色相。
+   满屏琥珀链接会让信号色彻底失效；印刷物里的链接本来就是「加了下划线的墨」。 */
+a {
+  color: var(--fg);
+  text-decoration: underline;
+  text-decoration-color: var(--line-3);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+a:hover { text-decoration-color: var(--fg); }
+
+.lede { color: var(--fg-2); font-size: 13.5px; max-width: 72ch; }
+.muted { color: var(--fg-2); }
+.dim { color: var(--fg-3); }
+.small { font-size: 12px; }
+.mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+/* 章节标签：小号字距横排 + 一条延伸到底的线，代替旧的卡片标题。
+   字距收到 0.09em——0.14em 那种宽字距 + 全大写是模板化界面最典型的小动作，
+   收窄之后同样的大写会显得从容，而不是张扬。 */
+.section-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 14px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+}
+.section-title::after {
+  content: "";
+  flex: 1 1 auto;
+  height: 1px;
+  background: var(--line);
+}
+
+/* 数字统一等宽对齐，读数据时列不会跳动 */
+.num, td.num, .kpi-value { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+/* 行内代码靠等宽字形与底色成立，不靠色相。
+   原先整页 code 都是琥珀，审计页一屏几十个事件类型染成一片橙，是信号色最大的漏点。 */
+code, .code {
+  font-family: var(--mono);
+  font-size: 0.88em;
+  background: var(--surface-2);
+  border: 0;
+  border-radius: 0;
+  padding: 1px 5px;
+  color: var(--fg-2);
+  word-break: break-all;
+}
+code.plain { color: var(--fg-2); }
+
+/* ------------------------------------------------------------ 5. Components */
+
+/* 5.1 Panel — 章节块。印刷式双线起头，没有填充、没有圆角、没有阴影。
+       区块之间靠线分隔，不靠「卡片堆叠」。 */
+.panel {
+  position: relative;
+  background: transparent;
+  border: 0;
+  border-top: 1px solid var(--line-3);
+  border-radius: 0;
+  overflow: visible;
+}
+.panel::before {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: var(--line);
+  pointer-events: none;
+}
+.panel-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 11px 0 13px;
+  border-bottom: 1px solid var(--line);
+  background: none;
+}
+.panel-head h2, .panel-head h3 { margin: 0; }
+.panel-head .spacer { flex: 1 1 auto; }
+.panel-body { padding: 20px 0 4px; }
+.panel-body--flush { padding: 0; }
+/* 正文字段限宽：一行跑满 1280px 是读不了的，
+   78ch 约等于舒适阅读行长的上限（中文按 2 字符宽折算） */
+.panel-body p { max-width: 78ch; }
+.panel-foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 0 0;
+  border-top: 1px solid var(--line);
+  margin-top: 20px;
+  background: none;
+}
+
+/* 5.2 Buttons — 方角、细描边、无填充（主按钮除外） */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 7px 15px;
+  min-height: 34px;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1;
+  color: var(--fg);
+  background: transparent;
+  border: 1px solid var(--line-3);
+  border-radius: 0;
+  cursor: pointer;
+  white-space: nowrap;
+  text-decoration: none;
+  transition: background var(--t), border-color var(--t), color var(--t);
+}
+.btn:hover { background: var(--surface-2); border-color: var(--fg-3); }
+.btn:active { background: var(--surface-3); }
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* 主按钮 = 墨色反白（纸白的块 + 炭色的字）。
+   它依然是全页最亮的东西，但借的是「纸」的重量，不是「颜色」的重量——
+   实心高饱和色块是消费级应用最标准的 CTA 语汇，也是全站最吵的一个元素。
+   换掉它，琥珀才能完整地让给「位置」与「待办」，一次也不被挪用。 */
+.btn--primary {
+  background: var(--fg);
+  border-color: var(--fg);
+  color: var(--bg);
+  font-weight: 600;
+}
+.btn--primary:hover { background: #fffdf9; border-color: #fffdf9; }
+.btn--primary:active { background: #ddd4c6; border-color: #ddd4c6; }
+
+.btn--danger { color: var(--danger); border-color: var(--danger-edge); background: transparent; }
+.btn--danger:hover { background: var(--danger-wash); border-color: var(--danger); }
+
+.btn--ghost { background: transparent; border-color: transparent; color: var(--fg-2); }
+.btn--ghost:hover { background: var(--surface-2); color: var(--fg); border-color: var(--line-2); }
+
+.btn--sm { padding: 4px 10px; min-height: 27px; font-size: 12px; }
+.btn--block { width: 100%; }
+
+.btn svg { width: 14px; height: 14px; flex: none; }
+
+/* 5.3 Badges — 方标 + 原始枚举，无胶囊、无淡色底。
+       实心 = 有进展；空心 = 未开始 / 已终止。色相只承载语义。 */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.03em;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: var(--fg-3);
+  white-space: nowrap;
+}
+.badge::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 0;
+  background: currentColor;
+}
+
+/* 七个事项状态。
+   琥珀只给「需要你行动」（awaiting_decision）——in_progress / collecting
+   都是「在飞行中、等别人或等系统」，归石蓝；把琥珀从这两处撤出来，
+   长列表里一眼看到琥珀才真的等于「这行要你动手」。 */
+.badge[data-state="draft"]             { color: var(--fg-3); }
+.badge[data-state="in_progress"]       { color: var(--wait); }
+.badge[data-state="collecting"]        { color: var(--wait); }
+.badge[data-state="blocked"]           { color: var(--danger); }
+.badge[data-state="awaiting_decision"] { color: var(--accent); }
+.badge[data-state="completed"]         { color: var(--ok); }
+.badge[data-state="cancelled"]         { color: var(--fg-3); text-decoration: line-through; }
+
+/* 任务 / 决议状态 */
+.badge[data-state="pending"]     { color: var(--wait); }
+.badge[data-state="submitted"]   { color: var(--ok); }
+.badge[data-state="timeout"]     { color: var(--danger); }
+.badge[data-state="reassigned"]  { color: var(--fg-3); }
+.badge[data-state="generating"]  { color: var(--wait); }
+.badge[data-state="approved"],
+.badge[data-state="done"]        { color: var(--ok); }
+.badge[data-state="modified"]    { color: var(--wait); }
+.badge[data-state="rejected"]    { color: var(--danger); }
+.badge[data-state="pending_review"] { color: var(--accent); }
+.badge[data-state="converged"]   { color: var(--ok); }
+.badge[data-state="not_converged"],
+.badge[data-state="diverged"]    { color: var(--danger); }
+
+/* 空心方标 = 尚未发生 / 已经终止 */
+.badge[data-state="draft"]::before,
+.badge[data-state="cancelled"]::before,
+.badge[data-state="reassigned"]::before {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px currentColor;
+}
+
+/* 待拍板是唯一「需要你行动」的状态，用一圈**清晰同心环**把它捞出来：
+   1.5px 纸色间隙 + 1.5px 实心琥珀。环是锐利、可量的，像仪表上的一个刻度；
+   原先那圈半透明柔光（box-shadow 0 0 0 3px 淡琥珀）是屏幕语汇——
+   发光即廉价，锐利才贵。 */
+.badge[data-state="awaiting_decision"] { gap: 9px; }
+.badge[data-state="awaiting_decision"]::before {
+  box-shadow: 0 0 0 1.5px var(--bg), 0 0 0 3px var(--accent);
+}
+
+/* 呼吸：只给「正在处理」用，传达系统活着 */
+.badge--live::before { animation: pulse 1.8s ease-in-out infinite; }
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.3; }
+}
+
+/* 5.4 Forms */
+.field { display: block; margin-bottom: 16px; }
+.field:last-child { margin-bottom: 0; }
+.field-label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--fg-2);
+  letter-spacing: 0.01em;
+}
+.field-label .req { color: var(--danger); margin-left: 3px; }
+.field-hint { margin-top: 6px; font-size: 11.5px; color: var(--fg-3); line-height: 1.55; }
+
+.input, .select, .textarea {
+  display: block;
+  width: 100%;
+  padding: 8px 11px;
+  font-family: inherit;
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--fg);
+  background: var(--surface);
+  border: 1px solid var(--line-2);
+  border-radius: 0;
+  transition: border-color var(--t), box-shadow var(--t), background var(--t);
+}
+.textarea { resize: vertical; min-height: 86px; font-size: 13px; }
+.select {
+  appearance: none;
+  padding-right: 32px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5 6 8l3-3.5' fill='none' stroke='%238a8274' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 12px;
+  cursor: pointer;
+}
+.select option { background: var(--surface-2); color: var(--fg); }
+.input::placeholder, .textarea::placeholder { color: var(--fg-3); }
+.input:hover, .select:hover, .textarea:hover { border-color: var(--line-3); }
+/* 焦点：内侧一道琥珀竖条 —— 像台账里被划中的那一栏，位置不跳动 */
+.input:focus, .select:focus, .textarea:focus {
+  outline: none;
+  background: var(--surface-2);
+  border-color: var(--accent);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.input:invalid:not(:placeholder-shown) { border-color: var(--danger-edge); }
+
+/* 复选组：左侧标记条，不是一颗颗卡片 */
+.check-list {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.check-row {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 9px 12px;
+  border: 0;
+  border-left: 2px solid var(--line-2);
+  border-radius: 0;
+  background: transparent;
+  cursor: pointer;
+  transition: border-color var(--t), background var(--t);
+}
+.check-row:hover { border-left-color: var(--line-3); background: var(--surface); }
+/* 勾选标记归中性：表单选中不是「需要你行动」。
+   复选框本身仍是琥珀（原生 accent-color，必须看得见），
+   但行左侧那道标记退回墨色，避免一列行首同时亮起一片橙。 */
+.check-row:has(input:checked) { border-left-color: var(--fg-2); background: var(--surface-2); }
+.check-row input[type="checkbox"],
+.check-row input[type="radio"] {
+  width: 15px;
+  height: 15px;
+  flex: none;
+  margin: 0;
+  border-radius: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.check-row-main { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.check-name { font-size: 13px; font-weight: 500; }
+.check-row:has(input:checked) .check-name { color: var(--fg); }
+.check-sub { font-family: var(--mono); font-size: 11px; color: var(--fg-3); }
+
+fieldset { margin: 0 0 16px; padding: 0; border: 0; }
+legend {
+  padding: 0 0 9px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--fg-2);
+}
+
+.form-actions {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  flex-wrap: wrap;
+  margin-top: 20px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+}
+
+/* 危险 / 不可逆操作区：把区块顶线换成绯红 */
+.danger-zone { border-top-color: var(--danger); }
+.danger-zone::before { background: var(--danger-edge); }
+.danger-zone .panel-head { border-bottom-color: var(--danger-edge); }
+.danger-zone .panel-head h3 { color: var(--danger); }
+
+/* 5.5 Table — 台账的主体。表头不填色，只压一道线；行与行之间一道细线 */
+.table-wrap { width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 13px;
+}
+.table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 9px 14px;
+  text-align: left;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+  background: var(--bg);
+  border-bottom: 1px solid var(--line-3);
+  white-space: nowrap;
+}
+.table th:first-child, .table td:first-child { padding-left: 0; }
+.table th:last-child, .table td:last-child { padding-right: 0; }
+.table td {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+  color: var(--fg-2);
+}
+.table tbody tr { transition: background var(--t); }
+/* 悬停标记用中性色，不用信号色：鼠标划过不是「需要你行动」，
+   把它染成琥珀等于谎报状态 */
+.table tbody tr:hover { background: var(--surface); }
+.table tbody tr:hover td:first-child { box-shadow: inset 2px 0 0 var(--line-3); }
+.table tbody tr:last-child td { border-bottom: 0; }
+.table td strong, .table td .strong { color: var(--fg); font-weight: 500; }
+/* 表内链接（如 matter_id）压到 --fg-2：一屏几十个亮色带下划线的 ID 会很吵 */
+.table a { color: var(--fg-2); font-weight: 500; }
+/* 标题是整行的主角，要压过上面那条 .table a（特异性 0,2,0）：
+   写成 .table a.cell-title（0,2,1）才能赢。它不划下划线，
+   靠字色比所在行亮一档来成立。 */
+.table a.cell-title { color: var(--fg); text-decoration: none; }
+.table--fixed { table-layout: fixed; }
+/* 台账式列表（条目少、字段短）：把主题列限宽、时间列压到右边距。
+   不加这条，三列会在 1280px 里平分，读起来像三座孤岛。 */
+.table--list th:first-child, .table--list td:first-child { width: 52%; }
+.table--list th:last-child,
+.table--list td:last-child  { width: 1%; text-align: right; white-space: nowrap; }
+.table--list .cell-title { font-size: 13.5px; }
+/* 窄内容表：不撑满容器。
+   三四个短字段摊到 1000px 以上只会读成几座孤岛，
+   台账里窄表比宽表更常见，不必强行对齐到页边。 */
+.table--narrow { max-width: 840px; }
+.table .col-num { width: 1%; white-space: nowrap; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.cell-title { color: var(--fg); font-weight: 500; }
+.cell-actions { display: flex; gap: 8px; justify-content: flex-end; }
+
+/* 5.6 Alerts — 只靠左侧一道细立线染色，不做淡色底、不染标题。
+       标题染成彩色是「大面积染色」；色相只留给那道 2px 立线和图标，
+       标题留在墨色上，反而更重。 */
+.alert {
+  display: flex;
+  gap: 12px;
+  padding: 11px 0 11px 15px;
+  margin: 0 0 18px;
+  border: 0;
+  border-left: 2px solid var(--line-3);
+  border-radius: 0;
+  background: transparent;
+  font-size: 13px;
+  line-height: 1.58;
+}
+.alert:last-child { margin-bottom: 0; }
+.alert-icon { flex: none; width: 16px; height: 16px; margin-top: 2px; opacity: 0.9; }
+.alert-body { min-width: 0; flex: 1 1 auto; }
+.alert-body > :last-child { margin-bottom: 0; }
+.alert-title { font-weight: 600; color: var(--fg); margin-bottom: 3px; }
+
+.alert--error { border-left-color: var(--danger); }
+.alert--error .alert-icon { color: var(--danger); }
+.alert--warn  { border-left-color: var(--accent); }
+.alert--warn  .alert-icon { color: var(--accent); }
+.alert--ok    { border-left-color: var(--ok); }
+.alert--ok    .alert-icon { color: var(--ok); }
+.alert--info  { border-left-color: var(--wait); }
+.alert--info  .alert-icon { color: var(--wait); }
+
+/* 5.7 一次性凭证（Token / 邀请码）：左侧一道琥珀立线做记号，值本身用纸白。
+       40 多个字符染成琥珀就是一大片橙；而这个值恰恰是要被逐字读走的，
+       纸白比橙更好读。记号留给那道线。 */
+.secret {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  margin-top: 12px;
+  background: var(--surface-2);
+  border: 0;
+  border-left: 2px solid var(--accent);
+  border-radius: 0;
+}
+.secret-value {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--fg);
+  letter-spacing: 0.02em;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+/* 长命令变体：分行交给作者，不交给渲染器。
+   overflow-wrap:anywhere 是为 47 字符的 Agent Token 设的 ——
+   套到上百字符的安装命令上，会把 ~/.workbuddy 从中间断成 ~/.work / buddy。
+   这里改用 pre-wrap + 手写的 shell 续行符，断点落在 \ 上，读起来才像一条命令。 */
+.secret-value--script {
+  white-space: pre-wrap;
+  overflow-wrap: normal;
+  font-size: 12.5px;
+  line-height: 1.7;
+}
+
+/* 5.8 Progress — 分段方格，比圆角长条更贴合台账 */
+.progress {
+  display: flex;
+  gap: 3px;
+  height: 7px;
+  margin: 9px 0 7px;
+}
+.progress-seg {
+  flex: 1 1 0;
+  background: var(--surface-3);
+  border-radius: 0;
+  transition: background var(--t);
+}
+/* 进度条是数据，不是信号：填满的格子归墨，靠明度差读出进度 */
+.progress-seg[data-filled="1"] { background: var(--fg-2); }
+.progress-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--fg-3);
+}
+
+/* 5.9 Stat / KPI — 靠左侧竖线站住，不套卡片 */
+.stat {
+  padding: 2px 0 2px 15px;
+  border: 0;
+  border-left: 2px solid var(--line-3);
+  border-radius: 0;
+  background: transparent;
+}
+.stat-label {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+  margin-bottom: 8px;
+}
+/* 数据是主角：值放大、字重放低，靠体量与等宽对齐站住，不靠染色。
+   颜色预算收紧之后，层次必须由尺度来还债。 */
+.stat-value {
+  font-family: var(--mono);
+  font-size: 30px;
+  font-weight: 400;
+  line-height: 1.02;
+  letter-spacing: -0.035em;
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+}
+.stat-value--accent { color: var(--accent); }
+.stat-value--warn   { color: var(--danger); }
+.stat-value--danger { color: var(--danger); }
+.stat-sub { margin-top: 6px; font-size: 11.5px; color: var(--fg-3); }
+
+/* 5.10 Meta 键值条 — 一条压线的横带，不是网格卡片 */
+.meta {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 14px 32px;
+  padding: 15px 0 0;
+  border-top: 1px solid var(--line-2);
+  background: transparent;
+  border-radius: 0;
+}
+.meta-item { padding: 0; background: transparent; }
+.meta-key {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+  margin-bottom: 6px;
+}
+.meta-val { font-size: 13.5px; color: var(--fg); }
+.meta-val.mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+/* 值的出处单独占一行，不跟在值后面用斜杠拼。
+   拼在后面时，「sk-dem••••••••ghij ／页面设置」会在列宽里从「页面」处断行，
+   末行孤零零剩两个字 —— 那不像排版，像溢出。分行之后每一项都是同样的
+   三行节奏：键 / 值 / 出处。 */
+.meta-sub { margin-top: 4px; font-size: 11px; color: var(--fg-3); }
+
+/* 5.11 轮次时间线 — 方形节点 */
+.round {
+  position: relative;
+  padding-left: 28px;
+}
+.round::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 12px;
+  bottom: -26px;
+  width: 1px;
+  background: var(--line-2);
+}
+.round:last-child::before { display: none; }
+.round-node {
+  position: absolute;
+  left: 0;
+  top: 8px;
+  width: 9px;
+  height: 9px;
+  border-radius: 0;
+  border: 1px solid var(--line-3);
+  background: var(--bg);
+}
+.round[data-state="active"] .round-node   { border-color: var(--accent); background: var(--accent); }
+.round[data-state="done"] .round-node     { border-color: var(--ok); background: var(--ok); }
+.round[data-state="blocked"] .round-node  { border-color: var(--danger); background: var(--danger); }
+
+.round-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+.round-head h2 { font-size: 14px; }
+
+/* 5.12 问题列表 — 编号 + 压线行，不做一个个独立小盒子 */
+.qlist { margin: 0; padding: 0; list-style: none; display: grid; gap: 0; counter-reset: q; }
+.qlist li {
+  display: flex;
+  gap: 14px;
+  padding: 10px 0;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  font-size: 13px;
+  line-height: 1.62;
+  counter-increment: q;
+}
+.qlist li:first-child { border-top: 1px solid var(--line); }
+.qlist li::before {
+  content: counter(q, decimal-leading-zero);
+  flex: none;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg-3);
+  padding-top: 3px;
+}
+
+/* 5.13 摘要四宫格（共识/分歧/盲区/未决） */
+.digest {
+  display: grid;
+  gap: 0;
+  background: transparent;
+  border: 0;
+  border-top: 1px solid var(--line-2);
+  border-radius: 0;
+  overflow: visible;
+}
+@media (min-width: 780px) {
+  .digest { grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 48px; }
+}
+.digest-cell { padding: 17px 0 15px; background: transparent; }
+/* 四格是「图例」：色相留在 7px 方标上，标题归墨。
+   四个彩色标题并排会把一屏染成彩虹；四个彩色小方标才是精确的记号。 */
+.digest-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-2);
+}
+.digest-head::before { content: ""; width: 7px; height: 7px; border-radius: 0; background: var(--fg-3); }
+.digest-cell--consensus  .digest-head::before { background: var(--ok); }
+.digest-cell--divergence .digest-head::before { background: var(--accent); }
+.digest-cell--blindspot  .digest-head::before { background: var(--danger); }
+.digest-cell--open       .digest-head::before { background: var(--wait); }
+.digest-list { margin: 0; padding: 0; list-style: none; display: grid; gap: 7px; }
+.digest-list li {
+  position: relative;
+  padding-left: 15px;
+  font-size: 12.5px;
+  line-height: 1.62;
+  color: var(--fg-2);
+}
+.digest-list li::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 9px;
+  width: 6px;
+  height: 1px;
+  background: var(--fg-3);
+}
+.digest-empty { font-size: 12.5px; color: var(--fg-3); }
+
+/* 5.14 details / 折叠 — 折起来就是一行带线的标题 */
+details.disclose {
+  border: 0;
+  border-top: 1px solid var(--line);
+  background: transparent;
+  overflow: visible;
+}
+details.disclose:last-child { border-bottom: 1px solid var(--line); }
+details.disclose > summary {
+  padding: 11px 0;
+  font-size: 12.5px;
+  color: var(--fg-2);
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  transition: color var(--t);
+}
+details.disclose > summary::-webkit-details-marker { display: none; }
+details.disclose > summary::before {
+  content: "";
+  flex: none;
+  width: 0;
+  height: 0;
+  border-left: 4px solid currentColor;
+  border-top: 3.5px solid transparent;
+  border-bottom: 3.5px solid transparent;
+  transition: transform var(--t);
+}
+details.disclose[open] > summary::before { transform: rotate(90deg); }
+details.disclose > summary:hover { color: var(--fg); }
+/* 展开只是 UI 状态，不是信号——箭头归墨 */
+details.disclose[open] > summary { color: var(--fg); }
+details.disclose[open] > summary::before { color: var(--fg-2); }
+.disclose-body { padding: 6px 0 18px; font-size: 12.5px; line-height: 1.68; color: var(--fg-2); }
+
+/* 5.15 Empty state — 左对齐，跟着台账的栏位走，不居中 */
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 26px 0;
+  text-align: left;
+  color: var(--fg-3);
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+.empty svg { width: 22px; height: 22px; opacity: 0.5; }
+.empty-title { font-size: 13.5px; color: var(--fg-2); font-weight: 500; }
+.empty-hint { font-size: 12.5px; max-width: 58ch; line-height: 1.65; }
+
+/* 5.16 Confirm dialog（替代浏览器原生 confirm） — 顶部一道琥珀，像盖下去的章 */
+dialog.confirm {
+  padding: 0;
+  width: min(460px, calc(100vw - 32px));
+  color: var(--fg);
+  background: var(--surface-2);
+  border: 1px solid var(--line-3);
+  border-top: 2px solid var(--accent);
+  border-radius: 0;
+  box-shadow: var(--shadow-pop);
+}
+/* 遮罩只用暗场，不用 backdrop-filter：
+   毛玻璃是为掩盖「底下还有内容在动」而存在的，这里底下并不可读，模糊纯属装饰 */
+dialog.confirm::backdrop {
+  background: rgba(9, 8, 7, 0.78);
+}
+.confirm-body { padding: 20px; display: flex; gap: 14px; }
+.confirm-icon { flex: none; width: 20px; height: 20px; color: var(--accent); }
+.confirm-icon--danger { color: var(--danger); }
+.confirm-title { font-size: 15px; font-weight: 600; margin-bottom: 6px; letter-spacing: -0.02em; }
+.confirm-text { font-size: 13px; color: var(--fg-2); line-height: 1.62; }
+.confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 14px 20px;
+  background: transparent;
+  border-top: 1px solid var(--line);
+}
+
+/* 5.17 Toast — 右下角，不做居中胶囊 */
+.toast {
+  position: fixed;
+  left: auto;
+  right: 26px;
+  bottom: 26px;
+  transform: translateY(10px);
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 15px;
+  font-size: 12.5px;
+  color: var(--fg);
+  background: var(--surface-3);
+  border: 0;
+  border-left: 2px solid var(--ok);
+  border-radius: 0;
+  box-shadow: var(--shadow-pop);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--t), transform var(--t);
+}
+.toast[data-show="1"] { opacity: 1; transform: translateY(0); }
+.toast::before { content: ""; width: 7px; height: 7px; border-radius: 0; background: var(--ok); }
+
+/* 5.18 状态提示行 */
+.ticker {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--fg-3);
+}
+.ticker b { color: var(--fg); font-weight: 500; }
+
+/* 5.19 Chips — 状态筛选。
+   选中态 = 墨底 + 一道琥珀底线，不做整块实心填充：
+   「当前筛选项」只需要被认出来，不需要喊出来。 */
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0;
+  margin: 0 0 22px;
+  border: 1px solid var(--line-2);
+  width: fit-content;
+  max-width: 100%;
+}
+.chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 12px;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  color: var(--fg-3);
+  background: transparent;
+  border: 0;
+  border-right: 1px solid var(--line-2);
+  border-radius: 0;
+  text-decoration: none;
+  white-space: nowrap;
+  transition: color var(--t), background var(--t);
+}
+.chip:last-child { border-right: 0; }
+.chip:hover { color: var(--fg); background: var(--surface-2); text-decoration: none; }
+.chip[aria-current="page"] {
+  color: var(--fg);
+  background: var(--surface-3);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+/* 5.21 附注清单 — 一条线一句，不用圆点。
+   圆点会在深底上散出一股「文档」气；这里每句之间只压一道极细的分隔线，
+   读起来更像台账页脚的一栏注，而不是说明书的一串要点。
+   用于「这个页面不管什么」这类边界陈述：话要说得清楚，但不能长得像正文。 */
+.notes {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.notes > li {
+  padding: 9px 0;
+  border-top: 1px solid var(--line-2);
+  font-size: 12.5px;
+  line-height: 1.62;
+  color: var(--fg-2);
+}
+.notes > li:first-child { border-top: 0; padding-top: 0; }
+.notes > li:last-child { padding-bottom: 0; }
+.notes b { color: var(--fg); font-weight: 500; }
+.notes code { font-size: 12px; }
+
+/* ------------------------------------------------------------ 6. Utilities */
+.mt-0 { margin-top: 0; }
+.mt-8 { margin-top: 8px; }
+.mt-16 { margin-top: 16px; }
+.mt-24 { margin-top: 24px; }
+.mb-0 { margin-bottom: 0; }
+.mb-8 { margin-bottom: 8px; }
+.mb-16 { margin-bottom: 16px; }
+.mb-24 { margin-bottom: 24px; }
+.nowrap { white-space: nowrap; }
+.wrap-any { overflow-wrap: anywhere; }
+.pre-wrap { white-space: pre-wrap; }
+.clamp-3 {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.sr-only {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+.divider { height: 1px; background: var(--line-2); margin: 22px 0; border: 0; }
+
+/* --------------------------------------------------------- 7. Responsive */
+@media (max-width: 1080px) {
+  .grid { gap: 34px; }
+  .grid--main { grid-template-columns: minmax(0, 1fr); }
+  .grid--4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 860px) {
+  .grid--3 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .topbar-inner { padding: 0 18px; gap: 16px; }
+  .brand-sub { display: none; }
+  .wrap { padding: 26px 18px 64px; }
+}
+@media (max-width: 700px) {
+  body { font-size: 13.5px; }
+  .wrap { padding: 22px 15px 56px; }
+  .stack { gap: 26px; }
+  .grid { gap: 26px; }
+
+  /* 顶栏：品牌 + 操作一行，导航独占一行横向滚动 */
+  .topbar-inner {
+    height: auto;
+    flex-wrap: wrap;
+    padding: 11px 15px;
+    gap: 10px;
+  }
+  .nav {
+    order: 3;
+    width: 100%;
+    flex-basis: 100%;
+    margin: 0 -15px;
+    padding: 0 15px 11px;
+    border-top: 1px solid var(--line);
+    padding-top: 11px;
+  }
+  .nav-link { padding-left: 14px; }
+  .nav-link::before { left: 5px; }
+  .topbar-actions { margin-left: auto; }
+  .who { border-left: 0; padding-left: 0; }
+  .who-role { display: none; }
+
+  .grid--2, .grid--3, .grid--4 { grid-template-columns: minmax(0, 1fr); }
+  .panel-body { padding: 16px 0 4px; }
+  .panel-head { flex-wrap: wrap; }
+  h1 { font-size: 21px; }
+
+  /* 表格转台账条目：靠 data-label 回填表头，窄屏不再横向撕裂 */
+  .table--cards thead { display: none; }
+  .table--cards, .table--cards tbody, .table--cards tr, .table--cards td { display: block; width: 100%; }
+  .table--cards.table--list td:first-child,
+  .table--cards.table--list td:last-child { width: 100%; text-align: right; }
+  .table--cards.table--narrow { max-width: none; }
+  .table--cards tbody tr {
+    border: 0;
+    border-left: 2px solid var(--line-2);
+    border-bottom: 1px solid var(--line);
+    border-radius: 0;
+    background: transparent;
+    margin-bottom: 0;
+    padding: 6px 0 6px 13px;
+  }
+  .table--cards tbody tr:hover { background: transparent; }
+  .table--cards tbody tr:hover td:first-child { box-shadow: none; }
+  .table--cards td {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 6px 0;
+    border-bottom: 0;
+    text-align: right;
+  }
+  .table--cards td::before {
+    content: attr(data-label);
+    flex: none;
+    min-width: 88px;
+    text-align: left;
+    font-family: var(--mono);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    color: var(--fg-3);
+    padding-top: 3px;
+  }
+  .table--cards td:first-child { padding-left: 0; }
+  .cell-actions { justify-content: flex-start; }
+
+  .meta { grid-template-columns: minmax(0, 1fr); gap: 0; padding-top: 0; }
+  .meta-item { padding: 11px 0; border-bottom: 1px solid var(--line); }
+  .meta-item:last-child { border-bottom: 0; }
+
+  .form-actions .btn { flex: 1 1 auto; }
+  .chips { width: 100%; }
+  .chip { flex: 1 1 auto; justify-content: center; }
+  .auth-steps li { font-size: 12.5px; }
+}
+
+/* ------------------------------------------------------------- 8. A11y */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+@media (prefers-contrast: more) {
+  :root {
+    --line:   #4c453c;
+    --line-2: #6b6257;
+    --line-3: #8a8274;
+    --fg-2:   #d3ccc1;
+    --fg-3:   #b3aa9c;
+  }
+}
+
+@media print {
+  .topbar, .form-actions, .cell-actions, .chips { display: none !important; }
+  body { background: #fff; color: #000; }
+  .panel { border-top-color: #999; }
+  .panel::before { background: #ccc; }
+  .panel, .meta, .stat { background: #fff; }
+}

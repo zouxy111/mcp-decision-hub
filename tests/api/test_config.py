@@ -10,7 +10,7 @@ def test_settings_llm_defaults():
     )
     assert settings.deepseek_api_key is None
     assert settings.llm_base_url == "https://api.deepseek.com"
-    assert settings.llm_model == "deepseek-chat"
+    assert settings.llm_model == "deepseek-flash"
     assert settings.llm_request_timeout_seconds == 120
     assert settings.llm_provider_name == "DeepSeek"
 

@@ -406,9 +406,13 @@ def test_v9存量库补上matters的irreversible_reason列(tmp_path):
     `no such column: matters.irreversible_reason`（2026-09-18 测试服务器
     部署 358fd1c 时实录）。v10 补上。
 
-    场景构造：全列新库 → DROP 该列 + 版本表标到 v9 =「873ff8d 之后、
-    v10 之前」的真实存量库形状。
-    """
+       场景构造：全列新库 → DROP 该列 + 版本表标到 v9 =「873ff8d 之后、
+       v10 之前」的真实存量库形状。
+
+       注：断言「v10 起全部应用」而不是写死 `== (10,)` —— 后者在每加一条
+       迁移时都会假失败一次（v11 一进来就红了），而它想表达的是「v9 之上
+       的都补上、v9 之下的都不动」。
+       """
     db = tmp_path / "v9legacy.db"
     engine = make_engine(f"sqlite:///{db}")
     init_db(engine)  # 全新建库：列全在、版本到最新
@@ -425,11 +429,11 @@ def test_v9存量库补上matters的irreversible_reason列(tmp_path):
     report = run_migrations(engine, backup=False)
 
     assert report.from_version == 9
-    assert report.applied == (10,)
+    assert report.applied == tuple(m.version for m in MIGRATIONS if m.version >= 10)
     conn = _connect(db)
     try:
         assert "irreversible_reason" in _matters_columns(conn)
-        assert current_version(conn) == 10
+        assert current_version(conn) == MIGRATIONS[-1].version
     finally:
         conn.close()
 

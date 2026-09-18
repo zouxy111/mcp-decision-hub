@@ -33,6 +33,11 @@ MATTER_AWAITING_DECISION = "matter_awaiting_decision"
 TASK_TIMEOUT = "task_timeout"
 TASK_REASSIGNED = "task_reassigned"
 STANCE_READ = "stance_read"
+# 模型配置变更（/admin/model 保存）。detail = {model, base_url, changed} ——
+# **不含 api_key 原文**，只记「有没有改到它」（changed 里出现 "api_key"）。
+# 这条事件的存在理由是：一次改配置会改变后续所有 LLM 调用的模型与账单归属，
+# 却没有别的痕迹。
+LLM_CONFIG_UPDATED = "llm_config_updated"
 # 契约（2026-09-12 冻结）：收敛判定因脏数据降级时写入，detail 带 {stance, user_id}。
 CONVERGENCE_DEGRADED = "convergence_degraded"
 # 补充决策 A（owner 已批）：迁移步骤应用时写入，detail = {version, name}，

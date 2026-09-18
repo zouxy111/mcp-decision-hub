@@ -1,29 +1,131 @@
 {% extends "base.html" %}
 {% block title %}新建事项 - MCP 决策中台{% endblock %}
 {% block content %}
-<h1>新建协作事项</h1>
-<div class="notice">{{ llm_notice }}</div>
-{% if error %}<p class="error">{{ error }}</p>{% endif %}
+
+<div class="page-head">
+  <nav class="crumbs" aria-label="面包屑">
+    <a href="/dashboard">总览</a>
+    <span class="sep">/</span>
+    <span>新建事项</span>
+  </nav>
+  <h1>新建协作事项</h1>
+  <p class="lede mb-0">填写主题与目标后保存为草稿，稍后在详情页点「开始事项」生成第一轮问题并派发任务。</p>
+</div>
+
+{% if error %}
+<div class="alert alert--error" role="alert">
+  <div class="alert-body">{{ error }}</div>
+</div>
+{% endif %}
+
+<div class="alert alert--warn" role="note">
+  <div class="alert-body">
+    <div class="alert-title">数据边界</div>
+    {{ llm_notice }}
+  </div>
+</div>
+
 <form method="post" action="/matters/new">
   <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
-  <label>主题（必填）<input name="title" required></label>
-  <label>目标（必填）<textarea name="goal" required></textarea></label>
-  <label>背景 <textarea name="background"></textarea></label>
-  <label>第一轮问题（选填，每行一个；留空则由平台大模型根据主题、目标与背景生成）
-    <textarea name="questions_text" rows="5"></textarea>
-  </label>
-  <label>任务超时（小时）<input name="timeout_hours" type="number" value="72" min="1"></label>
-  <fieldset>
-    <legend>参与人（2–5 名，不含未自答的发起人）</legend>
-    {% for u in users %}
-    {% if u.id != current_user_id %}
-    <label><input type="checkbox" name="participant_ids" value="{{ u.id }}">
-      {{ u.username }}（{{ u.email }}）</label>
-    {% endif %}
-    {% endfor %}
-    <label><input type="checkbox" name="initiator_participates" value="true">
-      我也参与作答（占用一个参与人名额）</label>
-  </fieldset>
-  <button type="submit">保存为草稿</button>
+
+  <div class="grid grid--main">
+
+    <div class="stack">
+
+      <div class="panel">
+        <div class="panel-head"><h2>事项信息</h2></div>
+        <div class="panel-body">
+          <label class="field">
+            <span class="field-label">主题<span class="req">*</span></span>
+            <input class="input" name="title" required maxlength="200"
+                   placeholder="一句话说明要决策什么">
+          </label>
+          <label class="field">
+            <span class="field-label">目标<span class="req">*</span></span>
+            <textarea class="textarea" name="goal" required
+                      placeholder="这次协作要产出什么结论"></textarea>
+          </label>
+          <label class="field">
+            <span class="field-label">背景</span>
+            <textarea class="textarea" name="background"
+                      placeholder="已有约束、历史决策、相关材料"></textarea>
+          </label>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h2>第一轮问题</h2>
+          <span class="spacer"></span>
+          <span class="ticker">选填</span>
+        </div>
+        <div class="panel-body">
+          <label class="field">
+            <span class="field-label">每行一个</span>
+            <textarea class="textarea" name="questions_text" rows="5"
+                      style="min-height:120px"
+                      placeholder="留空则由平台大模型根据主题、目标与背景自动生成"></textarea>
+            <span class="field-hint">留空则由平台大模型根据主题、目标与背景生成。</span>
+          </label>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="stack">
+
+      <div class="panel">
+        <div class="panel-head"><h2>执行参数</h2></div>
+        <div class="panel-body">
+          <label class="field">
+            <span class="field-label">任务超时（小时）</span>
+            <input class="input mono" name="timeout_hours" type="number"
+                   value="72" min="1" step="1">
+            <span class="field-hint">每位参与人从任务派发起算，超过未提交即标记 timeout。</span>
+          </label>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h2>参与人</h2>
+          <span class="spacer"></span>
+          <span class="ticker">2–5 名</span>
+        </div>
+        <div class="panel-body">
+          <fieldset>
+            <legend>参与人（2–5 名，不含未自答的发起人）</legend>
+            <div class="check-list">
+              {% for u in users %}
+              {% if u.id != current_user_id %}
+              <label class="check-row">
+                <input type="checkbox" name="participant_ids" value="{{ u.id }}">
+                <span class="check-row-main">
+                  <span class="check-name">{{ u.username }}</span>
+                  <span class="check-sub">{{ u.email }}</span>
+                </span>
+              </label>
+              {% endif %}
+              {% endfor %}
+            </div>
+          </fieldset>
+          <label class="check-row">
+            <input type="checkbox" name="initiator_participates" value="true">
+            <span class="check-row-main">
+              <span class="check-name">我也参与作答</span>
+              <span class="check-sub">占用一个参与人名额</span>
+            </span>
+          </label>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <div class="form-actions">
+    <button type="submit" class="btn btn--primary" data-busy-label="保存中">保存为草稿</button>
+    <a class="btn btn--ghost" href="/dashboard">返回总览</a>
+  </div>
 </form>
+
 {% endblock %}

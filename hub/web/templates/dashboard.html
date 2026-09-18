@@ -1,31 +1,62 @@
 {% extends "base.html" %}
+{% from "_macros.html" import state_badge, ts, empty_state %}
 {% block title %}总览 - MCP 决策中台{% endblock %}
 {% block content %}
-<h1>我的事项</h1>
-<form method="get" action="/dashboard">
-  <label>状态筛选
-    <select name="status">
-      <option value="" {% if not status_filter %}selected{% endif %}>全部</option>
-      {% for s in ["draft", "in_progress", "collecting", "blocked",
-                   "awaiting_decision", "completed", "cancelled"] %}
-      <option value="{{ s }}" {% if status_filter == s %}selected{% endif %}>{{ s }}</option>
-      {% endfor %}
-    </select>
-  </label>
-  <button type="submit">筛选</button>
-</form>
-{% if not matters %}
-<p>暂无事项。<a href="/matters/new">新建一个</a>。</p>
-{% else %}
-<table>
-  <tr><th>主题</th><th>状态</th><th>创建时间(UTC)</th></tr>
-  {% for m in matters %}
-  <tr>
-    <td><a href="/matters/{{ m.id }}">{{ m.title }}</a></td>
-    <td>{{ m.status }}</td>
-    <td>{{ m.created_at.strftime("%Y-%m-%dT%H:%M:%SZ") }}</td>
-  </tr>
+
+<div class="page-head page-head--row">
+  <div>
+    <h1>我的事项</h1>
+    <p class="lede mb-0">多智能体协作决策的事项入口。进入任意一条可查看轮次问题、本轮摘要、各方立场与最终决议。</p>
+  </div>
+  <a class="btn btn--primary" href="/matters/new">新建事项</a>
+</div>
+
+{% set states = ["draft", "in_progress", "collecting", "blocked",
+                 "awaiting_decision", "completed", "cancelled"] %}
+<nav class="chips" aria-label="按状态筛选">
+  <a class="chip" href="/dashboard"
+     {% if not status_filter %}aria-current="page"{% endif %}>所有状态</a>
+  {% for s in states %}
+  <a class="chip" href="/dashboard?status={{ s }}"
+     {% if status_filter == s %}aria-current="page"{% endif %}>{{ s }}</a>
   {% endfor %}
-</table>
-{% endif %}
+</nav>
+
+<div class="panel">
+  <div class="panel-head">
+    <h2>事项列表</h2>
+    <span class="spacer"></span>
+    <span class="ticker">当前视图 <b>{{ matters | length }}</b> 条</span>
+  </div>
+
+  {% if not matters %}
+    {{ empty_state("暂无事项",
+                   "当前筛选条件下没有匹配的事项。",
+                   "/matters/new", "新建一个") }}
+  {% else %}
+  <div class="table-wrap">
+    <table class="table table--cards table--list">
+      <thead>
+        <tr>
+          <th>主题</th>
+          <th>状态</th>
+          <th>创建时间(UTC)</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for m in matters %}
+        <tr>
+          <td data-label="主题">
+            <a class="cell-title" href="/matters/{{ m.id }}">{{ m.title }}</a>
+          </td>
+          <td data-label="状态">{{ state_badge(m.status) }}</td>
+          <td data-label="创建时间(UTC)" class="mono nowrap">{{ ts(m.created_at) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</div>
+
 {% endblock %}

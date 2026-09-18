@@ -573,3 +573,45 @@ def upgrade_add_participant_questions(conn: sqlite3.Connection) -> None:
 def downgrade_add_participant_questions(conn: sqlite3.Connection) -> None:
     conn.execute("DROP INDEX IF EXISTS ix_participant_questions_matter_target")
     conn.execute("DROP TABLE IF EXISTS participant_questions")
+
+
+# v11：llm_config（模型配置页的落点）
+#
+# 为什么配置要进 DB 而不是继续待在 .env：Settings 是 frozen dataclass、
+# DeepSeekClient 在 create_app() 里只构造一次 —— 改 .env 必然要重启进程，
+# 而这个应用没有任何重启入口。落在 DB 后，页面保存即可对后续调用生效
+# （读层见 hub/llm/runtime.py）。
+#
+# 不播种任何行：**空表 = 逐字段回落 Settings（env / .env）**，即与改造前
+# 行为完全一致。这样存量库升级后不需要任何数据迁移，也不需要「猜一个默认
+# 值写进去」——写进去反而会把 env 的配置盖掉。
+
+_NEW_LLM_CONFIG_DDL = """
+CREATE TABLE llm_config (
+    id INTEGER NOT NULL,
+    model VARCHAR(64) NOT NULL,
+    base_url VARCHAR(255) NOT NULL,
+    api_key TEXT,
+    updated_at DATETIME NOT NULL,
+    updated_by INTEGER,
+    PRIMARY KEY (id),
+    CONSTRAINT ck_llm_config_singleton CHECK (id = 1),
+    FOREIGN KEY(updated_by) REFERENCES users (id)
+)
+"""
+
+
+def upgrade_add_llm_config(conn: sqlite3.Connection) -> None:
+    """建 llm_config。幂等：表已存在直接返回。"""
+    if _table_exists(conn, "llm_config"):
+        return
+    conn.execute(_NEW_LLM_CONFIG_DDL)
+
+
+def downgrade_add_llm_config(conn: sqlite3.Connection) -> None:
+    """回滚即删表，连配置一起 —— 语义代价：页面设置过的 key 无法找回。
+
+    这是回滚到旧世界的必然代价（旧世界没有这张表可存它）。env 里的
+    DEEPSEEK_API_KEY 不受影响，回滚后服务照常可用。
+    """
+    conn.execute("DROP TABLE IF EXISTS llm_config")

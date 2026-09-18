@@ -1,55 +1,127 @@
 {% extends "base.html" %}
+{% from "_macros.html" import ts, empty_state %}
 {% block title %}运维状态 - MCP 决策中台{% endblock %}
 {% block content %}
-<h1>运维状态（/admin/ops）</h1>
-<p><a href="/admin/invitations">邀请管理</a> ｜ <a href="/admin/audit">审计查询</a> ｜ <strong>运维状态</strong></p>
 
-<h2>调度器状态（FR-14b / PRD 10.4）</h2>
-<table>
-  <tr><th>字段</th><th>值</th></tr>
-  <tr><td>最后扫描时间(UTC)</td><td>{{ scheduler.last_run_at.strftime("%Y-%m-%dT%H:%M:%SZ") if scheduler.last_run_at else "未运行" }}</td></tr>
-  <tr><td>最后扫描处理条数</td><td>{{ scheduler.last_processed }}</td></tr>
-  <tr><td>最后扫描耗时(ms)</td><td>{{ scheduler.last_duration_ms }}</td></tr>
-  <tr><td>连续失败次数</td><td{% if scheduler.consecutive_failures > 0 %} class="error"{% endif %}>{{ scheduler.consecutive_failures }}</td></tr>
-  <tr><td>累计超时任务数</td><td>{{ scheduler.total_timeouts }}</td></tr>
-</table>
+<div class="page-head">
+  <nav class="crumbs" aria-label="面包屑">
+    <span>管理</span>
+    <span class="sep">/</span>
+    <span>运维状态</span>
+  </nav>
+  <h1>运维状态（/admin/ops）</h1>
+  <p class="lede mb-0">调度器扫描、后台队列深度与近期超时/换人事件的只读视图。</p>
+</div>
 
-<h2>后台队列深度</h2>
-<table>
-  <tr><th>队列</th><th>待处理</th></tr>
-  <tr><td>drive_queue（轮次驱动）</td><td>{{ drive_qsize }}</td></tr>
-  <tr><td>resume_queue（决议恢复）</td><td>{{ resume_qsize }}</td></tr>
-</table>
+<nav class="chips" aria-label="管理页导航">
+  <a class="chip" href="/admin/invitations">邀请管理</a>
+  <a class="chip" href="/admin/audit">审计查询</a>
+  <a class="chip" href="/admin/ops" aria-current="page">运维状态</a>
+  <a class="chip" href="/admin/model">模型配置</a>
+</nav>
 
-<h2>最近超时任务（task_timeout，最多 25 条）</h2>
-{% if timeout_events %}
-<table>
-  <tr><th>时间(UTC)</th><th>事项</th><th>详情</th></tr>
-  {% for e in timeout_events %}
-  <tr>
-    <td>{{ e.created_at.strftime("%Y-%m-%dT%H:%M:%SZ") }}</td>
-    <td><code>{{ e.matter_id or "-" }}</code></td>
-    <td><code>{{ e.detail }}</code></td>
-  </tr>
-  {% endfor %}
-</table>
-{% else %}
-<p>暂无超时记录。</p>
-{% endif %}
+{# ------------------------------------------------------- 调度器状态 #}
+<div class="section-title">调度器状态（FR-14b / PRD 10.4）</div>
 
-<h2>最近换人任务（task_reassigned，最多 25 条）</h2>
-{% if reassign_events %}
-<table>
-  <tr><th>时间(UTC)</th><th>事项</th><th>详情</th></tr>
-  {% for e in reassign_events %}
-  <tr>
-    <td>{{ e.created_at.strftime("%Y-%m-%dT%H:%M:%SZ") }}</td>
-    <td><code>{{ e.matter_id or "-" }}</code></td>
-    <td><code>{{ e.detail }}</code></td>
-  </tr>
-  {% endfor %}
-</table>
-{% else %}
-<p>暂无换人记录。</p>
-{% endif %}
+<div class="grid grid--4 mb-16">
+  <div class="stat">
+    <div class="stat-label">最后扫描时间(UTC)</div>
+    <div class="stat-value" style="font-size:15px">
+      {% if scheduler.last_run_at %}{{ ts(scheduler.last_run_at) }}{% else %}未运行{% endif %}
+    </div>
+    <div class="stat-sub">调度器状态</div>
+  </div>
+  <div class="stat">
+    <div class="stat-label">最后扫描处理条数</div>
+    <div class="stat-value">{{ scheduler.last_processed }}</div>
+    <div class="stat-sub">耗时 {{ scheduler.last_duration_ms }} ms</div>
+  </div>
+  <div class="stat">
+    <div class="stat-label">连续失败次数</div>
+    <div class="stat-value {% if scheduler.consecutive_failures > 0 %}stat-value--warn{% endif %}">
+      {{ scheduler.consecutive_failures }}
+    </div>
+    <div class="stat-sub">
+      {% if scheduler.consecutive_failures > 0 %}需要关注{% else %}运行正常{% endif %}
+    </div>
+  </div>
+  <div class="stat">
+    <div class="stat-label">累计超时任务数</div>
+    <div class="stat-value">{{ scheduler.total_timeouts }}</div>
+    <div class="stat-sub">自启动累计</div>
+  </div>
+</div>
+
+{# --------------------------------------------------------- 队列深度 #}
+<div class="section-title">后台队列深度</div>
+
+<div class="grid grid--2 mb-16">
+  <div class="stat">
+    <div class="stat-label">drive_queue（轮次驱动）</div>
+    <div class="stat-value">{{ drive_qsize }}</div>
+    <div class="stat-sub">待处理轮次任务</div>
+  </div>
+  <div class="stat">
+    <div class="stat-label">resume_queue（决议恢复）</div>
+    <div class="stat-value">{{ resume_qsize }}</div>
+    <div class="stat-sub">待恢复决议流程</div>
+  </div>
+</div>
+
+{# --------------------------------------------------------- 超时任务 #}
+<div class="panel mb-16">
+  <div class="panel-head">
+    <h2>最近超时任务（task_timeout，最多 25 条）</h2>
+  </div>
+  {% if timeout_events %}
+  <div class="table-wrap">
+    <table class="table table--cards">
+      <thead><tr><th>时间(UTC)</th><th>事项</th><th>详情</th></tr></thead>
+      <tbody>
+        {% for e in timeout_events %}
+        <tr>
+          <td data-label="时间(UTC)" class="mono nowrap">{{ ts(e.created_at) }}</td>
+          <td data-label="事项" class="mono">
+            {% if e.matter_id %}<a href="/matters/{{ e.matter_id }}">{{ e.matter_id }}</a>
+            {% else %}<span class="dim">-</span>{% endif %}
+          </td>
+          <td data-label="详情" class="wrap-any"><code class="plain">{{ e.detail }}</code></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+    {{ empty_state("暂无超时记录", "当前没有参与人任务超过截止时间。") }}
+  {% endif %}
+</div>
+
+{# --------------------------------------------------------- 换人任务 #}
+<div class="panel">
+  <div class="panel-head">
+    <h2>最近换人任务（task_reassigned，最多 25 条）</h2>
+  </div>
+  {% if reassign_events %}
+  <div class="table-wrap">
+    <table class="table table--cards">
+      <thead><tr><th>时间(UTC)</th><th>事项</th><th>详情</th></tr></thead>
+      <tbody>
+        {% for e in reassign_events %}
+        <tr>
+          <td data-label="时间(UTC)" class="mono nowrap">{{ ts(e.created_at) }}</td>
+          <td data-label="事项" class="mono">
+            {% if e.matter_id %}<a href="/matters/{{ e.matter_id }}">{{ e.matter_id }}</a>
+            {% else %}<span class="dim">-</span>{% endif %}
+          </td>
+          <td data-label="详情" class="wrap-any"><code class="plain">{{ e.detail }}</code></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+    {{ empty_state("暂无换人记录", "当前没有发生任务转派。") }}
+  {% endif %}
+</div>
+
 {% endblock %}

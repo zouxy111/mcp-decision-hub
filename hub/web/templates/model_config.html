@@ -1,0 +1,217 @@
+{% extends "base.html" %}
+{% from "_macros.html" import ts %}
+{% block title %}模型配置 - MCP 决策中台{% endblock %}
+{% block content %}
+
+{% set src_label = {
+  'database': '页面设置',
+  'settings': '环境变量',
+  'none': '未配置'
+} %}
+
+<div class="page-head">
+  <nav class="crumbs" aria-label="面包屑">
+    <span>管理</span>
+    <span class="sep">/</span>
+    <span>模型配置</span>
+  </nav>
+  <h1>模型配置（/admin/model）</h1>
+  <p class="lede mb-0">
+    决定这台部署用哪个大模型、哪把 API Key。配置写在数据库里，
+    <strong>保存后立即对后续调用生效，不需要重启进程</strong>。
+  </p>
+</div>
+
+<nav class="chips" aria-label="管理页导航">
+  <a class="chip" href="/admin/invitations">邀请管理</a>
+  <a class="chip" href="/admin/audit">审计查询</a>
+  <a class="chip" href="/admin/ops">运维状态</a>
+  <a class="chip" href="/admin/model" aria-current="page">模型配置</a>
+</nav>
+
+{% if error %}
+<div class="alert alert--error" role="alert">
+  <div class="alert-body">
+    <div class="alert-title">没有保存</div>
+    {{ error }} 页面上的其他项都还是原值。
+  </div>
+</div>
+{% endif %}
+
+{% if saved %}
+<div class="alert alert--ok" role="status">
+  <div class="alert-body">
+    <div class="alert-title">已保存</div>
+    后续调用开始按新配置走，无需重启。改完建议在页尾跑一次连通性测试 ——
+    「存进去了」和「真的能用」是两件事。
+  </div>
+</div>
+{% endif %}
+
+{% if probe_code %}
+<div class="alert {% if probe_ok %}alert--ok{% else %}alert--error{% endif %}" role="status">
+  <div class="alert-body">
+    <div class="alert-title">连通性测试：{% if probe_ok %}通过{% else %}未通过{% endif %}</div>
+    {{ probe_message }}
+    <span class="dim mono">（{{ probe_code }}）</span>
+  </div>
+</div>
+{% endif %}
+
+{# ------------------------------------------------------------- 当前生效 #}
+<div class="section-title">当前生效</div>
+
+<div class="meta">
+  <div class="meta-item">
+    <div class="meta-key">模型</div>
+    <div class="meta-val mono">{{ effective.model }}</div>
+    <div class="meta-sub">来源：{{ src_label.get(effective.model_source, effective.model_source) }}</div>
+  </div>
+  <div class="meta-item">
+    <div class="meta-key">Base URL</div>
+    <div class="meta-val mono">{{ effective.base_url }}</div>
+    <div class="meta-sub">来源：{{ src_label.get(effective.base_url_source, effective.base_url_source) }}</div>
+  </div>
+  <div class="meta-item">
+    <div class="meta-key">API Key</div>
+    <div class="meta-val mono">
+      {% if masked_key %}{{ masked_key }}{% else %}<span class="dim">未配置</span>{% endif %}
+    </div>
+    {# 未配置时不写「来源：未配置」——值与出处是同一件事，说两遍像缺了两项 #}
+    <div class="meta-sub">
+      来源：{% if effective.api_key_source == 'none' %}—{% else %}{{ src_label.get(effective.api_key_source, effective.api_key_source) }}{% endif %}
+    </div>
+  </div>
+  <div class="meta-item">
+    <div class="meta-key">请求超时</div>
+    <div class="meta-val mono">{{ effective.timeout_seconds }} 秒</div>
+    <div class="meta-sub">来源：环境变量</div>
+  </div>
+  <div class="meta-item">
+    <div class="meta-key">最后修改(UTC)</div>
+    <div class="meta-val mono">
+      {% if row %}{{ ts(row.updated_at) }}{% else %}<span class="dim">—</span>{% endif %}
+    </div>
+    <div class="meta-sub">
+      {% if row %}操作人：{{ updated_by or '已删除账号' }}{% else %}从未在页面上修改{% endif %}
+    </div>
+  </div>
+</div>
+
+<p class="lede mt-16 mb-24">
+  页面没有设置过的项一律回落到服务端环境变量。这张表为空时，行为与加它之前完全一致。
+</p>
+
+{# --------------------------------------------------------- 模型与 Key #}
+<div class="section-title">模型与 API Key</div>
+
+<div class="panel">
+  <div class="panel-head">
+    <h2>修改配置</h2>
+    <span class="spacer"></span>
+    <span class="ticker">仅管理员可改</span>
+  </div>
+  <div class="panel-body">
+    <form method="post" action="/admin/model">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+
+      <label class="field">
+        <span class="field-label">模型<span class="req">*</span></span>
+        <select class="select mono" name="model" required>
+          {% if effective.model not in models %}
+          <option value="{{ effective.model }}" selected>
+            {{ effective.model }} —— 不在可选列表内（直接保存会被拒绝）
+          </option>
+          {% endif %}
+          {% for m in models %}
+          <option value="{{ m }}" {% if m == effective.model %}selected{% endif %}>
+            {{ m }}{% if m == 'deepseek-flash' %} —— 官方推荐档{% endif %}
+          </option>
+          {% endfor %}
+        </select>
+        <span class="field-hint">
+          默认 {{ env_model }}（DeepSeek 官方 flash 档）。
+          {% for m in retired_models %}<code>{{ m }}</code>{% if not loop.last %}、{% endif %}{% endfor %}
+          已于 2026-07-24 下线，不再可选，填了会被拒绝保存。
+        </span>
+      </label>
+
+      <label class="field">
+        <span class="field-label">Base URL</span>
+        <input class="input mono" name="base_url" maxlength="255"
+               value="{{ effective.base_url }}" placeholder="{{ default_base_url }}"
+               autocomplete="off" spellcheck="false">
+        <span class="field-hint">
+          通常不用动。留空即用 {{ default_base_url }}（DeepSeek 官方接口）。
+        </span>
+      </label>
+
+      <label class="field">
+        <span class="field-label">API Key</span>
+        <input class="input mono" type="password" name="api_key"
+               autocomplete="new-password" spellcheck="false"
+               placeholder="{% if effective.api_key %}留空即保持不变{% else %}sk-…{% endif %}">
+        <span class="field-hint">
+          当前生效
+          {% if masked_key %}<span class="mono">{{ masked_key }}</span>{% else %}<span class="dim">未配置</span>{% endif %}
+          （{{ src_label.get(effective.api_key_source, effective.api_key_source) }}）。
+          还没有 Key？<a href="{{ key_console_url }}" target="_blank"
+                       rel="noopener noreferrer">去 DeepSeek 开放平台生成</a>，复制粘贴到这里即可。
+        </span>
+      </label>
+
+      <label class="check-row">
+        <input type="checkbox" name="clear_api_key" value="1">
+        <span class="check-row-main">
+          <span class="check-name">清除页面上保存的 Key</span>
+          <span class="check-sub">清除后回落服务端环境变量 DEEPSEEK_API_KEY</span>
+        </span>
+      </label>
+
+      <div class="form-actions">
+        <button type="submit" class="btn btn--primary" data-busy-label="保存中">保存</button>
+        <span class="ticker">保存后立即生效</span>
+      </div>
+    </form>
+  </div>
+</div>
+
+{# --------------------------------------------------------- 连通性测试 #}
+<div class="section-title mt-24">连通性测试</div>
+
+<div class="panel">
+  <div class="panel-head">
+    <h2>用已保存的配置发一条最小请求</h2>
+    <span class="spacer"></span>
+    <span class="ticker">单次，不重试</span>
+  </div>
+  <div class="panel-body">
+    <p class="lede mb-16">
+      它会真的向 <span class="mono">{{ effective.base_url }}</span> 发一条只占 1 个 token 的请求，
+      因此能同时证明三件事：本机能出网、Key 被接受、模型 id 存在。
+      改了上面的字段要先保存再测 —— 这里测的是已生效的那份配置。
+    </p>
+    <form method="post" action="/admin/model/test">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+      <button type="submit" class="btn" data-busy-label="探测中，最长 {{ effective.timeout_seconds }} 秒">
+        测试连通性
+      </button>
+    </form>
+  </div>
+</div>
+
+{# --------------------------------------------------------- 诚实边界 #}
+<div class="section-title mt-24">这个页面不管什么</div>
+
+<div class="panel">
+  <div class="panel-body">
+    <ul class="notes">
+      <li><b>请求超时</b> 仍是服务端常量（<code>LLM_REQUEST_TIMEOUT_SECONDS</code>，当前 {{ effective.timeout_seconds }} 秒），本页不暴露。</li>
+      <li><b>轮次上限、任务超时、限流阈值</b> 各有自己的服务端配置，不在本页。</li>
+      <li><b>Key 以明文存放在本机数据库</b>：调用时必须用原文发出 Bearer，可逆存储是客观需要，与既有的 <code>.env</code> 同机同目录、同属一个暴露等级。补偿是页面只回显掩码、审计只记「改没改」、日志从不记 Key。</li>
+      <li><b>改配置会改变后续所有调用的模型与账单归属</b>，因此每次保存都写一条 <code>llm_config_updated</code> 审计（可在「审计查询」按事件类型筛到）。</li>
+    </ul>
+  </div>
+</div>
+
+{% endblock %}

@@ -1,0 +1,54 @@
+{# ===========================================================================
+   共享宏 — 状态徽章 / 时间 / 空态
+   约束：状态一律原样输出后端枚举（测试断言 `"collecting" in resp.text`），
+        中文释义只作为 title 提示，不替换枚举本身。
+   时间一律保持 %Y-%m-%dT%H:%M:%SZ（UTC）格式。
+   =========================================================================== #}
+
+{% macro state_badge(state, live=false, hint="") -%}
+{%- set zh = {
+  'draft': '草稿：尚未开始',
+  'in_progress': '进行中',
+  'collecting': '收集中：等待参与人提交',
+  'blocked': '已阻塞：需人工介入',
+  'awaiting_decision': '等待发起人拍板',
+  'completed': '已完成',
+  'cancelled': '已取消',
+  'pending': '待提交',
+  'submitted': '已提交',
+  'timeout': '已超时',
+  'reassigned': '已换人',
+  'generating': '生成中',
+  'approved': '已通过',
+  'modified': '修改通过',
+  'rejected': '已驳回',
+  'pending_review': '待拍板',
+  'converged': '已收敛',
+  'not_converged': '未收敛',
+  'diverged': '存在分歧',
+  'done': '已完成',
+  'ok': '成功',
+  'failed': '失败'
+} -%}
+<span class="badge{% if live %} badge--live{% endif %}" data-state="{{ state }}"
+      title="{{ hint or zh.get(state, state) }}">{{ state }}</span>
+{%- endmacro %}
+
+{% macro ts(dt) -%}
+{{ dt.strftime("%Y-%m-%dT%H:%M:%SZ") if dt else "-" }}
+{%- endmacro %}
+
+{% macro empty_state(title, hint="", action_url="", action_label="") -%}
+<div class="empty">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+       stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <path d="M3 7.5 12 3l9 4.5v9L12 21l-9-4.5z"/>
+    <path d="M3 7.5 12 12l9-4.5M12 12v9"/>
+  </svg>
+  <span class="empty-title">{{ title }}</span>
+  {% if hint %}<span class="empty-hint">{{ hint }}</span>{% endif %}
+  {% if action_url and action_label %}
+  <a class="btn mt-8" href="{{ action_url }}">{{ action_label }}</a>
+  {% endif %}
+</div>
+{%- endmacro %}

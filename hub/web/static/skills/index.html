@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#131211">
+  <title>Skill 包 - MCP 决策中台</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%23131211'/%3E%3Cpath d='M3.2 5 8 9.4 12.8 5' fill='none' stroke='%23ffa03c' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3Ccircle cx='8' cy='11.6' r='1.6' fill='%23ffa03c'/%3E%3C/svg%3E">
+  <!-- 本站是纯静态页：没有会话、没有导航，但必须复用产品自己的令牌与样式表，
+       否则这一页会以另一套视觉替产品说话。 -->
+  <link rel="stylesheet" href="/static/console.css">
+  <script src="/static/console.js" defer></script>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="/">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"
+             stroke-linecap="round" stroke-linejoin="round">
+          <path d="M2.4 3.4 8 5.2l5.6-1.8"/>
+          <path d="M2.4 3.4v3.9L8 9.6l5.6-2.3V3.4"/>
+          <path d="M8 9.6v2.1"/>
+        </svg>
+      </span>
+      <span>MCP 决策中台</span>
+      <span class="brand-sub">Skills</span>
+    </a>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <div class="page-head">
+    <nav class="crumbs" aria-label="面包屑">
+      <span>静态资源</span>
+      <span class="sep">/</span>
+      <span>Skill 包</span>
+    </nav>
+    <h1>可拉取的 Skill 包</h1>
+    <p class="lede mb-0">
+      两个 skill，各一行命令装进你自己的 agent。装完落在
+      <code>~/.workbuddy/skills/&lt;名字&gt;/SKILL.md</code> —— 也可以直接把下面的
+      <code>SKILL.md</code> 拷到手边的目录里。
+    </p>
+  </div>
+
+  <div class="section-title">一次装两个（推荐）</div>
+  <div class="panel mb-24">
+    <div class="panel-body">
+      <p class="lede mb-8">一个负责把 hub 接上，一个负责产出决策模型。这两个是配套的：接上之后，衡量「值不值得用」的第一件事就是让 agent 产出一份决策模型。</p>
+      <div class="secret">
+        <code class="secret-value secret-value--script">mkdir -p ~/.workbuddy/skills \
+  &amp;&amp; curl -fsSL https://hub.tdp-demo.work/static/skills/skills.tar.gz \
+  | tar xz -C ~/.workbuddy/skills</code>
+        <button type="button" class="btn btn--sm"
+                data-copy="mkdir -p ~/.workbuddy/skills &amp;&amp; curl -fsSL https://hub.tdp-demo.work/static/skills/skills.tar.gz | tar xz -C ~/.workbuddy/skills"
+                data-copy-label="命令已复制">复制</button>
+      </div>
+      <ul class="notes mt-16">
+        <li><b>复制的是一行。</b> 上面显示成三行只是为了好读，续行符 <code>\</code> 是语法的一部分；点「复制」拿到的是一行等价命令。</li>
+        <li><b>等价写法</b> <code>curl -fsSL https://hub.tdp-demo.work/static/skills/install.sh | sh</code>。</li>
+        <li><b>可覆盖</b> <code>SKILLS_DIR</code> 改目标目录，默认 <code>~/.workbuddy/skills</code>。</li>
+        <li><b>不依赖任何东西</b>：不用仓库、不用 Node、不用管理员权限，脚本本身只做 mkdir、下载、解包三件事。</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="section-title">单个安装</div>
+
+  <div class="panel mb-16">
+    <div class="panel-head">
+      <h2>connect-decision-hub</h2>
+      <span class="spacer"></span>
+      <span class="ticker">4.4 KB</span>
+    </div>
+    <div class="panel-body">
+      <p class="lede mb-8">
+        把 decision-hub 接进自己的 agent：签发 Agent Token → 填客户端配置 → 用一次真实握手自检。
+        含端到端实测过的三要素（端点 / 传输 / 鉴权）、最容易漏的前置条件（账号必须先激活）、
+        令牌明文只显示一次的补救方式，以及一张故障对照表。
+      </p>
+      <div class="secret">
+        <code class="secret-value secret-value--script">mkdir -p ~/.workbuddy/skills \
+  &amp;&amp; curl -fsSL https://hub.tdp-demo.work/static/skills/connect-decision-hub.tar.gz \
+  | tar xz -C ~/.workbuddy/skills</code>
+        <button type="button" class="btn btn--sm"
+                data-copy="mkdir -p ~/.workbuddy/skills &amp;&amp; curl -fsSL https://hub.tdp-demo.work/static/skills/connect-decision-hub.tar.gz | tar xz -C ~/.workbuddy/skills"
+                data-copy-label="命令已复制">复制</button>
+      </div>
+      <div class="meta mt-16">
+        <div class="meta-item">
+          <div class="meta-key">触发</div>
+          <div class="meta-val">怎么连 MCP · token 怎么接上 · 一直 401</div>
+        </div>
+        <div class="meta-item">
+          <div class="meta-key">正文</div>
+          <div class="meta-val"><a href="connect-decision-hub/SKILL.md">SKILL.md</a></div>
+        </div>
+        <div class="meta-item">
+          <div class="meta-key">打包</div>
+          <div class="meta-val"><a href="connect-decision-hub.tar.gz">.tar.gz</a></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-head">
+      <h2>build-decision-model</h2>
+      <span class="spacer"></span>
+      <span class="ticker">8.8 KB</span>
+    </div>
+    <div class="panel-body">
+      <p class="lede mb-8">
+        为一个人（或一个组织）产出一份可复核、可迭代的人物决策模型 —— 不是贴标签，
+        而是一份带证据分级的判断方式说明书。含 12 章骨架、三重验证、<code>[实]/[复]/[推]</code>
+        标注纪律、IF-THEN 启发式写法、内在张力保留法、证伪优先与变更日志、交付前自检清单。
+      </p>
+      <div class="secret">
+        <code class="secret-value secret-value--script">mkdir -p ~/.workbuddy/skills \
+  &amp;&amp; curl -fsSL https://hub.tdp-demo.work/static/skills/build-decision-model.tar.gz \
+  | tar xz -C ~/.workbuddy/skills</code>
+        <button type="button" class="btn btn--sm"
+                data-copy="mkdir -p ~/.workbuddy/skills &amp;&amp; curl -fsSL https://hub.tdp-demo.work/static/skills/build-decision-model.tar.gz | tar xz -C ~/.workbuddy/skills"
+                data-copy-label="命令已复制">复制</button>
+      </div>
+      <div class="meta mt-16">
+        <div class="meta-item">
+          <div class="meta-key">触发</div>
+          <div class="meta-val">做人物决策模型 · 人物决策画像 · 复用决策模型</div>
+        </div>
+        <div class="meta-item">
+          <div class="meta-key">正文</div>
+          <div class="meta-val"><a href="build-decision-model/SKILL.md">SKILL.md</a></div>
+        </div>
+        <div class="meta-item">
+          <div class="meta-key">打包</div>
+          <div class="meta-val"><a href="build-decision-model.tar.gz">.tar.gz</a></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="section-title mt-24">关于这些文件</div>
+  <div class="panel">
+    <div class="panel-body">
+      <ul class="notes">
+        <li><b>全部是纯文本。</b> 每个 skill 只有一个 <code>SKILL.md</code>，没有脚本、没有依赖、没有二进制。装之前可以先在浏览器里读一遍再决定。</li>
+        <li><b>解包即用。</b> 包内顶层就是 skill 目录名，配合 <code>tar xz -C ~/.workbuddy/skills</code> 直接落位，不需要再手动改名或移动。</li>
+        <li><b>可卸载。</b> <code>rm -rf ~/.workbuddy/skills/&lt;名字&gt;</code> 就是全部卸载动作 —— 它们没有往别处写任何东西。</li>
+        <li><b>与部署同步更新。</b> 这一页与 server 上跑的是同一批文件；server 上的 skill 更新后，重跑一次安装命令即可。</li>
+      </ul>
+    </div>
+  </div>
+
+</main>
+
+</body>
+</html>

@@ -1,41 +1,112 @@
 {% extends "base.html" %}
+{% from "_macros.html" import ts, empty_state %}
 {% block title %}邀请管理 - MCP 决策中台{% endblock %}
 {% block content %}
-<h1>邀请管理</h1>
-{% if error %}<p class="error">{{ error }}</p>{% endif %}
+
+<div class="page-head">
+  <nav class="crumbs" aria-label="面包屑">
+    <span>管理</span>
+    <span class="sep">/</span>
+    <span>邀请管理</span>
+  </nav>
+  <h1>邀请管理</h1>
+  <p class="lede mb-0">为团队成员创建一次性邀请凭证。对方在登录页「首次使用」入口凭凭证激活账号并设置密码。</p>
+</div>
+
+<nav class="chips" aria-label="管理页导航">
+  <a class="chip" href="/admin/invitations" aria-current="page">邀请管理</a>
+  <a class="chip" href="/admin/audit">审计查询</a>
+  <a class="chip" href="/admin/ops">运维状态</a>
+  <a class="chip" href="/admin/model">模型配置</a>
+</nav>
+
+{% if error %}
+<div class="alert alert--error" role="alert"><div class="alert-body">{{ error }}</div></div>
+{% endif %}
+
 {% if credential %}
-<div class="ok">
-  <p>用户「{{ credential_for }}」的邀请凭证（有效期 7 天，一次性使用，
-     <strong>仅显示一次</strong>）：</p>
-  <p><code>{{ credential }}</code></p>
+<div class="alert alert--ok" role="status">
+  <div class="alert-body">
+    <div class="alert-title">用户「{{ credential_for }}」的邀请凭证</div>
+    <p>有效期 7 天，一次性使用，<strong>仅显示一次</strong>。</p>
+    <div class="secret">
+      <code class="secret-value">{{ credential }}</code>
+      <button type="button" class="btn btn--sm"
+              data-copy="{{ credential }}" data-copy-label="邀请凭证已复制">复制</button>
+    </div>
+  </div>
 </div>
 {% endif %}
-<h2>邀请新成员</h2>
-<form method="post" action="/admin/invitations">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
-  <label>用户名 <input name="username" required></label>
-  <label>邮箱 <input name="email" type="email" required></label>
-  <button type="submit">创建邀请</button>
-</form>
-<h2>待消费的邀请</h2>
-{% if not pending %}
-<p>暂无待消费邀请。</p>
-{% else %}
-<table>
-  <tr><th>用户名</th><th>邮箱</th><th>过期时间(UTC)</th><th>操作</th></tr>
-  {% for u in pending %}
-  <tr>
-    <td>{{ u.username }}</td>
-    <td>{{ u.email }}</td>
-    <td>{{ u.invitation_expires_at.strftime("%Y-%m-%dT%H:%M:%SZ") if u.invitation_expires_at else "-" }}</td>
-    <td>
-      <form method="post" action="/admin/invitations/{{ u.id }}/revoke">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
-        <button type="submit">撤销</button>
-      </form>
-    </td>
-  </tr>
-  {% endfor %}
-</table>
-{% endif %}
+
+<div class="panel mb-16">
+  <div class="panel-head">
+    <h2>邀请新成员</h2>
+    <span class="spacer"></span>
+    <span class="ticker">凭证有效期 7 天</span>
+  </div>
+  <div class="panel-body">
+    <form method="post" action="/admin/invitations">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+      <div class="grid grid--2">
+        <label class="field">
+          <span class="field-label">用户名<span class="req">*</span></span>
+          <input class="input" name="username" required maxlength="100"
+                 autocomplete="off" spellcheck="false">
+        </label>
+        <label class="field">
+          <span class="field-label">邮箱<span class="req">*</span></span>
+          <input class="input" name="email" type="email" required autocomplete="off">
+        </label>
+      </div>
+      <div class="form-actions">
+        <button type="submit" class="btn btn--primary" data-busy-label="创建中">创建邀请</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel-head">
+    <h2>待消费的邀请</h2>
+    <span class="spacer"></span>
+    <span class="ticker">当前 <b>{{ pending | length }}</b> 条</span>
+  </div>
+
+  {% if not pending %}
+    {{ empty_state("暂无待消费邀请", "创建邀请后，对方需在凭证过期前完成激活。") }}
+  {% else %}
+  <div class="table-wrap">
+    <table class="table table--cards">
+      <thead>
+        <tr>
+          <th>用户名</th>
+          <th>邮箱</th>
+          <th>过期时间(UTC)</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for u in pending %}
+        <tr>
+          <td data-label="用户名"><span class="cell-title">{{ u.username }}</span></td>
+          <td data-label="邮箱" class="mono">{{ u.email }}</td>
+          <td data-label="过期时间(UTC)" class="mono nowrap">{{ ts(u.invitation_expires_at) }}</td>
+          <td data-label="操作">
+            <div class="cell-actions">
+              <form method="post" action="/admin/invitations/{{ u.id }}/revoke"
+                    data-confirm="确认撤销用户「{{ u.username }}」的邀请凭证？撤销后该凭证立即失效。"
+                    data-confirm-danger="1" data-confirm-title="撤销邀请">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+                <button type="submit" class="btn btn--sm btn--danger">撤销</button>
+              </form>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</div>
+
 {% endblock %}

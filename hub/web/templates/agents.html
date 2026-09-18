@@ -1,41 +1,97 @@
 {% extends "base.html" %}
+{% from "_macros.html" import ts, empty_state %}
 {% block title %}Agent Token - MCP 决策中台{% endblock %}
 {% block content %}
-<h1>Agent Token 管理</h1>
-{% if error %}<p class="error">{{ error }}</p>{% endif %}
+
+<div class="page-head">
+  <h1>Agent Token 管理</h1>
+  <p class="lede mb-0">签发用于 Agent 接入 MCP 通道的凭证。Token 以哈希形式存储，明文仅在创建时显示一次。</p>
+</div>
+
+{% if error %}
+<div class="alert alert--error" role="alert"><div class="alert-body">{{ error }}</div></div>
+{% endif %}
+
 {% if new_plaintext %}
-<div class="ok">
-  <p>Token「{{ new_name }}」创建成功。<strong>此 Token 仅显示一次</strong>，请立即复制：</p>
-  <p><code>{{ new_plaintext }}</code></p>
+<div class="alert alert--ok" role="status">
+  <div class="alert-body">
+    <div class="alert-title">Token「{{ new_name }}」创建成功</div>
+    <p><strong>此 Token 仅显示一次</strong>，请立即复制并妥善保存。</p>
+    <div class="secret">
+      <code class="secret-value">{{ new_plaintext }}</code>
+      <button type="button" class="btn btn--sm"
+              data-copy="{{ new_plaintext }}" data-copy-label="Token 已复制">复制</button>
+    </div>
+  </div>
 </div>
 {% endif %}
-<h2>新建 Token</h2>
-<form method="post" action="/settings/agents">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
-  <label>名称 <input name="name" required></label>
-  <button type="submit">签发</button>
-</form>
-<h2>已有 Token</h2>
-{% if not tokens %}
-<p>暂无 Token。</p>
-{% else %}
-<table>
-  <tr><th>名称</th><th>创建时间(UTC)</th><th>最后使用(UTC)</th><th>操作</th></tr>
-  {% for t in tokens %}
-  <tr>
-    <td>{{ t.name }}</td>
-    <td>{{ t.created_at.strftime("%Y-%m-%dT%H:%M:%SZ") }}</td>
-    <td>{{ t.last_used_at.strftime("%Y-%m-%dT%H:%M:%SZ") if t.last_used_at else "从未使用" }}</td>
-    <td>
-      <form method="post" action="/settings/agents/{{ t.id }}/revoke"
-            hx-post="/settings/agents/{{ t.id }}/revoke"
-            hx-confirm="确认吊销 Token「{{ t.name }}」？吊销后使用该 Token 的 Agent 将立即失效。">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
-        <button type="submit">吊销</button>
-      </form>
-    </td>
-  </tr>
-  {% endfor %}
-</table>
-{% endif %}
+
+<div class="panel mb-16">
+  <div class="panel-head">
+    <h2>新建 Token</h2>
+    <span class="spacer"></span>
+    <span class="ticker">明文仅返回一次</span>
+  </div>
+  <div class="panel-body">
+    <form method="post" action="/settings/agents">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+      <label class="field">
+        <span class="field-label">名称<span class="req">*</span></span>
+        <input class="input" name="name" required maxlength="100"
+               placeholder="用途或机器标识，例如 laptop-cli">
+        <span class="field-hint">建议按使用场景命名，便于日后单独吊销。</span>
+      </label>
+      <div class="form-actions">
+        <button type="submit" class="btn btn--primary" data-busy-label="签发中">签发</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel-head">
+    <h2>已有 Token</h2>
+    <span class="spacer"></span>
+    <span class="ticker">当前 <b>{{ tokens | length }}</b> 个</span>
+  </div>
+
+  {% if not tokens %}
+    {{ empty_state("暂无 Token", "签发第一个 Token 后，Agent 才能通过 MCP 通道提交产出。") }}
+  {% else %}
+  <div class="table-wrap">
+    <table class="table table--cards table--list">
+      <thead>
+        <tr>
+          <th>名称</th>
+          <th>创建时间(UTC)</th>
+          <th>最后使用(UTC)</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for t in tokens %}
+        <tr>
+          <td data-label="名称"><span class="cell-title">{{ t.name }}</span></td>
+          <td data-label="创建时间(UTC)" class="mono nowrap">{{ ts(t.created_at) }}</td>
+          <td data-label="最后使用(UTC)" class="mono nowrap">
+            {% if t.last_used_at %}{{ ts(t.last_used_at) }}{% else %}<span class="dim">从未使用</span>{% endif %}
+          </td>
+          <td data-label="操作">
+            <div class="cell-actions">
+              <form method="post" action="/settings/agents/{{ t.id }}/revoke"
+                    data-confirm="确认吊销 Token「{{ t.name }}」？吊销后使用该 Token 的 Agent 将立即失效。"
+                    data-confirm-danger="1" data-confirm-title="吊销 Token">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+                <button type="submit" class="btn btn--sm btn--danger">吊销</button>
+              </form>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</div>
+
 {% endblock %}

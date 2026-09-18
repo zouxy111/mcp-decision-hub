@@ -310,3 +310,34 @@ class Stance(Base):
                                             nullable=False)
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     created_at: Mapped[datetime] = mapped_column(default=utcnow, nullable=False)
+
+
+class LlmConfig(Base):
+    """LLM 运行时配置（单行表，``id`` 恒为 1；无行 = 从未在页面上配置过）。
+
+    为什么是「单行强类型表」而不是 KV：这些字段的取值集合是确定的、要被
+    migration 的冻结 DDL 原样复现、要被测试逐列断言 —— 列出来比塞进
+    ``key/value`` 更容易被读懂和被证伪。
+
+    为什么 ``api_key`` 是明文：调用时必须用原文作为 ``Bearer`` 发出，可逆
+    存储是客观需要。它与既有的 ``.env`` 里的 ``DEEPSEEK_API_KEY`` 同机同目录，
+    属同一暴露等级，本表没有引入新的暴露面。补偿措施有三条：页面只回显掩码
+    （:func:`hub.llm.runtime.mask_secret`），审计事件只记「有没有改」不落原文，
+    日志纪律（PRD 10.1）本来就不记 key。
+
+    生效语义见 :mod:`hub.llm.runtime`：DB 有值以 DB 为准，否则回落 env。
+    """
+
+    __tablename__ = "llm_config"
+    __table_args__ = (
+        CheckConstraint("id = 1", name="ck_llm_config_singleton"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    model: Mapped[str] = mapped_column(String(64), nullable=False)
+    base_url: Mapped[str] = mapped_column(String(255), nullable=False)
+    api_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow,
+                                                 nullable=False)
+    updated_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"),
+                                                   nullable=True)

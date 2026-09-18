@@ -1,40 +1,124 @@
 {% extends "base.html" %}
+{% from "_macros.html" import ts, empty_state %}
 {% block title %}审计查询 - MCP 决策中台{% endblock %}
 {% block content %}
-<h1>审计查询</h1>
-<p>审计记录为只读，不可编辑或删除；导出功能当前不可用。</p>
-{% if error %}<p class="error">{{ error }}</p>{% endif %}
-<form method="get" action="/admin/audit">
-  <label>账号 <input type="text" name="actor" value="{{ filters.actor }}"></label>
-  <label>事项 ID <input type="text" name="matter_id" value="{{ filters.matter_id }}"></label>
-  <label>事件类型 <input type="text" name="event_type" value="{{ filters.event_type }}"></label>
-  <label>起始日期 <input type="date" name="since" value="{{ filters.since }}"></label>
-  <label>截止日期 <input type="date" name="until" value="{{ filters.until }}"></label>
-  <input type="hidden" name="offset" value="0">
-  <button type="submit">筛选</button>
-</form>
-{% if rows %}
-<table>
-  <tr><th>时间(UTC)</th><th>账号</th><th>事件类型</th><th>事项</th><th>详情</th></tr>
-  {% for row in rows %}
-  <tr>
-    <td>{{ row.created_at.strftime("%Y-%m-%dT%H:%M:%SZ") }}</td>
-    <td>{{ usernames.get(row.actor_user_id, "-") }}</td>
-    <td><code>{{ row.event_type }}</code></td>
-    <td>{% if row.matter_id %}<a href="/matters/{{ row.matter_id }}">{{ row.matter_id }}</a>{% else %}-{% endif %}</td>
-    <td><code>{{ row.detail | tojson if row.detail else "-" }}</code></td>
-  </tr>
-  {% endfor %}
-</table>
-{% else %}
-<p>无匹配审计记录。</p>
+
+<div class="page-head">
+  <nav class="crumbs" aria-label="面包屑">
+    <span>管理</span>
+    <span class="sep">/</span>
+    <span>审计查询</span>
+  </nav>
+  <h1>审计查询</h1>
+  <p class="lede mb-0">审计记录为只读，不可编辑或删除；导出功能当前不可用。</p>
+</div>
+
+<nav class="chips" aria-label="管理页导航">
+  <a class="chip" href="/admin/invitations">邀请管理</a>
+  <a class="chip" href="/admin/audit" aria-current="page">审计查询</a>
+  <a class="chip" href="/admin/ops">运维状态</a>
+  <a class="chip" href="/admin/model">模型配置</a>
+</nav>
+
+{% if error %}
+<div class="alert alert--error" role="alert"><div class="alert-body">{{ error }}</div></div>
 {% endif %}
-<p>
-{% if offset > 0 %}
-<a href="/admin/audit?actor={{ filters.actor }}&matter_id={{ filters.matter_id }}&event_type={{ filters.event_type }}&since={{ filters.since }}&until={{ filters.until }}&offset={{ [offset - 50, 0] | max }}">上一页</a>
-{% endif %}
-{% if has_more %}
-<a href="/admin/audit?actor={{ filters.actor }}&matter_id={{ filters.matter_id }}&event_type={{ filters.event_type }}&since={{ filters.since }}&until={{ filters.until }}&offset={{ offset + 50 }}">下一页</a>
-{% endif %}
-</p>
+
+<div class="panel mb-16">
+  <div class="panel-head"><h2>筛选条件</h2></div>
+  <div class="panel-body">
+    <form method="get" action="/admin/audit">
+      <div class="grid grid--3">
+        <label class="field">
+          <span class="field-label">账号</span>
+          <input class="input mono" type="text" name="actor" value="{{ filters.actor }}"
+                 autocomplete="off" spellcheck="false">
+        </label>
+        <label class="field">
+          <span class="field-label">事项 ID</span>
+          <input class="input mono" type="text" name="matter_id" value="{{ filters.matter_id }}"
+                 autocomplete="off" spellcheck="false">
+        </label>
+        <label class="field">
+          <span class="field-label">事件类型</span>
+          <input class="input mono" type="text" name="event_type" value="{{ filters.event_type }}"
+                 autocomplete="off" spellcheck="false">
+        </label>
+        <label class="field">
+          <span class="field-label">起始日期</span>
+          <input class="input" type="date" name="since" value="{{ filters.since }}">
+        </label>
+        <label class="field">
+          <span class="field-label">截止日期</span>
+          <input class="input" type="date" name="until" value="{{ filters.until }}">
+        </label>
+      </div>
+      <input type="hidden" name="offset" value="0">
+      <div class="form-actions">
+        <button type="submit" class="btn btn--primary" data-busy-label="查询中">筛选</button>
+        <a class="btn btn--ghost" href="/admin/audit">清空条件</a>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel-head">
+    <h2>记录</h2>
+    <span class="spacer"></span>
+    <span class="ticker">
+      {% if offset > 0 %}第 <b>{{ offset // 50 + 1 }}</b> 页{% else %}首页{% endif %}
+    </span>
+  </div>
+
+  {% if rows %}
+  <div class="table-wrap">
+    <table class="table table--cards">
+      <thead>
+        <tr>
+          <th>时间(UTC)</th>
+          <th>账号</th>
+          <th>事件类型</th>
+          <th>事项</th>
+          <th>详情</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+        <tr>
+          <td data-label="时间(UTC)" class="mono nowrap">{{ ts(row.created_at) }}</td>
+          <td data-label="账号">{{ usernames.get(row.actor_user_id, "-") }}</td>
+          <td data-label="事件类型"><code class="nowrap">{{ row.event_type }}</code></td>
+          <td data-label="事项" class="mono">
+            {% if row.matter_id %}
+            <a href="/matters/{{ row.matter_id }}">{{ row.matter_id }}</a>
+            {% else %}<span class="dim">-</span>{% endif %}
+          </td>
+          <td data-label="详情" class="wrap-any">
+            <code class="plain">{{ row.detail | tojson if row.detail else "-" }}</code>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="panel-foot row">
+    {% if offset > 0 %}
+    <a class="btn btn--sm"
+       href="/admin/audit?actor={{ filters.actor }}&matter_id={{ filters.matter_id }}&event_type={{ filters.event_type }}&since={{ filters.since }}&until={{ filters.until }}&offset={{ [offset - 50, 0] | max }}">上一页</a>
+    {% endif %}
+    <span class="spacer"></span>
+    {% if has_more %}
+    <a class="btn btn--sm"
+       href="/admin/audit?actor={{ filters.actor }}&matter_id={{ filters.matter_id }}&event_type={{ filters.event_type }}&since={{ filters.since }}&until={{ filters.until }}&offset={{ offset + 50 }}">下一页</a>
+    {% endif %}
+  </div>
+
+  {% else %}
+    {{ empty_state("无匹配审计记录", "调整筛选条件后重试，或清空条件查看全部记录。",
+                   "/admin/audit", "清空条件") }}
+  {% endif %}
+</div>
+
 {% endblock %}

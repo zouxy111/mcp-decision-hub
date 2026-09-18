@@ -8,6 +8,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from hub.api.accounts import seed_admin
 from hub.api.errors import ApiError, error_payload
@@ -15,7 +16,7 @@ from hub.background import drive_worker, resume_worker, timeout_worker
 from hub.config import Settings, load_settings
 from hub.db.session import init_db, make_engine, make_session_factory
 from hub.domain.rate_limit import RateLimiter
-from hub.llm.client import DeepSeekClient
+from hub.llm.runtime import RuntimeLlm
 from hub.web import (
     routes_admin,
     routes_agent_rest,
@@ -32,13 +33,14 @@ except ImportError:
     create_mcp_asgi = None
 
 
-def _make_llm(settings: Settings):
-    return DeepSeekClient(
-        api_key=settings.deepseek_api_key,
-        base_url=settings.llm_base_url,
-        model=settings.llm_model,
-        timeout_seconds=settings.llm_request_timeout_seconds,
-    )
+def _make_llm(settings: Settings, session_factory):
+    """构造 LLM 门面（不是构造 client，见 :class:`hub.llm.runtime.RuntimeLlm`）。
+
+    这里传 ``session_factory`` 而不是把 ``api_key`` / ``model`` 读死：整条链路
+    （``app.state.llm`` + 三个后台 worker）拿到的都是这一个对象，它每次调用前
+    解析一次生效配置 —— 所以页面保存后无需重启进程，后续调用即按新配置走。
+    """
+    return RuntimeLlm(session_factory, settings)
 
 
 def _find_interrupted(session_factory) -> list[str]:
@@ -61,7 +63,7 @@ def create_app(settings: Settings | None = None, *, llm=None) -> FastAPI:
     init_db(engine)
     session_factory = make_session_factory(engine)
     if llm is None:
-        llm = _make_llm(settings)
+        llm = _make_llm(settings, session_factory)
     drive_queue: asyncio.Queue[str] = asyncio.Queue()
     resume_queue: asyncio.Queue[tuple[str, str]] = asyncio.Queue()
 
@@ -141,6 +143,9 @@ def create_app(settings: Settings | None = None, *, llm=None) -> FastAPI:
     app.include_router(routes_admin.router)
     app.include_router(routes_api.router)
     app.include_router(routes_agent_rest.router)
+    # 前端静态资源同源托管：模板只需 /static/console.css 与 /static/console.js，
+    # 不再依赖 unpkg 等外部 CDN（此前 htmx 走公网，网络不通即静默失效）。
+    app.mount("/static", StaticFiles(directory="hub/web/static"), name="static")
     if mcp_asgi is not None:
         app.mount("/mcp", mcp_asgi)
     return app

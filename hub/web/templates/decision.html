@@ -1,54 +1,204 @@
 {% extends "base.html" %}
+{% from "_macros.html" import state_badge, ts %}
 {% block title %}决议拍板 - {{ matter.title }}{% endblock %}
 {% block content %}
-<h1>决议草案 — {{ matter.title }}</h1>
-<p>状态：<strong>{{ matter.status }}</strong> ｜ 决议状态：{{ resolution.status }} ｜ 版本：{{ resolution.version }}</p>
-{% if error %}<p class="error">{{ error }}</p>{% endif %}
-<h2>建议</h2>
-<p>{{ resolution.recommendation }}</p>
-<h2>依据</h2>
-<p>{{ resolution.rationale }}</p>
-<h2>风险</h2>
-<ul>{% for item in resolution.risks %}<li>{{ item }}</li>{% endfor %}</ul>
-<h2>分歧</h2>
-<ul>{% for item in resolution.divergences %}<li>{{ item }}</li>{% endfor %}</ul>
-<p>引用轮次：{% for n in resolution.cited_rounds %}第 {{ n }} 轮 {% endfor %}</p>
-<p><a href="/matters/{{ matter.id }}">返回事项详情（查看各轮证据）</a></p>
+
+<div class="page-head page-head--row">
+  <div>
+    <nav class="crumbs" aria-label="面包屑">
+      <a href="/dashboard">总览</a>
+      <span class="sep">/</span>
+      <a href="/matters/{{ matter.id }}">{{ matter.title }}</a>
+      <span class="sep">/</span>
+      <span>决议拍板</span>
+    </nav>
+    <h1>决议草案 — {{ matter.title }}</h1>
+  </div>
+  <div class="row">
+    {{ state_badge(matter.status) }}
+  </div>
+</div>
+
+{% if error %}
+<div class="alert alert--error" role="alert"><div class="alert-body">{{ error }}</div></div>
+{% endif %}
+
+<div class="meta mb-16">
+  <div class="meta-item">
+    <div class="meta-key">事项状态</div>
+    <div class="meta-val">{{ matter.status }}</div>
+  </div>
+  <div class="meta-item">
+    <div class="meta-key">决议状态</div>
+    <div class="meta-val">{{ resolution.status }}</div>
+  </div>
+  <div class="meta-item">
+    <div class="meta-key">版本</div>
+    <div class="meta-val mono">版本：{{ resolution.version }}</div>
+  </div>
+  {% if resolution.cited_rounds %}
+  <div class="meta-item">
+    <div class="meta-key">引用轮次</div>
+    <div class="meta-val mono">
+      {% for n in resolution.cited_rounds %}第 {{ n }} 轮{% if not loop.last %} · {% endif %}{% endfor %}
+    </div>
+  </div>
+  {% endif %}
+</div>
+
+{# --------------------------------------------------------------- 建议 #}
+<div class="panel mb-16">
+  <div class="panel-head">
+    <h2>建议</h2>
+    <span class="spacer"></span>
+    <span class="ticker">决议草案</span>
+  </div>
+  <div class="panel-body">
+    <p class="pre-wrap mb-0" style="font-size:15px;line-height:1.7">{{ resolution.recommendation }}</p>
+  </div>
+</div>
+
+{# ----------------------------------------------------------- 依据 #}
+<div class="panel mb-16">
+  <div class="panel-head"><h2>依据</h2></div>
+  <div class="panel-body">
+    <p class="pre-wrap mb-0">{{ resolution.rationale }}</p>
+  </div>
+</div>
+
+<div class="grid grid--2 mb-16">
+  <div class="panel">
+    <div class="panel-head"><h2>风险</h2></div>
+    <div class="panel-body">
+      {% if resolution.risks %}
+      <ul class="digest-list">
+        {% for item in resolution.risks %}<li>{{ item }}</li>{% endfor %}
+      </ul>
+      {% else %}<p class="digest-empty mb-0">无</p>{% endif %}
+    </div>
+  </div>
+  <div class="panel">
+    <div class="panel-head"><h2>分歧</h2></div>
+    <div class="panel-body">
+      {% if resolution.divergences %}
+      <ul class="digest-list">
+        {% for item in resolution.divergences %}<li>{{ item }}</li>{% endfor %}
+      </ul>
+      {% else %}<p class="digest-empty mb-0">无</p>{% endif %}
+    </div>
+  </div>
+</div>
+
+<p class="mb-16">
+  <a class="btn btn--sm btn--ghost" href="/matters/{{ matter.id }}">返回事项详情（查看各轮证据）</a>
+</p>
+
 {% if resolution.final_text %}
-<h2>最终决议（{{ resolution.status }}）</h2>
-<p style="white-space: pre-wrap">{{ resolution.final_text }}</p>
-{% if resolution.decision_rationale %}<p>拍板理由：{{ resolution.decision_rationale }}</p>{% endif %}
+<div class="panel mb-16">
+  <div class="panel-head">
+    <h2>最终决议</h2>
+    {{ state_badge(resolution.status) }}
+  </div>
+  <div class="panel-body">
+    <p class="pre-wrap mb-16">{{ resolution.final_text }}</p>
+    {% if resolution.decision_rationale %}
+    <div class="meta-key">拍板理由</div>
+    <p class="mb-0">{{ resolution.decision_rationale }}</p>
+    {% endif %}
+  </div>
+</div>
 {% endif %}
+
+{# --------------------------------------------------------------- 拍板 #}
 {% if can_decide %}
-<h2>拍板</h2>
-<form method="post" action="/matters/{{ matter.id }}/decision">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
-  <input type="hidden" name="action" value="decide">
-  <input type="hidden" name="version" value="{{ resolution.version }}">
-  <label><input type="radio" name="decision" value="approved" checked> 通过</label>
-  <label><input type="radio" name="decision" value="modified"> 修改通过</label>
-  <label><input type="radio" name="decision" value="rejected"> 驳回</label>
-  <p><label>最终文本（修改通过必填）：<br>
-    <textarea name="final_text" rows="6" cols="80"></textarea></label></p>
-  <p><label>理由（修改通过/驳回必填）：<br>
-    <textarea name="rationale" rows="3" cols="80"></textarea></label></p>
-  <button type="submit">提交拍板</button>
-</form>
+<div class="panel">
+  <div class="panel-head">
+    <h2>拍板</h2>
+    <span class="spacer"></span>
+    <span class="ticker">不可逆 · 会写入最终决议</span>
+  </div>
+  <div class="panel-body">
+    <form method="post" action="/matters/{{ matter.id }}/decision"
+          data-confirm="拍板后该事项将进入终态，决议内容不可再修改。确认提交？"
+          data-confirm-title="提交拍板">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+      <input type="hidden" name="action" value="decide">
+      <input type="hidden" name="version" value="{{ resolution.version }}">
+
+      <fieldset>
+        <legend>决定</legend>
+        <div class="check-list" style="max-height:none">
+          <label class="check-row">
+            <input type="radio" name="decision" value="approved" checked>
+            <span class="check-row-main"><span class="check-name">通过</span></span>
+          </label>
+          <label class="check-row">
+            <input type="radio" name="decision" value="modified">
+            <span class="check-row-main"><span class="check-name">修改通过</span></span>
+          </label>
+          <label class="check-row">
+            <input type="radio" name="decision" value="rejected">
+            <span class="check-row-main"><span class="check-name">驳回</span></span>
+          </label>
+        </div>
+      </fieldset>
+
+      <label class="field">
+        <span class="field-label">最终文本（修改通过必填）</span>
+        <textarea class="textarea" name="final_text" rows="6"></textarea>
+      </label>
+
+      <label class="field">
+        <span class="field-label">理由（修改通过/驳回必填）</span>
+        <textarea class="textarea" name="rationale" rows="3"></textarea>
+      </label>
+
+      <div class="form-actions">
+        <button type="submit" class="btn btn--primary" data-busy-label="提交中">提交拍板</button>
+        <a class="btn btn--ghost" href="/matters/{{ matter.id }}">返回事项详情</a>
+      </div>
+    </form>
+  </div>
+</div>
+
 {% elif provisional_choice %}
-<h2>暂定收敛：请选择下一步</h2>
-<form method="post" action="/matters/{{ matter.id }}/decision" style="display:inline">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
-  <input type="hidden" name="action" value="continue_probing">
-  <input type="hidden" name="version" value="{{ resolution.version }}">
-  <button type="submit">继续追问（开启新一轮）</button>
-</form>
-<form method="post" action="/matters/{{ matter.id }}/decision" style="display:inline">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
-  <input type="hidden" name="action" value="accept">
-  <input type="hidden" name="version" value="{{ resolution.version }}">
-  <button type="submit">进入拍板</button>
-</form>
+<div class="panel">
+  <div class="panel-head">
+    <h2>暂定收敛：请选择下一步</h2>
+    <span class="spacer"></span>
+    <span class="ticker">轮次未用尽</span>
+  </div>
+  <div class="panel-body">
+    <p class="small muted mb-16">
+      本轮判定为暂定收敛。可以再开一轮追问补齐盲区，也可以直接进入拍板。
+    </p>
+    <div class="row">
+
+      <form method="post" action="/matters/{{ matter.id }}/decision">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+        <input type="hidden" name="action" value="continue_probing">
+        <input type="hidden" name="version" value="{{ resolution.version }}">
+        <button type="submit" class="btn" data-busy-label="处理中">继续追问（开启新一轮）</button>
+      </form>
+
+      <form method="post" action="/matters/{{ matter.id }}/decision">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+        <input type="hidden" name="action" value="accept">
+        <input type="hidden" name="version" value="{{ resolution.version }}">
+        <button type="submit" class="btn btn--primary" data-busy-label="处理中">进入拍板</button>
+      </form>
+
+    </div>
+  </div>
+</div>
+
 {% else %}
-<p>决议当前为只读状态。</p>
+<div class="alert alert--info" role="status">
+  <div class="alert-body">
+    决议当前为只读状态。
+    <a href="/matters/{{ matter.id }}">返回事项详情</a>
+  </div>
+</div>
 {% endif %}
+
 {% endblock %}

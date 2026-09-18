@@ -1,21 +1,104 @@
 {% extends "base.html" %}
 {% block title %}登录 - MCP 决策中台{% endblock %}
+{% block wrap_class %}wrap--auth{% endblock %}
 {% block content %}
-<h1>登录</h1>
-<div class="notice">{{ llm_notice }}</div>
-{% if error %}<p class="error">{{ error }}</p>{% endif %}
-<form method="post" action="/login">
-  <label>用户名 <input name="username" required></label>
-  <label>密码 <input name="password" type="password" required></label>
-  <button type="submit">登录</button>
-</form>
-<hr>
-<h2>首次使用（邀请凭证）</h2>
-{% if invite_error %}<p class="error">{{ invite_error }}</p>{% endif %}
-<form method="post" action="/invite/consume">
-  <label>用户名 <input name="username" required></label>
-  <label>邀请凭证 <input name="invitation_token" required></label>
-  <label>设置新密码 <input name="new_password" type="password" required></label>
-  <button type="submit">激活并登录</button>
-</form>
+
+<div class="auth">
+
+  {# 左栏：先说清这是什么、数据边界在哪，再要凭证。
+     刻意不把登录框摆在正中——居中的孤岛是没有版面的做法。 #}
+  <div class="auth-intro">
+    <h1>把多方立场，<br>收敛成一次可追溯的拍板。</h1>
+
+    <p class="auth-lede">
+      围绕同一个决策事项，参与方各自提交立场；系统归并共识、分歧与盲区，
+      收敛后开放拍板，决议与过程一并留痕。
+    </p>
+
+    <ol class="auth-steps">
+      <li>事项发起，系统按议题生成第一轮问题</li>
+      <li>参与方提交立场，系统归并共识 / 分歧 / 盲区</li>
+      <li>收敛后开放拍板，决议与全部过程留痕可审</li>
+    </ol>
+
+    <div class="alert alert--warn" role="note">
+      <div class="alert-body">
+        <div class="alert-title">数据边界</div>
+        {{ llm_notice }}
+      </div>
+    </div>
+  </div>
+
+  {# 右栏：登录 + 邀请激活，两块之间靠一条线分开 #}
+  <div class="auth-panel">
+
+    <div class="panel">
+      <div class="panel-head">
+        <h2>登录</h2>
+        <span class="spacer"></span>
+        <span class="ticker">平台账号</span>
+      </div>
+      <div class="panel-body">
+
+        {% if error %}
+        <div class="alert alert--error" role="alert">
+          <div class="alert-body">{{ error }}</div>
+        </div>
+        {% endif %}
+
+        <form method="post" action="/login">
+          <label class="field">
+            <span class="field-label">用户名</span>
+            <input class="input" name="username" required autocomplete="username" autofocus>
+          </label>
+          <label class="field">
+            <span class="field-label">密码</span>
+            <input class="input" name="password" type="password" required
+                   autocomplete="current-password">
+          </label>
+          <button type="submit" class="btn btn--primary btn--block mt-16"
+                  data-busy-label="登录中">登录</button>
+        </form>
+
+      </div>
+    </div>
+
+    <div class="mt-24">
+      <details class="disclose">
+        <summary>首次使用？用邀请凭证激活账号</summary>
+        <div class="disclose-body">
+
+          {% if invite_error %}
+          <div class="alert alert--error" role="alert">
+            <div class="alert-body">{{ invite_error }}</div>
+          </div>
+          {% endif %}
+
+          <form method="post" action="/invite/consume">
+            <label class="field">
+              <span class="field-label">用户名</span>
+              <input class="input" name="username" required autocomplete="username">
+            </label>
+            <label class="field">
+              <span class="field-label">邀请凭证</span>
+              <input class="input mono" name="invitation_token" required autocomplete="off"
+                     spellcheck="false">
+              <span class="field-hint">由管理员创建邀请时生成，一次性使用，有效期 7 天。</span>
+            </label>
+            <label class="field">
+              <span class="field-label">设置新密码</span>
+              <input class="input" name="new_password" type="password" required
+                     autocomplete="new-password" minlength="8">
+            </label>
+            <button type="submit" class="btn btn--block mt-16"
+                    data-busy-label="激活中">激活并登录</button>
+          </form>
+
+        </div>
+      </details>
+    </div>
+
+  </div>
+
+</div>
 {% endblock %}

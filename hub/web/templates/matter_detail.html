@@ -1,187 +1,431 @@
 {% extends "base.html" %}
+{% from "_macros.html" import state_badge, ts %}
 {% block title %}{{ matter.title }} - MCP 决策中台{% endblock %}
 {% block content %}
-<h1>{{ matter.title }}</h1>
-<p>状态：<strong>{{ matter.status }}</strong> ｜ LLM 服务商：{{ llm_provider }}</p>
-<p{% if at_round_limit %} class="error"{% endif %}>
-  累计轮次：{{ rounds_used }} / 自动推进上限：{{ auto_limit }}{% if at_round_limit %}（已达上限）{% endif %}
-</p>
-<p>目标：{{ matter.goal }}</p>
-{% if matter.background %}<p>背景：{{ matter.background }}</p>{% endif %}
-{% if error %}<p class="error">{{ error }}</p>{% endif %}
-{% if matter.status == "in_progress" and round_views and round_views[0].round.status == "generating" %}
-<p><strong>正在生成第一轮问题（平台大模型处理中，请稍后刷新）。</strong></p>
+
+<div class="page-head page-head--row">
+  <div>
+    <nav class="crumbs" aria-label="面包屑">
+      <a href="/dashboard">总览</a>
+      <span class="sep">/</span>
+      <span>事项详情</span>
+    </nav>
+    <h1>{{ matter.title }}</h1>
+  </div>
+  <div class="row">
+    {{ state_badge(matter.status,
+                   live=(matter.status == "in_progress" or matter.status == "collecting")) }}
+  </div>
+</div>
+
+{% if error %}
+<div class="alert alert--error" role="alert"><div class="alert-body">{{ error }}</div></div>
 {% endif %}
+
+{% if matter.status == "in_progress" and round_views
+      and round_views[0].round.status == "generating" %}
+<div class="alert alert--info" role="status"
+     data-autorefresh data-autorefresh-interval="6000" data-autorefresh-max="40">
+  <div class="alert-body">
+    <div class="alert-title">正在生成第一轮问题</div>
+    平台大模型处理中，请稍后刷新。本页会自动检测，生成完成后无需手动操作。
+  </div>
+</div>
+{% endif %}
+
 {% if draft_pending_generation %}
-<p><strong>平台正在生成决议草案（处理中），请稍后刷新。</strong></p>
+<div class="alert alert--info" role="status"
+     data-autorefresh data-autorefresh-interval="6000" data-autorefresh-max="40">
+  <div class="alert-body">
+    <div class="alert-title">正在生成决议草案</div>
+    平台正在生成决议草案（处理中），请稍后刷新。
+  </div>
+</div>
 {% endif %}
+
 {% if matter.status == "blocked" %}
-<p class="error">事项已阻塞：{{ matter.blocked_reason or "原因未记录" }}</p>
+<div class="alert alert--error" role="alert">
+  <div class="alert-body">
+    <div class="alert-title">事项已阻塞</div>
+    {{ matter.blocked_reason or "原因未记录" }}
+  </div>
+</div>
 {% endif %}
+
+<div class="meta mb-16">
+  <div class="meta-item">
+    <div class="meta-key">状态</div>
+    <div class="meta-val">{{ state_badge(matter.status) }}</div>
+  </div>
+  <div class="meta-item">
+    <div class="meta-key">累计轮次</div>
+    <div class="meta-val mono">{{ rounds_used }}</div>
+  </div>
+  <div class="meta-item">
+    <div class="meta-key">自动推进上限</div>
+    <div class="meta-val mono">{{ auto_limit }}{% if at_round_limit %} · 已达上限{% endif %}</div>
+  </div>
+  <div class="meta-item">
+    <div class="meta-key">LLM 服务商</div>
+    <div class="meta-val">{{ llm_provider }}</div>
+  </div>
+</div>
+
+{# ----------------------------------------------------------- 下一步操作 #}
+{% if can_continue or can_cancel or can_draft_from_blocked
+      or (is_initiator and matter.status == "draft") %}
+<div class="panel mb-16">
+  <div class="panel-head">
+    <h2>下一步操作</h2>
+    <span class="spacer"></span>
+    {% if not is_initiator %}<span class="ticker">仅发起人可推进</span>{% endif %}
+  </div>
+  <div class="panel-body">
+    <div class="form-actions form-actions--flush">
+
+      {% if is_initiator and matter.status == "draft" %}
+      <form method="post" action="/matters/{{ matter.id }}/start">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+        <button type="submit" class="btn btn--primary" data-busy-label="启动中">开始事项（生成第一轮任务）</button>
+      </form>
+      {% endif %}
+
+      {% if can_continue %}
+      <form method="post" action="/matters/{{ matter.id }}/continue">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+        <button type="submit" class="btn btn--primary" data-busy-label="处理中">{{ continue_label }}</button>
+      </form>
+      {% endif %}
+
+      {% if can_draft_from_blocked %}
+      <form method="post" action="/matters/{{ matter.id }}/draft-resolution">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+        <button type="submit" class="btn" data-busy-label="生成中">直接生成决议草案</button>
+      </form>
+      {% endif %}
+
+      <span class="spacer"></span>
+
+      {% if can_cancel %}
+      <form method="post" action="/matters/{{ matter.id }}/cancel"
+            data-confirm="确定要取消这个事项吗？取消后该事项进入 cancelled 终态，任务不可再提交。"
+            data-confirm-danger="1" data-confirm-title="取消事项">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+        <button type="submit" class="btn btn--danger">取消事项</button>
+      </form>
+      {% endif %}
+
+    </div>
+  </div>
+</div>
+{% endif %}
+
+{# --------------------------------------------------------------- 决议 #}
 {% if resolution and resolution.status == "pending_review" %}
-<h2>决议草案（版本 {{ resolution.version }}）</h2>
-<p><strong>建议：</strong>{{ resolution.recommendation }}</p>
-{% if is_initiator %}
-  {% if matter.status == "awaiting_decision" %}
-  <p><strong><a href="/matters/{{ matter.id }}/decision">前往拍板（通过 / 修改通过 / 驳回）</a></strong></p>
-  {% elif matter.status == "in_progress" %}
-  <p><strong>决议草案已生成（暂定收敛）。<a href="/matters/{{ matter.id }}/decision">请选择继续追问或进入拍板</a></strong></p>
-  {% endif %}
-{% else %}
-<p>决议草案已生成，等待发起人拍板。<a href="/matters/{{ matter.id }}/decision">查看草案（只读）</a></p>
-{% endif %}
+<div class="panel mb-16">
+  <div class="panel-head">
+    <h2>决议草案</h2>
+    <span class="spacer"></span>
+    <span class="ticker">版本 <b>{{ resolution.version }}</b></span>
+  </div>
+  <div class="panel-body">
+    <div class="meta-key">建议</div>
+    <p class="mb-16">{{ resolution.recommendation }}</p>
+
+    {% if is_initiator %}
+      {% if matter.status == "awaiting_decision" %}
+      <a class="btn btn--primary" href="/matters/{{ matter.id }}/decision">前往拍板（通过 / 修改通过 / 驳回）</a>
+      {% elif matter.status == "in_progress" %}
+      <p class="mb-8"><strong>决议草案已生成（暂定收敛）。</strong></p>
+      <a class="btn" href="/matters/{{ matter.id }}/decision">请选择继续追问或进入拍板</a>
+      {% endif %}
+    {% else %}
+    <p class="mb-8">决议草案已生成，等待发起人拍板。</p>
+    <a class="btn btn--sm" href="/matters/{{ matter.id }}/decision">查看草案（只读）</a>
+    {% endif %}
+  </div>
+</div>
 {% elif matter.status == "awaiting_decision" %}
-<p><strong>等待发起人对决议拍板。</strong></p>
+<div class="alert alert--info mb-16" role="status">
+  <div class="alert-body">等待发起人对决议拍板。</div>
+</div>
 {% endif %}
+
 {% if matter.status == "completed" and resolution %}
-<h2>最终决议（{{ resolution.status }}）</h2>
-<p style="white-space: pre-wrap">{{ resolution.final_text }}</p>
-{% if resolution.decision_rationale %}<p>拍板理由：{{ resolution.decision_rationale }}</p>{% endif %}
-<p>拍板时间(UTC)：{{ resolution.decided_at.strftime("%Y-%m-%dT%H:%M:%SZ") if resolution.decided_at else "-" }}</p>
+<div class="panel mb-16">
+  <div class="panel-head">
+    <h2>最终决议</h2>
+    {{ state_badge(resolution.status) }}
+  </div>
+  <div class="panel-body">
+    <p class="pre-wrap mb-16">{{ resolution.final_text }}</p>
+    {% if resolution.decision_rationale %}
+    <div class="meta-key">拍板理由</div>
+    <p>{{ resolution.decision_rationale }}</p>
+    {% endif %}
+    <p class="dim small mb-0">拍板时间(UTC)：{{ ts(resolution.decided_at) }}</p>
+  </div>
+</div>
 {% endif %}
-{% if can_continue %}
-<form method="post" action="/matters/{{ matter.id }}/continue">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
-  <button type="submit">{{ continue_label }}</button>
-</form>
-{% endif %}
-{% if can_cancel %}
-<form method="post" action="/matters/{{ matter.id }}/cancel" style="display:inline"
-      onsubmit="return confirm('确定取消该事项？取消后任务不可提交，事项进入 cancelled 终态。')">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
-  <button type="submit">取消事项</button>
-</form>
-{% endif %}
-{% if can_draft_from_blocked %}
-<form method="post" action="/matters/{{ matter.id }}/draft-resolution" style="display:inline">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
-  <button type="submit">直接生成决议草案</button>
-</form>
-{% endif %}
+
+{# ----------------------------------------------------------- 事项信息 #}
+<div class="panel mb-16">
+  <div class="panel-head"><h2>事项信息</h2></div>
+  <div class="panel-body">
+    <div class="meta-key">目标</div>
+    <p class="mb-16">{{ matter.goal }}</p>
+    {% if matter.background %}
+    <div class="meta-key">背景</div>
+    <p class="mb-0 pre-wrap">{{ matter.background }}</p>
+    {% endif %}
+  </div>
+</div>
+
+{# --------------------------------------------------------------- 换人 #}
 {% if can_reassign and reassignable_tasks %}
-<h2>换人（超时/阻塞出口）</h2>
-<p>可把当前开放轮中 pending/timeout 的任务换给新参与人（原任务只读为 reassigned，新任务截止时间自换人时刻重算）。</p>
-<table>
-  <tr><th>原参与人</th><th>任务状态</th><th>换给</th><th></th></tr>
-  {% for tv in reassignable_tasks %}
-  <tr>
-    <form method="post" action="/matters/{{ matter.id }}/reassign">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
-    <td>{{ tv.assignee }}</td>
-    <td>{{ tv.task.status }}</td>
-    <td>
-      <select name="new_user_id">
-        {% for u in active_users %}
-        <option value="{{ u.id }}">{{ u.username }}</option>
-        {% endfor %}
-      </select>
-      <input type="hidden" name="task_id" value="{{ tv.task.id }}">
-    </td>
-    <td><button type="submit">换人</button></td>
-    </form>
-  </tr>
-  {% endfor %}
-</table>
+<div class="panel mb-16">
+  <div class="panel-head">
+    <h2>换人（超时/阻塞出口）</h2>
+    <span class="spacer"></span>
+    <a class="btn btn--sm btn--ghost" href="/matters/{{ matter.id }}/audit">本事项审计</a>
+  </div>
+  <div class="panel-body">
+    <p class="small muted mb-16">
+      可把当前开放轮中 pending/timeout 的任务换给新参与人。原任务只读为 reassigned，
+      新任务截止时间自换人时刻重算。
+    </p>
+    <div class="table-wrap">
+      <table class="table table--cards">
+        <thead>
+          <tr><th>原参与人</th><th>任务状态</th><th>换给</th><th></th></tr>
+        </thead>
+        <tbody>
+          {% for tv in reassignable_tasks %}
+          <tr>
+            <td data-label="原参与人"><strong>{{ tv.assignee }}</strong></td>
+            <td data-label="任务状态">{{ state_badge(tv.task.status) }}</td>
+            <td data-label="换给">
+              <form method="post" action="/matters/{{ matter.id }}/reassign"
+                    class="row" style="gap:8px">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+                <input type="hidden" name="task_id" value="{{ tv.task.id }}">
+                <label class="sr-only" for="uid-{{ tv.task.id }}">换给</label>
+                <select class="select" id="uid-{{ tv.task.id }}" name="new_user_id">
+                  {% for u in active_users %}
+                  <option value="{{ u.id }}">{{ u.username }}</option>
+                  {% endfor %}
+                </select>
+                <button type="submit" class="btn btn--sm" data-busy-label="换人中">换人</button>
+              </form>
+            </td>
+            <td data-label=" "></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
 {% endif %}
-{% if is_initiator and matter.status == "draft" %}
-<form method="post" action="/matters/{{ matter.id }}/start">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
-  <button type="submit">开始事项（生成第一轮任务）</button>
-</form>
-{% endif %}
+
+{# --------------------------------------------------------------- 轮次 #}
+{% if round_views %}
+<div class="section-title">轮次记录</div>
 {% for rv in round_views %}
-<h2>第 {{ rv.round.round_number }} 轮（{{ rv.round.status }}）</h2>
-<p>进度：{{ rv.tasks_submitted }} / {{ rv.tasks_total }} 已提交</p>
-<ol>
-  {% for q in rv.round.questions %}
-  <li><code>{{ q.question_id }}</code> {{ q.content }}</li>
-  {% endfor %}
-</ol>
-{% if rv.summary %}
-<h3>本轮摘要 <strong>（收敛：{{ rv.summary.convergence }}）</strong></h3>
-<h4>共识点</h4>
-<ul>{% for item in rv.summary.consensus_points %}<li>{{ item }}</li>{% endfor %}</ul>
-<h4>分歧点</h4>
-<ul>{% for item in rv.summary.divergences %}<li>{{ item }}</li>{% endfor %}</ul>
-<h4>盲区</h4>
-<ul>{% for item in rv.summary.blind_spots %}<li>{{ item }}</li>{% endfor %}</ul>
-<h4>未解决问题</h4>
-<ul>{% for item in rv.summary.open_questions %}<li>{{ item }}</li>{% endfor %}</ul>
-{% elif rv.failed_summary %}
-<p class="error">摘要生成失败：{{ rv.failed_summary.error_code }}
-  （已重试 {{ rv.failed_summary.retry_count }} 次）</p>
-{% endif %}
-{% if is_initiator %}
-<h3>全部任务</h3>
-<table>
-  <tr><th>参与人</th><th>状态</th><th>截止(UTC)</th><th>提交时间(UTC)</th><th>回答</th></tr>
-  {% for tv in rv.task_views %}
-  <tr>
-    <td>{{ tv.assignee }}</td>
-    <td>{{ tv.task.status }}</td>
-    <td>{{ tv.task.deadline_at.strftime("%Y-%m-%dT%H:%M:%SZ") if tv.task.deadline_at else "-" }}</td>
-    <td>{{ tv.task.submitted_at.strftime("%Y-%m-%dT%H:%M:%SZ") if tv.task.submitted_at else "-" }}</td>
-    <td>
-      {% if tv.output %}
-      <details>
-        <summary>查看（approved_at={{ tv.output.approved_at.strftime("%Y-%m-%dT%H:%M:%SZ") }}）</summary>
-        <p>content_digest: <code>{{ tv.output.content_digest }}</code></p>
-        {% for a in tv.output.answers %}
-        <p><code>{{ a.question_id }}</code>：{{ a.content }}</p>
+{% set total = [rv.tasks_total, 1] | max %}
+<div class="round"
+     data-state="{% if rv.round.status == 'generating' %}active{% elif rv.round.status == 'open' %}active{% elif rv.round.status == 'failed' %}blocked{% else %}done{% endif %}">
+  <span class="round-node" aria-hidden="true"></span>
+
+  <div class="round-head">
+    <h2>第 {{ rv.round.round_number }} 轮</h2>
+    {{ state_badge(rv.round.status) }}
+    <span class="spacer"></span>
+    <span class="ticker">进度 {{ rv.tasks_submitted }} / {{ rv.tasks_total }} 已提交</span>
+  </div>
+
+  <div class="panel mb-16">
+    <div class="panel-body">
+
+      <div class="progress" role="img"
+           aria-label="本轮已提交 {{ rv.tasks_submitted }} / {{ rv.tasks_total }}">
+        {% for i in range(total) %}
+        <span class="progress-seg" {% if i < rv.tasks_submitted %}data-filled="1"{% endif %}></span>
         {% endfor %}
-        {% if tv.output.notes %}<p>备注：{{ tv.output.notes }}</p>{% endif %}
-      </details>
-      {% else %}-{% endif %}
-    </td>
-  </tr>
-  {% endfor %}
-</table>
-{% else %}
-<h3>我的任务</h3>
-{% if rv.task_views %}
-<table>
-  <tr><th>任务</th><th>状态</th><th>截止(UTC)</th><th>我的回答</th></tr>
-  {% for tv in rv.task_views %}
-  <tr>
-    <td><code>{{ tv.task.id }}</code></td>
-    <td>{{ tv.task.status }}</td>
-    <td>{{ tv.task.deadline_at.strftime("%Y-%m-%dT%H:%M:%SZ") if tv.task.deadline_at else "-" }}</td>
-    <td>
-      {% if tv.output %}
-      <details>
-        <summary>查看（approved_at={{ tv.output.approved_at.strftime("%Y-%m-%dT%H:%M:%SZ") }}）</summary>
-        <p>content_digest: <code>{{ tv.output.content_digest }}</code></p>
-        {% for a in tv.output.answers %}
-        <p><code>{{ a.question_id }}</code>：{{ a.content }}</p>
+      </div>
+
+      {% if rv.round.questions %}
+      <ol class="qlist mt-16">
+        {% for q in rv.round.questions %}
+        <li><span>{{ q.content }}</span>
+          <code class="plain" style="margin-left:auto;flex:none">{{ q.question_id }}</code></li>
         {% endfor %}
-        {% if tv.output.notes %}<p>备注：{{ tv.output.notes }}</p>{% endif %}
-      </details>
-      {% else %}-{% endif %}
-    </td>
-  </tr>
-  {% endfor %}
-</table>
-{% else %}
-<p>本轮没有分配给你的任务。</p>
-{% endif %}
-{% endif %}
+      </ol>
+      {% endif %}
+
+      {% if rv.summary %}
+      <div class="mt-24">
+        <div class="row row--between mb-8">
+          <h3>本轮摘要（收敛：{{ rv.summary.convergence }}）</h3>
+        </div>
+        <div class="digest">
+          <div class="digest-cell digest-cell--consensus">
+            <div class="digest-head">共识点</div>
+            {% if rv.summary.consensus_points %}
+            <ul class="digest-list">
+              {% for item in rv.summary.consensus_points %}<li>{{ item }}</li>{% endfor %}
+            </ul>
+            {% else %}<p class="digest-empty">无</p>{% endif %}
+          </div>
+          <div class="digest-cell digest-cell--divergence">
+            <div class="digest-head">分歧点</div>
+            {% if rv.summary.divergences %}
+            <ul class="digest-list">
+              {% for item in rv.summary.divergences %}<li>{{ item }}</li>{% endfor %}
+            </ul>
+            {% else %}<p class="digest-empty">无</p>{% endif %}
+          </div>
+          <div class="digest-cell digest-cell--blindspot">
+            <div class="digest-head">盲区</div>
+            {% if rv.summary.blind_spots %}
+            <ul class="digest-list">
+              {% for item in rv.summary.blind_spots %}<li>{{ item }}</li>{% endfor %}
+            </ul>
+            {% else %}<p class="digest-empty">无</p>{% endif %}
+          </div>
+          <div class="digest-cell digest-cell--open">
+            <div class="digest-head">未解决问题</div>
+            {% if rv.summary.open_questions %}
+            <ul class="digest-list">
+              {% for item in rv.summary.open_questions %}<li>{{ item }}</li>{% endfor %}
+            </ul>
+            {% else %}<p class="digest-empty">无</p>{% endif %}
+          </div>
+        </div>
+      </div>
+      {% elif rv.failed_summary %}
+      <div class="alert alert--error mt-16">
+        <div class="alert-body">
+          <div class="alert-title">摘要生成失败</div>
+          {{ rv.failed_summary.error_code }}（已重试 {{ rv.failed_summary.retry_count }} 次）
+        </div>
+      </div>
+      {% endif %}
+
+    </div>
+
+    {% if is_initiator %}
+    <div class="panel-foot">
+      <div class="section-title mb-8">全部任务</div>
+      <div class="table-wrap">
+        <table class="table table--cards">
+          <thead>
+            <tr>
+              <th>参与人</th><th>状态</th><th>截止(UTC)</th>
+              <th>提交时间(UTC)</th><th>回答</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for tv in rv.task_views %}
+            <tr>
+              <td data-label="参与人"><strong>{{ tv.assignee }}</strong></td>
+              <td data-label="状态">{{ state_badge(tv.task.status) }}</td>
+              <td data-label="截止(UTC)" class="mono nowrap">{{ ts(tv.task.deadline_at) }}</td>
+              <td data-label="提交时间(UTC)" class="mono nowrap">{{ ts(tv.task.submitted_at) }}</td>
+              <td data-label="回答">
+                {% if tv.output %}
+                <details class="disclose">
+                  <summary>查看（approved_at={{ ts(tv.output.approved_at) }}）</summary>
+                  <div class="disclose-body">
+                    <p class="mb-8">content_digest: <code>{{ tv.output.content_digest }}</code></p>
+                    {% for a in tv.output.answers %}
+                    <p class="mb-8"><code>{{ a.question_id }}</code>：{{ a.content }}</p>
+                    {% endfor %}
+                    {% if tv.output.notes %}<p class="mb-0">备注：{{ tv.output.notes }}</p>{% endif %}
+                  </div>
+                </details>
+                {% else %}<span class="dim">-</span>{% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    {% else %}
+    <div class="panel-foot">
+      <div class="section-title mb-8">我的任务</div>
+      {% if rv.task_views %}
+      <div class="table-wrap">
+        <table class="table table--cards">
+          <thead>
+            <tr><th>任务</th><th>状态</th><th>截止(UTC)</th><th>我的回答</th></tr>
+          </thead>
+          <tbody>
+            {% for tv in rv.task_views %}
+            <tr>
+              <td data-label="任务"><code class="plain">{{ tv.task.id }}</code></td>
+              <td data-label="状态">{{ state_badge(tv.task.status) }}</td>
+              <td data-label="截止(UTC)" class="mono nowrap">{{ ts(tv.task.deadline_at) }}</td>
+              <td data-label="我的回答">
+                {% if tv.output %}
+                <details class="disclose">
+                  <summary>查看（approved_at={{ ts(tv.output.approved_at) }}）</summary>
+                  <div class="disclose-body">
+                    <p class="mb-8">content_digest: <code>{{ tv.output.content_digest }}</code></p>
+                    {% for a in tv.output.answers %}
+                    <p class="mb-8"><code>{{ a.question_id }}</code>：{{ a.content }}</p>
+                    {% endfor %}
+                    {% if tv.output.notes %}<p class="mb-0">备注：{{ tv.output.notes }}</p>{% endif %}
+                  </div>
+                </details>
+                {% else %}<span class="dim">-</span>{% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <p class="small muted mb-0">本轮没有分配给你的任务。</p>
+      {% endif %}
+    </div>
+    {% endif %}
+
+  </div>
+</div>
 {% endfor %}
+{% endif %}
+
+{# --------------------------------------------------------------- 审计 #}
 {% if is_initiator %}
-<h2>本事项审计（最近 {{ audit_preview | length }} 条）</h2>
-{% if audit_preview %}
-<table>
-  <tr><th>时间(UTC)</th><th>账号</th><th>事件类型</th></tr>
-  {% for row in audit_preview %}
-  <tr>
-    <td>{{ row.created_at.strftime("%Y-%m-%dT%H:%M:%SZ") }}</td>
-    <td>{{ audit_usernames.get(row.actor_user_id, "-") }}</td>
-    <td><code>{{ row.event_type }}</code></td>
-  </tr>
-  {% endfor %}
-</table>
-<p><a href="/matters/{{ matter.id }}/audit">查看本事项全部审计</a></p>
-{% else %}
-<p>暂无审计记录。</p>
+<div class="panel">
+  <div class="panel-head">
+    <h2>本事项审计（最近 {{ audit_preview | length }} 条）</h2>
+    <span class="spacer"></span>
+    {% if audit_preview %}
+    <a class="btn btn--sm btn--ghost" href="/matters/{{ matter.id }}/audit">查看本事项全部审计</a>
+    {% endif %}
+  </div>
+  {% if audit_preview %}
+  <div class="table-wrap">
+    <table class="table table--cards table--narrow">
+      <thead><tr><th>时间(UTC)</th><th>账号</th><th>事件类型</th></tr></thead>
+      <tbody>
+        {% for row in audit_preview %}
+        <tr>
+          <td data-label="时间(UTC)" class="mono nowrap">{{ ts(row.created_at) }}</td>
+          <td data-label="账号">{{ audit_usernames.get(row.actor_user_id, "-") }}</td>
+          <td data-label="事件类型"><code>{{ row.event_type }}</code></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="panel-body"><p class="small muted mb-0">暂无审计记录。</p></div>
+  {% endif %}
+</div>
 {% endif %}
-{% endif %}
+
 {% endblock %}

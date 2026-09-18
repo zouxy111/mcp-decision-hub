@@ -97,6 +97,8 @@ def get_current_user(request: Request, db: Session = Depends(get_db)) -> User:
         raise HTTPException(status_code=303, headers={"Location": "/login"})
     if user.must_change_password and request.url.path != "/change-password":
         raise HTTPException(status_code=303, headers={"Location": "/change-password"})
+    # 供模板层（base.html 顶栏）读取当前身份；纯增量写入，不改变任何控制流
+    request.state.user = user
     return user
 
 
