@@ -42,6 +42,10 @@
       {# 分发点本身是匿名的静态页（不依赖会话，否则 curl 一行命令用不了），
          所以这里给的是外链式的直达入口，而不是一个走会话的 /skills 路由。 #}
       <a class="nav-link" href="/static/skills/">Skills</a>
+      {# wiki-knowledgebase-share-kit 是另一个独立产品站（wiki.tdp-demo.work），
+         自带介绍页 + 一键拉取命令；同源里没有它的内容，外链新开页即可，
+         不做应用内路由。 #}
+      <a class="nav-link" href="https://wiki.tdp-demo.work/" target="_blank" rel="noopener">wiki-knowledgebase-share-kit</a>
       {% if _u.is_admin %}
       <a class="nav-link" href="/admin/invitations"
          {% if _path == '/admin/invitations' %}aria-current="page"{% endif %}>邀请</a>
