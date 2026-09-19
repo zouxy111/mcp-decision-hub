@@ -39,6 +39,9 @@
          {% if _path == '/matters/new' %}aria-current="page"{% endif %}>新建事项</a>
       <a class="nav-link" href="/settings/agents"
          {% if _path.startswith('/settings/agents') %}aria-current="page"{% endif %}>Agent Token</a>
+      {# 分发点本身是匿名的静态页（不依赖会话，否则 curl 一行命令用不了），
+         所以这里给的是外链式的直达入口，而不是一个走会话的 /skills 路由。 #}
+      <a class="nav-link" href="/static/skills/">Skills</a>
       {% if _u.is_admin %}
       <a class="nav-link" href="/admin/invitations"
          {% if _path == '/admin/invitations' %}aria-current="page"{% endif %}>邀请</a>

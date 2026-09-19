@@ -145,7 +145,10 @@ def create_app(settings: Settings | None = None, *, llm=None) -> FastAPI:
     app.include_router(routes_agent_rest.router)
     # 前端静态资源同源托管：模板只需 /static/console.css 与 /static/console.js，
     # 不再依赖 unpkg 等外部 CDN（此前 htmx 走公网，网络不通即静默失效）。
-    app.mount("/static", StaticFiles(directory="hub/web/static"), name="static")
+    # html=True：目录请求解析 index.html。没有它时 /static/skills/ 与 /static/skills
+    # 都返回 404，只有写全 /static/skills/index.html 才打得开 —— skills 落地页
+    # 上线后被反馈「没看到」，这是原因之一。
+    app.mount("/static", StaticFiles(directory="hub/web/static", html=True), name="static")
     if mcp_asgi is not None:
         app.mount("/mcp", mcp_asgi)
     return app
