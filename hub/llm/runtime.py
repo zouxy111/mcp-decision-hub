@@ -30,8 +30,10 @@ from sqlalchemy.orm import Session, sessionmaker
 from hub.config import Settings
 from hub.db.models import LlmConfig as LlmConfigRow
 from hub.domain.timeutil import utcnow
-from hub.llm.client import DeepSeekClient
-from hub.llm.client import LLMError  # re-export：调用方只需 import 本模块
+from hub.llm.client import (
+    DeepSeekClient,
+    LLMError,  # re-export：调用方只需 import 本模块
+)
 
 logger = logging.getLogger(__name__)
 
