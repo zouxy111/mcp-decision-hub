@@ -95,6 +95,34 @@ docs/           产品文档与运维指南
 web-ui/         前端脚手架（React 19 + Vite 8，尚未接入后端）
 ```
 
+## 新功能：邀请链接系统 ✨
+
+支持通过邀请链接快速邀请团队成员加入项目或会议，包含两种协作模式：
+
+### 项目协作模式
+- 长期项目合作
+- 详细的成员背景收集
+- 明确的角色分工
+
+### 会议协作模式
+- 临时性会议
+- 快速接入
+- 实时立场同步
+
+**快速开始**：
+```python
+# 通过 MCP 工具创建邀请链接
+"为项目'产品研发'创建一个邀请链接，有效期 7 天，最多 10 人使用"
+
+# 返回邀请链接
+https://your-domain.com/invite/abc12345
+```
+
+详见：
+- [邀请链接系统实现文档](docs/invitation-system-implementation.md)
+- [邀请链接使用指南](docs/invitation-system-user-guide.md)
+- [多人协作完整报告](docs/multi-agent-collaboration-report.md)
+
 ## 文档
 
 - [产品需求文档（PRD）](docs/superpowers/specs/2026-08-11-mcp-decision-hub-prd.md)

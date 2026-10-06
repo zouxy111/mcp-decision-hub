@@ -14,3 +14,9 @@ data/
 .workbuddy/
 web-ui/node_modules/
 web-ui/dist/
+
+# 部署脚本含服务器明文密码，不入库
+/deploy_auto.exp
+/deploy_manual.sh
+/deploy_to_cloud.sh
+/fix_deploy.exp
