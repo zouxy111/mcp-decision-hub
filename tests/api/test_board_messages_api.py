@@ -281,12 +281,12 @@ def test_consume_endpoint_requires_self_intro(client, db_session):
     db_session.commit()
     assert isinstance(matter, Matter)
 
-    resp = client.post(f"/consume/{invitation.short_code}",
+    resp = client.post(f"/api/invitations/consume/{invitation.short_code}",
                        json={"username": "newbie", "email": "n@example.com",
                              "password": "pw123456"})
     assert resp.status_code == 422
 
-    resp = client.post(f"/consume/{invitation.short_code}",
+    resp = client.post(f"/api/invitations/consume/{invitation.short_code}",
                        json={"username": "newbie", "email": "n@example.com",
                              "password": "pw123456",
                              "display_name": "小新",
@@ -310,7 +310,7 @@ def test_validate_invitation_returns_agent_brief(client, db_session):
     )
     db_session.commit()
 
-    resp = client.get(f"/validate/{invitation.short_code}")
+    resp = client.get(f"/api/invitations/validate/{invitation.short_code}")
     assert resp.status_code == 200
     body = resp.json()
     assert body["valid"] is True

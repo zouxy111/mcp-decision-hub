@@ -14,7 +14,13 @@ from hub.domain import invitation_links
 from hub.domain.agent_brief import build_agent_brief
 from hub.web.deps import get_current_user, get_db, register_csrf_globals
 
-router = APIRouter(tags=["invitations"])
+# 2026-10-07：补``/api`` 前缀。此前 6 个 JSON 端点用的是裸路径
+# （``/create``、``/validate/{code}``、``/{id}/revoke``），与站点其他路由
+# 混在一起、且撞名风险高（``POST /create`` 挂在站点根上）。
+# 加前缀后前端按 ``/api/invitations/*`` 寻址，与 ``routes_api`` /
+# ``routes_auth_api`` 一致。旧路径不再暴露——本项目未带外部流量，
+# 且裸路径本身就不该是公开契约。
+router = APIRouter(prefix="/api/invitations", tags=["invitations"])
 templates = Jinja2Templates(directory="hub/web/templates")
 register_csrf_globals(templates)
 
@@ -49,6 +55,10 @@ class InvitationLinkResponse(BaseModel):
     max_uses: int | None
     used_count: int
     status: str
+    # 便捷字段：``status == "active"``。模型里只有 status（取值
+    # active/consumed/expired/revoked），没有 is_active 列——此前
+    # 响应模型声明了 is_active 又去读 invitation.is_active，创建与列举
+    # 两个端点必然 AttributeError。整个 HTTP 邀请接口此前从没能跑通。
     is_active: bool
     created_at: str
     invited_name: str | None = None
@@ -117,7 +127,7 @@ def create_invitation(
             status_code=status.HTTP_404_NOT_FOUND, detail="Matter not found"
         )
 
-    if matter.owner_id != user.id:
+    if matter.initiator_id != user.id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only matter owner can create invitations",
@@ -144,7 +154,7 @@ def create_invitation(
         max_uses=invitation.max_uses,
         used_count=invitation.used_count,
         status=invitation.status,
-        is_active=invitation.is_active,
+        is_active=invitation.status == "active",
         created_at=invitation.created_at.isoformat(),
         invited_name=invitation.invited_name,
     )
@@ -248,9 +258,13 @@ def consume_invitation_route(
 
 @router.get("/matter/{matter_id}", response_model=list[InvitationLinkResponse])
 def get_matter_invitations_route(
-    matter_id: int,
+    # Matter 主键是 ``mat_`` 前缀的字符串，声明成 int 会让 FastAPI 一律
+    # 返 422「unable to parse string as integer」——这个端点因此从未可用过。
+    matter_id: str,
     user: Annotated[User, Depends(get_current_user)],
     db: Annotated[Session, Depends(get_db)],
+    # 路由侧叫 include_inactive，服务侧的参数名是 include_revoked（排除
+    # status=revoked）。此前两边名字不一致 → TypeError，此端点从未跑通。
     include_inactive: bool = False,
 ):
     """获取事项的所有邀请链接。
@@ -264,14 +278,14 @@ def get_matter_invitations_route(
             status_code=status.HTTP_404_NOT_FOUND, detail="Matter not found"
         )
 
-    if matter.owner_id != user.id:
+    if matter.initiator_id != user.id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only matter owner can view invitations",
         )
 
     invitations = invitation_links.get_matter_invitations(
-        db, matter_id, include_inactive=include_inactive
+        db, matter_id, include_revoked=include_inactive
     )
 
     return [
@@ -285,7 +299,7 @@ def get_matter_invitations_route(
             max_uses=inv.max_uses,
             used_count=inv.used_count,
             status=inv.status,
-            is_active=inv.is_active,
+            is_active=inv.status == "active",
             created_at=inv.created_at.isoformat(),
             invited_name=inv.invited_name,
         )
@@ -317,7 +331,7 @@ def revoke_invitation_route(
             detail="Matter not found",
         )
 
-    if matter.owner_id != user.id and invitation.created_by != user.id:
+    if matter.initiator_id != user.id and invitation.created_by != user.id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only creator or matter owner can revoke invitation",
@@ -325,14 +339,30 @@ def revoke_invitation_route(
 
     invitation_links.revoke_invitation(db, invitation_id, user.id)
     db.commit()
-    
-    return {"success": True, "message": "Invitation revoked"}
+
+    # 回一份刷新后的链接状态：前端拿到就能直接更新列表，不用再发一次查询。
+    db.refresh(invitation)
+    return {
+        "success": True,
+        "message": "Invitation revoked",
+        "id": str(invitation.id),
+        "matter_id": invitation.matter_id,
+        "short_code": invitation.short_code,
+        "status": invitation.status,
+        "is_active": invitation.status == "active",
+        "used_count": invitation.used_count,
+    }
 
 
 # ==================== HTML Pages ====================
 
+# 邀请落地页是**发给外部人的公开链接**，必须挂在站点根（``/invite/{code}``）——
+# 收件人看邮件里的地址就落地，不带任何前缀。它与 ``/api/invitations/*``
+# 分属两个 router：JSON 给自家前端用，HTML 给被邀请人用。
+pages_router = APIRouter(tags=["invitation-pages"])
 
-@router.get("/invite/{short_code}", response_class=HTMLResponse)
+
+@pages_router.get("/invite/{short_code}", response_class=HTMLResponse)
 def show_invitation_page(
     short_code: str,
     request: Request,
@@ -403,7 +433,7 @@ def _invite_error(request: Request, db: Session, short_code: str, message: str):
     )
 
 
-@router.post("/invite/{short_code}/accept")
+@pages_router.post("/invite/{short_code}/accept")
 async def accept_invitation(
     short_code: str,
     request: Request,

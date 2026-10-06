@@ -167,6 +167,8 @@ def create_app(settings: Settings | None = None, *, llm=None) -> FastAPI:
     app.include_router(routes_api.router)
     app.include_router(routes_agent_rest.router)
     app.include_router(routes_invitation.router)
+    # 邀请落地页挂站点根（/invite/{code}），给被邀请人点开用
+    app.include_router(routes_invitation.pages_router)
     app.include_router(meetings.router)  # 会议模式 API
     # 前端静态资源同源托管：模板只需 /static/console.css 与 /static/console.js，
     # 不再依赖 unpkg 等外部 CDN（此前 htmx 走公网，网络不通即静默失效）。
