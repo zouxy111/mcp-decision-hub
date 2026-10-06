@@ -31,9 +31,11 @@ from hub.db.models import (
     Round,
     RoundSummary,
     Task,
+    Todo,
     User,
 )
 from hub.domain import board as board_svc
+from hub.domain import todos as todos_svc
 from hub.domain.approval import ApprovalWindowError, validate_approved_at
 from hub.domain.digest import compute_content_digest
 from hub.domain.idempotency import IdempotencyDecision, decide_idempotency
@@ -1226,3 +1228,403 @@ def mcp_request_board_reread(
     except board_svc.BoardError as e:
         raise _board_api_error(e) from e
     return _contract(RereadRequestOut, result, mode="json")
+
+
+# ==================================================================
+# 待办事项（v21，2026-10-07）
+#
+# owner 的原话是「我想知道什么可以直接问 agent」。这三个工具就是为此而立：
+# 信息已经落成结构化的 ``todos`` 表，agent 直接查字段，不需要把整段总结读进
+# 上下文自己理解。
+#
+# 返回值一律做成**结论形态**（完成率、天数、进度分组都算好），而不是把原始
+# 行丢给 agent 让它自己算 —— 它最常犯的错就是口径分歧和时区取整。
+# ==================================================================
+
+
+def _require_assignable(session: Session, *, matter_id: str, user_id: int,
+                        target_user_id: int) -> None:
+    """校验能不能把待办派给某人。
+
+    可指派范围 = 事项发起人 + 该事项的参与人。**发起人必须在内** ——
+    ``matter_participants`` 里默认没有发起人那行（他可以不参与作答），
+    但这不代表他不能给自己派活。
+    """
+    matter = session.get(Matter, matter_id)
+    if matter is not None and matter.initiator_id == target_user_id:
+        return
+    ok = session.execute(
+        select(MatterParticipant.user_id).where(
+            MatterParticipant.matter_id == matter_id,
+            MatterParticipant.user_id == target_user_id,
+        )
+    ).scalar_one_or_none()
+    if ok is None:
+        raise ApiError(400, "VALIDATION_FAILED",
+                       "assignee_id 不是该事项的参与人")
+
+
+def _require_matter_visible(
+    session: Session, *, matter_id: str, user_id: int, action: str,
+) -> None:
+    """待办相关入口的可见性校验：必须是事项发起人或参与人。
+
+    沿用既有 MCP 方法的错误口径（``get_matter_status`` 那套）：对外报
+    404「不存在或不可见」而不是 403，理由是 403 等于确认了这个事项存在，
+    让 agent 能拿它探测哪些事项存在。
+    """
+    matter = session.get(Matter, matter_id)
+    if matter is None:
+        raise ApiError(404, "RESOURCE_NOT_FOUND", "事项不存在")
+    involved = matter.initiator_id == user_id or is_participant(
+        session, matter_id=matter_id, user_id=user_id
+    )
+    if not involved:
+        audit.record_audit(
+            session, audit.FORBIDDEN_DENIED, actor_user_id=user_id,
+            matter_id=matter_id, detail={"action": action},
+        )
+        raise ApiError(404, "RESOURCE_NOT_FOUND", "事项不存在或不可见")
+
+
+def _todo_view(todo, *, matter_title: str | None = None,
+               assignee_name: str | None = None) -> dict:
+    """一条待办的对外形状。字段刻意保持精简：agent 读的是上下文预算。"""
+    return {
+        "todo_id": todo.id,
+        "title": todo.title,
+        "detail": todo.detail,
+        "status": todo.status,
+        "matter_id": todo.matter_id,
+        "matter_title": matter_title,
+        "assignee": assignee_name,
+        "due_at": iso_z(todo.due_at) if todo.due_at else None,
+        "days_left": todos_svc.days_left(todo),
+        "overdue": todos_svc.is_overdue(todo),
+        "needs_confirm": bool(todo.needs_confirm),
+        "source": todo.source,
+    }
+
+
+def _resolve_names(session: Session, user_ids) -> dict[int, str]:
+    """user id → 板上称呼。agent 汇报时说「alice」比说 user_id 有用得多。"""
+    ids = {i for i in user_ids if i is not None}
+    if not ids:
+        return {}
+    rows = session.execute(
+        select(MatterParticipant.user_id, User.username,
+               MatterParticipant.display_name)
+        .join(User, User.id == MatterParticipant.user_id)
+        .where(MatterParticipant.user_id.in_(ids))
+    ).all()
+    out: dict[int, str] = {}
+    for uid, username, display_name in rows:
+        out[uid] = display_name or username
+    # 不在参与人表里的（比如外部agent）退回 username
+    missing = ids - set(out)
+    if missing:
+        for uid, username in session.execute(
+            select(User.id, User.username).where(User.id.in_(missing))
+        ).all():
+            out[uid] = username
+    return out
+
+
+def mcp_list_todos(
+    session: Session,
+    settings: Settings,
+    *,
+    user_id: int,
+    assignee: str = "me",
+    status: str = "open",
+    matter_id: str | None = None,
+    include_unassigned: bool = False,
+    limit: int = 20,
+) -> dict:
+    """列待办。默认「我该做什么」：assignee=me + 未完成的。
+
+    返回里带 ``matter_title`` 和 ``days_left`` —— 这两个是agent 汇报时最需要
+    但不该自己算的（尤其 days_left 的取整方向和时区）。
+    """
+    stmt = select(Todo)
+
+    if assignee == "me":
+        stmt = stmt.where(Todo.assignee_id == user_id)
+    elif assignee == "none":
+        stmt = stmt.where(Todo.assignee_id.is_(None))
+    elif assignee == "all":
+        pass  # 不筛指派人
+    else:
+        raise ApiError(400, "VALIDATION_FAILED",
+                       "assignee 只能是 me / none / all")
+
+    if status != "all":
+        if status not in todos_svc.TODO_STATUSES:
+            raise ApiError(400, "VALIDATION_FAILED",
+                           f"status 只能是 {'/'.join(todos_svc.TODO_STATUSES)}/all")
+        stmt = stmt.where(Todo.status == status)
+
+    if matter_id is not None:
+        # 显式指定事项时校验可见性 —— 不校验的话 agent 能当越权探测器
+        _require_matter_visible(session, matter_id=matter_id, user_id=user_id,
+                                action="list_todos")
+        stmt = stmt.where(Todo.matter_id == matter_id)
+
+    # 未指派的只有在显式要时才带上：默认视图是「我的活」，混进一堆无主的
+    # 待办会让 agent 汇报失焦。assignee=none 查的就是无主的，别再滤一遍。
+    if not include_unassigned and assignee not in ("all", "none"):
+        stmt = stmt.where(Todo.assignee_id.is_not(None))
+
+    rows = session.scalars(
+        stmt.order_by(Todo.due_at.is_(None), Todo.due_at, Todo.created_at)
+        .limit(max(1, min(limit, 100)))
+    ).all()
+
+    names = _resolve_names(session, [t.assignee_id for t in rows])
+    titles = {
+        m.id: m.title for m in session.execute(
+            select(Matter).where(Matter.id.in_({t.matter_id for t in rows}))
+        ).scalars().all()
+    } if rows else {}
+
+    items = [
+        _todo_view(t, matter_title=titles.get(t.matter_id),
+                   assignee_name=names.get(t.assignee_id))
+        for t in rows
+    ]
+    overdue = [i for i in items if i["overdue"]]
+    return {
+        "todos": items,
+        "total": len(items),
+        "overdue_count": len(overdue),
+        # 有逾期就在最前面提示，让 agent 不用自己扫一遍
+        "hint": (f"有 {len(overdue)} 条已逾期，优先处理"
+                 if overdue else None),
+    }
+
+
+def mcp_get_project_status(
+    session: Session,
+    settings: Settings,
+    *,
+    user_id: int,
+    matter_id: str,
+) -> dict:
+    """项目全貌：进度、按人分组、近期变动、风险。
+
+    返回值已经是结论形态（百分比算好、按人分好组），agent 拿到就能直接
+    转述，不需要自己统计 —— 它自己算的话最常见的错就是分母口径和取整。
+    """
+    matter = session.get(Matter, matter_id)
+    if matter is None:
+        raise ApiError(404, "RESOURCE_NOT_FOUND", "事项不存在")
+    _require_matter_visible(session, matter_id=matter_id, user_id=user_id,
+                            action="get_project_status")
+
+    all_todos = session.scalars(
+        select(Todo).where(Todo.matter_id == matter_id)
+        .order_by(Todo.created_at.desc())
+    ).all()
+
+    done, pending, rate = todos_svc.completion_rate(all_todos)
+    # 与 completion_rate 同一口径：正式且非 dropped 的才算「这个项目的活」。
+    # AI 待确认的单独列在 awaiting_confirm，不混进 total —— 否则 agent 汇报的
+    # 总数和完成率对不上（它会拿 total 当分母去验 rate）。
+    counted = [t for t in all_todos
+               if todos_svc.is_official(t) and t.status != "dropped"]
+    awaiting = [t for t in all_todos if t.needs_confirm]
+    overdue = [t for t in all_todos if todos_svc.is_overdue(t)]
+
+    # 按人分组：agent 最常被问「谁手上的事最多 / 谁快逾期了」
+    names = _resolve_names(session, [t.assignee_id for t in all_todos])
+    by_person: dict[int, dict] = {}
+    for t in all_todos:
+        if t.assignee_id is None:
+            continue
+        bucket = by_person.setdefault(t.assignee_id, {
+            "assignee": names.get(t.assignee_id),
+            "open": 0, "overdue": 0, "done": 0,
+        })
+        if t.status == "done":
+            bucket["done"] += 1
+        elif t.status in todos_svc.ACTIVE_STATUSES and not t.needs_confirm:
+            bucket["open"] += 1
+        if todos_svc.is_overdue(t):
+            bucket["overdue"] += 1
+
+    # 近期变动：最近改动的 5 条，让 agent 能答「最近动了什么」
+    recent = [
+        {
+            "todo_id": t.id,
+            "title": t.title,
+            "status": t.status,
+            "assignee": names.get(t.assignee_id),
+            "updated_at": iso_z(t.updated_at) if t.updated_at else None,
+        }
+        for t in counted[:5]
+    ]
+
+    # 风险：取总结里的 open_questions（那本来就是「还没解决的问题」）
+    risks: list[str] = []
+    summary_row = session.get(board_summary_svc.BoardSummary, matter_id)
+    if summary_row is not None:
+        risks = [str(x) for x in (summary_row.open_questions or [])][:3]
+
+    unassigned = sum(1 for t in all_todos
+                     if t.assignee_id is None and t.status != "done")
+
+    return {
+        "matter": {
+            "matter_id": matter.id,
+            "title": matter.title,
+            "status": matter.status,
+            "goal": matter.goal,
+        },
+        "progress": {
+            "total": len(counted),
+            "done": done,
+            "pending": pending,
+            "completion_rate": rate,          # 百分比整数，已算好
+            "overdue_count": len(overdue),
+            "unassigned_count": unassigned,
+            "awaiting_confirm": len(awaiting),
+        },
+        "by_person": sorted(
+            by_person.values(),
+            key=lambda b: (-b["overdue"], -b["open"]),
+        ),
+        "recent_changes": recent,
+        "risks": risks,
+        # 一句话结论，agent 可以直接转述
+        "headline": (
+            f"共 {len(counted)} 项待办，已完成 {done} 项（{rate}%），"
+            f"未完成 {pending} 项"
+            + (f"，其中 {len(overdue)} 项已逾期" if overdue else "")
+            + (f"，{len(awaiting)} 项待确认" if awaiting else "")
+        ),
+    }
+
+
+def mcp_create_todo(
+    session: Session,
+    settings: Settings,
+    *,
+    user_id: int,
+    matter_id: str,
+    title: str,
+    detail: str | None = None,
+    assignee_id: int | None = None,
+    due_at: str | None = None,
+) -> dict:
+    """建一条待办。人和 agent 共用这个入口。
+
+    agent 建的待办**直接是正式的**（``needs_confirm=False``）：它是在人明确
+    指示下写的，不是模型自己猜的，没必要再让人确认一遍。
+    """
+    title = (title or "").strip()
+    if not title:
+        raise ApiError(400, "VALIDATION_FAILED", "待办标题不能为空")
+    if len(title) > 255:
+        raise ApiError(400, "VALIDATION_FAILED", "待办标题过长（上限 255）")
+
+    matter = session.get(Matter, matter_id)
+    if matter is None:
+        raise ApiError(404, "RESOURCE_NOT_FOUND", "事项不存在")
+    _require_matter_visible(session, matter_id=matter_id, user_id=user_id,
+                            action="create_todo")
+
+    # 指派给谁必须校验：不能把待办派给这个事项之外的人
+    if assignee_id is not None:
+        _require_assignable(session, matter_id=matter_id,
+                            user_id=user_id, target_user_id=assignee_id)
+
+    parsed_due = parse_iso_z(due_at) if due_at else None
+
+    todo = Todo(
+        matter_id=matter_id,
+        title=title,
+        detail=(detail or "").strip()[:1000] or None,
+        status="open",
+        assignee_id=assignee_id,
+        created_by=user_id,
+        due_at=parsed_due,
+        source="manual",
+        needs_confirm=False,
+    )
+    session.add(todo)
+    session.flush()
+    audit.record_audit(session, audit.TODO_CREATED, actor_user_id=user_id,
+                       matter_id=matter_id,
+                       detail={"todo_id": todo.id, "title": title,
+                               "assignee_id": assignee_id})
+    return _todo_view(todo, matter_title=matter.title)
+
+
+def mcp_update_todo(
+    session: Session,
+    settings: Settings,
+    *,
+    user_id: int,
+    todo_id: str,
+    status: str | None = None,
+    assignee_id: int | None = None,
+    due_at: str | None = None,
+    title: str | None = None,
+) -> dict:
+    """改待办（状态 / 指派 / 截止日 / 标题）。字段不给就不改。
+
+    状态转移走 :func:`hub.domain.todos.assert_todo_transition`，非法转移
+    直接报错 —— 与项目里其他状态机一致的 fail closed。
+    """
+    todo = session.get(Todo, todo_id)
+    if todo is None:
+        raise ApiError(404, "RESOURCE_NOT_FOUND", "待办不存在")
+    _require_matter_visible(session, matter_id=todo.matter_id, user_id=user_id,
+                            action="update_todo")
+
+    # done / dropped 是留痕状态：不允许在终态上直接改内容（改了审计会失真）。
+    # 但**必须留一条回头路** —— agent 汇报后常会发现「其实没做完」，要能把
+    # 它改回 open 再重做。所以只在「终态且不是往 open 改」时拦。
+    reopening = status == "open"
+    if todo.status in ("done", "dropped") and not reopening and (
+            (status and status != todo.status)
+            or assignee_id is not None or due_at is not None
+            or title is not None):
+        raise ApiError(400, "TODO_FINAL",
+                       "已完成或已放弃的待办不能再改；如需重做，请先改回 open")
+
+    if status is not None and status != todo.status:
+        if status not in todos_svc.TODO_STATUSES:
+            raise ApiError(400, "VALIDATION_FAILED",
+                           f"status 只能是 {'/'.join(todos_svc.TODO_STATUSES)}")
+        try:
+            todos_svc.assert_todo_transition(todo.status, status)
+        except todos_svc.TodoTransitionError as e:
+            raise ApiError(400, "INVALID_TRANSITION", str(e)) from e
+        todo.status = status
+        todo.completed_at = utcnow() if status == "done" else None
+
+    if assignee_id is not None:
+        _require_assignable(session, matter_id=todo.matter_id,
+                            user_id=user_id, target_user_id=assignee_id)
+        todo.assignee_id = assignee_id
+
+    if due_at is not None:
+        todo.due_at = parse_iso_z(due_at)
+    if title is not None:
+        cleaned = title.strip()
+        if not cleaned:
+            raise ApiError(400, "VALIDATION_FAILED", "待办标题不能为空")
+        todo.title = cleaned[:255]
+
+    todo.updated_at = utcnow()
+    session.flush()
+    audit.record_audit(session, audit.TODO_UPDATED, actor_user_id=user_id,
+                       matter_id=todo.matter_id,
+                       detail={"todo_id": todo.id, "status": todo.status,
+                               "assignee_id": todo.assignee_id})
+    matter = session.get(Matter, todo.matter_id)
+    names = _resolve_names(session, [todo.assignee_id])
+    return _todo_view(todo,
+                      matter_title=matter.title if matter else None,
+                      assignee_name=names.get(todo.assignee_id))

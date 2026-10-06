@@ -447,3 +447,92 @@ def register_tools(mcp: FastMCP, session_factory, settings: Settings,
             settings=settings, user_id=_current_user_id(),
             matter_id=matter_id,
         )
+
+    # ---------------- 待办事项（v21，2026-10-07） ----------------
+    #
+    # 这三个工具是为「随时问 agent 项目到哪了」而立的。返回值都做成结论形态
+    # （完成率、逾期数、天数都算好），agent 拿到直接转述即可。
+
+    @mcp.tool
+    def list_todos(
+        assignee: str = "me",
+        status: str = "open",
+        matter_id: str | None = None,
+        include_unassigned: bool = False,
+        limit: int = 20,
+    ) -> dict:
+        """列出待办事项。默认「我该做什么」：assignee=me + 未完成的。
+
+        「我该做什么」是最常见的问题，所以默认值就按这个来：
+        - assignee: me（我）| none（还没人认领）| all（全部）
+        - status: open（默认）| doing | done | dropped | all
+        - matter_id: 只看某个事项，可省
+        - include_unassigned: 默认不带出无主待办，避免汇报失焦
+
+        每条带 matter_title、days_left、overdue —— 别自己算，取整和时区
+        容易错。REST 对应：GET /api/todos。"""
+        return _call(
+            session_factory, methods.mcp_list_todos,
+            settings=settings, user_id=_current_user_id(),
+            assignee=assignee, status=status, matter_id=matter_id,
+            include_unassigned=include_unassigned, limit=limit,
+        )
+
+    @mcp.tool
+    def get_project_status(matter_id: str) -> dict:
+        """项目全貌：这个事项现在到哪了。
+
+        一次返回进度（完成率已算好）、按人分组（谁手上多、谁快逾期）、
+        近期变动、以及风险（取自留言总结里「还没解决的问题」）。
+        还有一句headline 结论，可以直接转述给用户。
+
+        想知道「我该做什么」用 list_todos；想知道「整体什么情况」用这个。
+        REST 对应：GET /api/matters/{id}/project_status。"""
+        return _call(
+            session_factory, methods.mcp_get_project_status,
+            settings=settings, user_id=_current_user_id(),
+            matter_id=matter_id,
+        )
+
+    @mcp.tool
+    def create_todo(
+        matter_id: str,
+        title: str,
+        detail: str | None = None,
+        assignee_id: int | None = None,
+        due_at: str | None = None,
+    ) -> dict:
+        """新建一条待办。
+
+        人在网页上建和你调这个建是同一条路径。你是在人明确指示下写的，
+        所以建出来直接是正式待办，不需要再让人确认（只有 AI 自己抽的才要）。
+
+        assignee_id 必须是该事项的参与人；不确定就别指派，留给后人认领。
+        due_at 用 ISO 格式（2026-10-20T18:00:00Z）。
+        REST 对应：POST /api/matters/{id}/todos。"""
+        return _call(
+            session_factory, methods.mcp_create_todo,
+            settings=settings, user_id=_current_user_id(),
+            matter_id=matter_id, title=title, detail=detail,
+            assignee_id=assignee_id, due_at=due_at,
+        )
+
+    @mcp.tool
+    def update_todo(
+        todo_id: str,
+        status: str | None = None,
+        assignee_id: int | None = None,
+        due_at: str | None = None,
+        title: str | None = None,
+    ) -> dict:
+        """改一条待办（状态 / 指派人 / 截止日 / 标题）。不传的字段不动。
+
+        典型用法是标完成：update_todo(todo_id=..., status="done")。
+        非法状态转移会报错（如 dropped → done），不会静默改坏。
+        REST 对应：PATCH /api/todos/{id}。"""
+        return _call(
+            session_factory, methods.mcp_update_todo,
+            settings=settings, user_id=_current_user_id(),
+            todo_id=todo_id, status=status, assignee_id=assignee_id,
+            due_at=due_at, title=title,
+        )

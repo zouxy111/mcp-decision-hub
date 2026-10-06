@@ -49,6 +49,12 @@ AUDIENCE_VIEW_DELIVERED = "audience_view_delivered"
 # owner 2026-09-14 批准：过期立场被排除时写入，detail 带 {matter_id,
 # round_number, user_id, ttl_seconds}。
 STANCE_EXPIRED = "stance_expired"
+# 待办事项事件（v21，2026-10-07）。与决议事件分开记：待办是执行跟踪，
+# 决议是决策留痕，两者的审计查询场景不同，合在一起会互相淹没。
+TODO_CREATED = "todo_created"
+TODO_UPDATED = "todo_updated"
+# AI 抽取出的待办落了库（等人工确认）。detail 带 todo_id 与来源消息。
+TODO_EXTRACTED = "todo_extracted"
 
 # Max chars of a decision rationale stored in audit detail (design decision 12).
 AUDIT_RATIONALE_MAX = 500
