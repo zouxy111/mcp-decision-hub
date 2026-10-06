@@ -1557,7 +1557,10 @@ def mcp_create_todo(
                        matter_id=matter_id,
                        detail={"todo_id": todo.id, "title": title,
                                "assignee_id": assignee_id})
-    return _todo_view(todo, matter_title=matter.title)
+    # 带上负责人称呼：调用方拿到响应就能直接显示「派给谁了」，不用再查一次
+    names = _resolve_names(session, [assignee_id])
+    return _todo_view(todo, matter_title=matter.title,
+                      assignee_name=names.get(assignee_id))
 
 
 def mcp_update_todo(
