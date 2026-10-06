@@ -155,9 +155,24 @@ def test_新增未决问题也算有新信息(
     assert db_session.get(Matter, s["matter"].id).status == "collecting"
 
 
+def _source_files() -> list[Path]:
+    """仓库里真正的人写的 ``.py`` 源码。
+
+    **为什么要过滤**（2026-10-07 生产事故）：直接 ``rglob("*.py")`` 会把
+    macOS 的 AppleDouble 资源分支（``hub/._main.py`` 那种 ``.<原名>`` 文件）
+    也扫进来 —— 它们是加扩展属性时生成的二进制伴生文件，头4 字节是
+    ``00 05 16 07``（"Mac OS X"），``read_text(encoding="utf-8")`` 直接抛
+    UnicodeDecodeError。那次在生产机上因此炸了 146 个用例，而本机（macOS
+    会自动清理）复现不出来。
+
+    跳过文件名以 ``._`` 开头的：既解决资源分支，也顺带跳过 ``._`` 目录。
+    """
+    return [p for p in HUB.rglob("*.py") if not p.name.startswith("._")]
+
+
 def test_不存在第二套换人逻辑():
     """验收第 2 条：拉人只走既有流程。源码扫描，全仓只有一处换人入口。"""
-    hits = [p.relative_to(HUB).as_posix() for p in HUB.rglob("*.py")
+    hits = [p.relative_to(HUB).as_posix() for p in _source_files()
             if "def reassign_" in p.read_text(encoding="utf-8")]
     assert hits == ["api/reassignment.py"], (
         f"出现了第二处换人实现：{hits}（PRD-08 明写不要另起一套）"
@@ -166,6 +181,6 @@ def test_不存在第二套换人逻辑():
 
 def test_不存在新退避实现():
     """验收第 3 条：退避复用既有实现，本块不新增。"""
-    hits = [p.relative_to(HUB).as_posix() for p in HUB.rglob("*.py")
+    hits = [p.relative_to(HUB).as_posix() for p in _source_files()
             if "def backoff" in p.read_text(encoding="utf-8")]
     assert hits == ["domain/retry.py"], f"出现了第二处退避实现：{hits}"

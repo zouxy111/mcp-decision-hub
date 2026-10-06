@@ -10,6 +10,16 @@ __pycache__/
 backups/
 data/
 .DS_Store
+# macOS 的AppleDouble 资源分支：给文件加扩展属性（Finder 标签、权限等）时
+# 生成的伴生二进制文件，文件名是 ``.<原文件名>``（如``hub/._main.py``）。
+#
+# 为什么要单独忽略：``tests/api/test_pipeline_stall.py`` 等测试会用
+# ``rglob("*.py")`` + ``read_text(encoding="utf-8")`` 扫描源码做结构断言，
+# 而这些文件的二进制内容（头4 字节 0x00051607 + "Mac OS X"）根本不是 UTF-8，
+# 一读就UnicodeDecodeError。2026-10-07 在生产机上就因此炸了146 个用例。
+.**/.DS_Store
+._*
+__MACOSX/
 .env
 .workbuddy/
 web-ui/node_modules/
