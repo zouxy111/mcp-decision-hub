@@ -684,3 +684,68 @@ class MeetingConvergence(Base):
         UniqueConstraint("meeting_id", "round_number",
                         name="uq_meeting_convergence_per_round"),
     )
+
+
+class Todo(Base):
+    """待办事项（v21，2026-10-07）。
+
+    存在的理由：owner 要能在协作过程中直接问 agent「这个项目现在到哪了、
+    谁在做什么、还有什么没干」。此前这类信息只存在于
+    ``BoardSummary.summary`` 这段**散文**里 —— agent 只能把整段总结读进
+    上下文自己理解，既慢也没法统计筛选。本表把它落成结构化数据，
+    agent 直接查字段。
+
+    **与既有 ``tasks`` 表的区别（别搞混）**：那张表是**轮次问卷任务**
+    （``round_id`` 必填，语义是「谁这轮要答什么」），服务的是决策流程；
+    本表是**项目待办**，服务的是执行跟踪。两者语义、生命周期、查询维度
+    全不相同，故独立建表。
+
+    三个设计取舍：
+
+    * ``assignee_id`` **可空** —— 讨论里常说「这个得有人跟一下」，先记下
+      再指派。强制指派会让人懒得建待办。
+    * ``source`` + ``source_message_id`` + ``source_resolution_id``是
+      **可追溯性**的关键：待办必须能回答「谁在什么时候、因为哪句话定的」，
+      否则 agent 汇报时说不出依据。
+    * ``needs_confirm`` —— AI 抽取的待办先落库但待人工确认（owner
+      2026-10-07 决定）。没有这道闸门，「我觉得可以再想想」也会被当成
+      一条真任务，污染待办列表。
+    """
+
+    __tablename__ = "todos"
+
+    id: Mapped[str] = mapped_column(String(48), primary_key=True,
+                                    default=lambda: new_id("todo"))
+    matter_id: Mapped[str] = mapped_column(
+        ForeignKey("matters.id"), nullable=False, index=True
+    )
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # open（待办）| doing（在做）| done（已完成）| dropped（不做了）
+    status: Mapped[str] = mapped_column(String(16), default="open",
+                                        nullable=False)
+    # 可空：先记录、后指派。见上方「三个设计取舍」
+    assignee_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id"), nullable=True, index=True
+    )
+    # 谁提的（人 id 或 agent 的 user id）。为 None 表示系统/迁移产生。
+    created_by: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id"), nullable=True
+    )
+    due_at: Mapped[datetime | None] = mapped_column(nullable=True)
+
+    # manual（人手动建）| extracted_from_message（AI 从留言抽取）
+    # | from_resolution（从决议拆分）
+    source: Mapped[str] = mapped_column(String(32), default="manual",
+                                        nullable=False)
+    source_message_id: Mapped[str | None] = mapped_column(String(48),
+                                                          nullable=True)
+    source_resolution_id: Mapped[str | None] = mapped_column(String(48),
+                                                             nullable=True)
+    # True = AI 抽的，等人确认；False = 正式待办
+    needs_confirm: Mapped[bool] = mapped_column(Boolean, default=False,
+                                                 nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    created_at: Mapped[datetime] = mapped_column(default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(default=utcnow,
+                                                 onupdate=utcnow, nullable=False)

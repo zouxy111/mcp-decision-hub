@@ -1244,3 +1244,78 @@ def downgrade_add_board_summary_documents(conn: sqlite3.Connection) -> None:
     except Exception:
         conn.execute("ROLLBACK")
         raise
+
+
+# --------------------------------------------------------------------------
+# v21：待办事项（2026-10-07）
+#
+#   动机：owner 要能在协作过程中问 agent「这个项目现在到哪了、谁在做什么」。
+#   此前这类信息只存在于 BoardSummary.summary 这段**散文**里 —— agent 只能把
+#   整段总结读进上下文自己理解，慢且没法统计筛选。本迁移把它落成结构化的表。
+#
+#   为什么不用现有的 ``tasks`` 表：那张表是**轮次问卷任务**（回答问卷用），
+#   ``round_id`` 必填且语义是「谁这轮要答什么」，与项目待办是两回事。硬塞进去
+#   会让 tasks 同时承担两种语义，取查询与状态统计都会变浑浊。新建独立表。
+#
+#   一行 = 一条待办。要点：
+#   * ``assignee_id`` 可空 —— 讨论里常说「这个得有人跟一下」，先记下再指派；
+#     强制指派会让人懒得建。
+#   * ``source`` + 两个来源列是**可追溯性**的关键：待办必须能回答「谁在什么
+#     时候、因为哪句话定的」，否则 agent 汇报时说不出依据。
+#   * ``needs_confirm`` —— AI 抽取的待办先落库但待人工确认（owner 2026-10-07
+#     决定）。不设这个闸门的话，「我觉得可以再想想」也会变成一条真任务。
+# --------------------------------------------------------------------------
+
+_TODOS_DDL = """
+CREATE TABLE IF NOT EXISTS todos (
+    id VARCHAR(48) NOT NULL,
+    matter_id VARCHAR(48) NOT NULL,
+    title VARCHAR(255) NOT NULL,
+    detail TEXT,
+    status VARCHAR(16) NOT NULL DEFAULT 'open',
+    assignee_id INTEGER,
+    created_by INTEGER,
+    due_at DATETIME,
+    source VARCHAR(32) NOT NULL DEFAULT 'manual',
+    source_message_id VARCHAR(48),
+    source_resolution_id VARCHAR(48),
+    needs_confirm BOOLEAN NOT NULL DEFAULT 0,
+    completed_at DATETIME,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    PRIMARY KEY (id),
+    FOREIGN KEY(matter_id) REFERENCES matters (id)
+)
+"""
+
+# agent 侧看板默认只看「我的活」：(assignee_id, status)
+_TODOS_INDEXES = (
+    ("ix_todos_matter", " ON todos (matter_id)"),
+    ("ix_todos_assignee_status", " ON todos (assignee_id, status)"),
+    # agent 查「这个事项里还没确认的 AI 待办」走这条
+    ("ix_todos_matter_confirm", " ON todos (matter_id, needs_confirm)"),
+)
+
+
+def upgrade_add_todos(conn: sqlite3.Connection) -> None:
+    """建 todos 表 + 3 个索引；可重入。"""
+    conn.execute("BEGIN")
+    try:
+        conn.execute(_TODOS_DDL)
+        for name, suffix in _TODOS_INDEXES:
+            conn.execute(f"CREATE INDEX IF NOT EXISTS {name}{suffix}")
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+
+
+def downgrade_add_todos(conn: sqlite3.Connection) -> None:
+    """回滚：删表（索引随表一起消失）。"""
+    conn.execute("BEGIN")
+    try:
+        conn.execute("DROP TABLE IF EXISTS todos")
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise

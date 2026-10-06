@@ -36,6 +36,7 @@ from hub.db.models import (
     User,
 )
 from hub.domain import board as board_svc
+from hub.domain import todo_extract
 from hub.domain.timeutil import utcnow
 from hub.llm.client import LLMError
 from hub.llm.prompts import build_board_summary_prompt
@@ -310,11 +311,13 @@ def refresh_summary(session: Session, *, llm, matter_id: str) -> str:
     # 从头开始；后面的批次接着重建，并继续标成 requested（下面的 still_rebuilding）。
     trigger = TRIGGER_AUTO
     requester = None
+    requester_id = None
     reason = None
     first_rebuild_batch = False
     if row is not None and row.reread_requested:
         trigger = TRIGGER_REQUESTED
-        requester = _requester_name(session, row.reread_requested_by)
+        requester_id = row.reread_requested_by
+        requester = _requester_name(session, requester_id)
         reason = row.reread_reason
         row.reread_requested = False
         if row.covered_messages == 0:
@@ -429,6 +432,13 @@ def refresh_summary(session: Session, *, llm, matter_id: str) -> str:
         created_at=utcnow(),
     )
     session.add(document)
+
+    # AI 顺带抽出的待办（v21）：同一次 LLM 调用，多要求一个 todos 字段而已。
+    # 抽出来的都needs_confirm=True，等人确认；抽取失败不影响上面这份总结。
+    # created_by 用重读发起人（常态是 None —— 自动总结没人认领）。
+    extracted_todos = todo_extract.extract_todos(
+        session, matter_id=matter_id, payload=data, created_by=requester_id,
+    )
 
     row.summary = summary
     row.judgement = judgement

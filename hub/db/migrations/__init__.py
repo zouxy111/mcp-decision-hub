@@ -211,6 +211,12 @@ MIGRATIONS: tuple[Migration, ...] = (
         _steps.upgrade_add_board_summary_documents,
         _steps.downgrade_add_board_summary_documents,
     ),
+    Migration(
+        21,
+        "add_todos",
+        _steps.upgrade_add_todos,
+        _steps.downgrade_add_todos,
+    ),
 )
 
 _VERSION_TABLE = "schema_migrations"
