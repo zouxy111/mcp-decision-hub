@@ -16,10 +16,16 @@
 | 项 | 状态 |
 |---|---|
 | 生产环境 | ✅ **https://hub.tdp-demo.work**（Caddy → 127.0.0.1:8000），直连 http://170.106.192.161:8000 亦可 |
-| 代码仓库 | ✅ github.com/zouxy111/mcp-decision-hub（私有），main 与生产一致 |
-| 测试基线 | ✅ **876 passed / 1 skipped**（`uv run pytest tests/`，约 75s） |
-| 数据库迁移 | schema_migrations 已到 **v20**（add_board_summary_documents） |
+| 代码仓库 | ✅ github.com/zouxy111/mcp-decision-hub（私有），main 与生产一致（54838c4） |
+| 测试基线 | ✅ **1022 passed / 1 skipped**（`uv run pytest tests/`，本机约 80s） |
+| 数据库迁移 | schema_migrations 已到 **v21**（add_todos） |
 | 服务管理 | systemd 单元 `mcp-hub`（开机自启 + on-failure 重启） |
+| 接口数量 | 72 个 JSON 端点（`/api/*`，见 `docs/api/JSON-API-契约.md`） |
+
+> ⚠ **在生产机跑全量测试前先 `ulimit -n 8192`**。服务器默认 `ulimit -n` 是 1024，
+> 跑全量会耗尽文件句柄报 `OSError: Errno 24`，表现为上百个 error —— **不是代码问题**。
+> 验证方法：`bash -c "ulimit -n 8192 && .venv/bin/python -m pytest tests/ -q"`。
+> 另外生产机 2 核，全量测试要跑 5 分半且跟线上抢 CPU，建议只在本机跑。
 
 ## 3. 服务器台账
 
@@ -79,6 +85,21 @@ HTTPS_PROXY=socks5h://127.0.0.1:1080 gh api repos/zouxy111/mcp-decision-hub
 - **M4 遗留清零**：取消事项（FR-08）、登录限流、Web CSRF、429 冒烟（9 月完成，见 `docs/progress/2026-09-09-rate-limit-fix.md`）
 - **邀请链接系统 + 会议模式 + 看板协作**（2026-10-03/05 完成并上线）
 - **Prometheus 指标端点**（2026-10-07，`hub/metrics.py`，零依赖手写格式）
+- **JSON 接口补齐**（2026-10-07）：给 React 前端用。认证（`/api/auth/*`，Cookie + token 双通道）、
+  会议列表与详情、邀请接口统一到 `/api/invitations/*`。顺带修掉邀请模块 5 个既存 bug
+  （此前 HTTP 层零测试覆盖，端点从未被成功调用过）。契约文档由
+  `scripts/gen_api_doc.py` 从 OpenAPI 规范自动生成，别手改。
+- **待办 / 项目管理**（2026-10-07，v21）：`todos` 表 + AI 从留言自动抽取 + 4 个 MCP 工具
+  （`list_todos` / `get_project_status` / `create_todo` / `update_todo`）+ JSON 接口 +
+  网页页 `/matters/{id}/todos`。目的是让 agent 能直接回答「项目到哪了」。
+  统计口径统一收在 `hub/domain/todos.py`（**新增功能前先看它**）。
+
+### 注意：两张 tasks 表不是一回事
+
+- `tasks` = **轮次问卷任务**（`round_id` 必填，语义是「谁这轮要答什么」），服务决策流程
+- `todos` = **项目待办**（v21），服务执行跟踪
+
+不要把两者混用，也不要为了「复用」把待办塞进 `tasks`。
 
 PRD 主文档：`docs/superpowers/specs/2026-09-13-mcp-decision-hub-prd-v1.2.md`
 
