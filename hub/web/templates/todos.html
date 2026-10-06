@@ -1,0 +1,239 @@
+{% extends "base.html" %}
+{% block title %}{{ matter.title }} · 待办 - MCP 决策中台{% endblock %}
+{% block content %}
+
+<div class="page-head">
+  <div>
+    <a class="back-link" href="/matters/{{ matter.id }}">← 回到「{{ matter.title }}」留言板</a>
+    <h1>待办事项</h1>
+    <p class="page-sub">
+      讨论里说定要做的事，一件件跟下来。
+      {% if stats.total or stats.awaiting %}
+      共 {{ stats.total }} 项，已完成 {{ stats.done }} 项{% if stats.awaiting %}，另有 {{ stats.awaiting }} 项等确认{% endif %}。
+      {% endif %}
+    </p>
+  </div>
+</div>
+
+{% if error %}
+<div class="alert alert--error mb-16" role="alert">
+  <div class="alert-body">{{ error }}</div>
+</div>
+{% endif %}
+
+{# ---------------------------------------------------------- 进度 #}
+{% if stats.total %}
+<div class="panel mb-16">
+  <div class="panel-head">
+    <h2>进度</h2>
+    <span class="spacer"></span>
+    {% if stats.overdue %}
+    <span class="tag tag--error">{{ stats.overdue }} 项已逾期</span>
+    {% endif %}
+  </div>
+  <div class="panel-body">
+    <div class="stat-row">
+      <div class="stat">
+        <div class="stat-num">{{ stats.rate }}%</div>
+        <div class="stat-key">完成率</div>
+      </div>
+      <div class="stat">
+        <div class="stat-num">{{ stats.done }}/{{ stats.total }}</div>
+        <div class="stat-key">已完成</div>
+      </div>
+      <div class="stat">
+        <div class="stat-num">{{ stats.pending }}</div>
+        <div class="stat-key">还没做</div>
+      </div>
+      {% if stats.awaiting %}
+      <div class="stat">
+        <div class="stat-num">{{ stats.awaiting }}</div>
+        <div class="stat-key">等确认</div>
+      </div>
+      {% endif %}
+    </div>
+    {% if stats.awaiting %}
+    <p class="field-hint mt-8">
+      「等确认」是 AI 从留言里听出来的，还没算数——你点「确认」之后才计入完成率。
+      没这层闸门，「我觉得可以再想想」也会被当成一条任务。
+    </p>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+
+{# ---------------------------------------------------------- 新建 #}
+<div class="panel mb-16">
+  <div class="panel-head">
+    <h2>加一件要做的事</h2>
+  </div>
+  <div class="panel-body">
+    <form method="post" action="/matters/{{ matter.id }}/todos">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+      <label class="field">
+        <span class="field-label">要做什么</span>
+        <input class="input" name="title" required
+               value="{{ draft.title if draft else '' }}"
+               placeholder="例：整理出报价明细发给客户">
+      </label>
+      <label class="field">
+        <span class="field-label">补充说明（选填）</span>
+        <input class="input" name="detail"
+               value="{{ draft.detail if draft else '' }}"
+               placeholder="例：含税价，分三项报">
+      </label>
+      <div class="field-row">
+        <label class="field">
+          <span class="field-label">谁来做（选填）</span>
+          <select class="input" name="assignee_id">
+            <option value="">先不指定，等人认领</option>
+            {% for p in participants %}
+            <option value="{{ p.user_id }}"
+                    {% if draft and draft.assignee_id == p.user_id|string %}selected{% endif %}>
+              {{ p.display_name }}
+            </option>
+            {% endfor %}
+          </select>
+          <span class="field-hint">先记下来再指派也行——讨论里常说「这个得有人跟一下」。</span>
+        </label>
+        <label class="field">
+          <span class="field-label">什么时候之前做完（选填）</span>
+          <input class="input" type="datetime-local" name="due_at"
+                 value="{{ draft.due_at if draft else '' }}">
+        </label>
+      </div>
+      <div class="form-actions form-actions--flush">
+        <button type="submit" class="btn btn--primary" data-busy-label="添加中">加进待办</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+{# ---------------------------------------------------------- 列表 #}
+<div class="panel">
+  <div class="panel-head">
+    <h2>待办清单</h2>
+    <span class="spacer"></span>
+    <span class="ticker">{{ todos | length }} 条</span>
+  </div>
+  <div class="panel-body">
+    {% if not todos %}
+    <p class="empty">
+      还没有待办。讨论里明确了「谁要做什么」之后，可以顺手加进来；
+      也可以直接跟 AI 说「记一下张三要出报价」，它会建一条。
+    </p>
+    {% else %}
+    <ul class="todo-list">
+      {% for t in todos %}
+      <li class="todo todo--{{ t.status }}{% if t.needs_confirm %} todo--pending{% endif %}"
+          {% if t.overdue %}data-overdue="1"{% endif %}>
+
+        <div class="todo-main">
+          <div class="todo-title">
+            {{ t.title }}
+            {% if t.needs_confirm %}<span class="tag tag--warn">AI 听出来的，等你确认</span>{% endif %}
+            {% if t.overdue %}<span class="tag tag--error">逾期 {{ (-t.days_left) }} 天</span>{% endif %}
+          </div>
+          {% if t.detail %}<div class="todo-detail">{{ t.detail }}</div>{% endif %}
+          <div class="todo-meta">
+            {% if t.assignee %}
+            <span>{{ t.assignee }}</span>
+            {% else %}
+            <span class="muted">还没人认领</span>
+            {% endif %}
+            {% if t.due_at %}
+            <span>· {{ t.due_at[:10] }}{% if not t.overdue and t.days_left is not none %}（还剩 {{ t.days_left }} 天）{% endif %}</span>
+            {% endif %}
+            <span class="muted">· {{ status_labels.get(t.status, t.status) }}</span>
+          </div>
+        </div>
+
+        <div class="todo-actions">
+          {# ---- AI 抽的：先确认或拒掉，不进正式流程 ---- #}
+          {% if t.needs_confirm %}
+          <form method="post" action="/todos/{{ t.todo_id }}/confirm" class="inline-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+            <button type="submit" class="btn btn--primary btn--sm"
+                    data-busy-label="确认中">确认</button>
+          </form>
+          <form method="post" action="/todos/{{ t.todo_id }}/reject" class="inline-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+            <button type="submit" class="btn btn--ghost btn--sm"
+                    data-busy-label="删除中">不是这条</button>
+          </form>
+          {# 没指派人的，确认时顺手指派 #}
+          {% if not t.assignee %}
+          <form method="post" action="/todos/{{ t.todo_id }}/confirm" class="inline-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+            <select class="input input--sm" name="assignee_id" aria-label="指派给谁">
+              <option value="">指派给…</option>
+              {% for p in participants %}
+              <option value="{{ p.user_id }}">{{ p.display_name }}</option>
+              {% endfor %}
+            </select>
+            <button type="submit" class="btn btn--ghost btn--sm"
+                    data-busy-label="确认中">确认并指派</button>
+          </form>
+          {% endif %}
+
+          {# ---- 正式待办：改状态 ---- #}
+          {% else %}
+          {% if t.status == 'open' %}
+          <form method="post" action="/todos/{{ t.todo_id }}/update" class="inline-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+            <input type="hidden" name="status" value="doing">
+            <button type="submit" class="btn btn--ghost btn--sm"
+                    data-busy-label="更新中">开始做</button>
+          </form>
+          {% endif %}
+          {% if t.status in ('open', 'doing') %}
+          <form method="post" action="/todos/{{ t.todo_id }}/update" class="inline-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+            <input type="hidden" name="status" value="done">
+            <button type="submit" class="btn btn--primary btn--sm"
+                    data-busy-label="更新中">做完了</button>
+          </form>
+          <form method="post" action="/todos/{{ t.todo_id }}/update" class="inline-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+            <input type="hidden" name="status" value="dropped">
+            <button type="submit" class="btn btn--ghost btn--sm"
+                    data-busy-label="更新中">不做了</button>
+          </form>
+          {% endif %}
+          {% if t.status in ('done', 'dropped') %}
+          <form method="post" action="/todos/{{ t.todo_id }}/update" class="inline-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+            <input type="hidden" name="status" value="open">
+            <button type="submit" class="btn btn--ghost btn--sm"
+                    data-busy-label="更新中">重新打开</button>
+          </form>
+          {% endif %}
+          {% endif %}
+        </div>
+      </li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+  </div>
+</div>
+
+{# ---------------------------------------------------------- 说明 #}
+<div class="panel mt-16">
+  <div class="panel-head"><h2>这几件事从哪来</h2></div>
+  <div class="panel-body">
+    <ul class="bullets">
+      <li><b>讨论里冒出来的</b>：每次云端 AI 更新总结时会顺手听出「谁要做什么」，
+        听出来的先标成<span class="tag tag--warn">等你确认</span>，你点「确认」才算数。</li>
+      <li><b>你自己加的</b>：上面那个表单，直接进正式清单。</li>
+      <li><b>AI 帮你加的</b>：跟你的 AI 助手说「记一下张三要出报价」，它会建一条。</li>
+      <li><b>完成率只算已确认的</b>：AI 听出来但还没确认的，既不算完成也不算分母 ——
+        否则完成率会凭空变低。</li>
+    </ul>
+    <p class="field-hint mt-8">
+      也可以直接问你的 AI 助手：「我该做什么」「这个项目现在到哪了」「谁手上事最多」，
+      它会读这里的结构化数据回答，不用把整块板子塞进上下文。
+    </p>
+  </div>
+</div>
+
+{% endblock %}

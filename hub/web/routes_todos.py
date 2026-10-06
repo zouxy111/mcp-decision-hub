@@ -14,7 +14,9 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Form, Query, Request
+from fastapi.responses import RedirectResponse
+from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -25,9 +27,17 @@ from hub.db.models import Matter, MatterParticipant, Todo, User
 from hub.domain import todos as todos_svc
 from hub.domain.timeutil import utcnow
 from hub.mcp_server import methods as m
-from hub.web.deps import get_current_user, get_db, get_settings
+from hub.web.deps import (
+    get_current_user,
+    get_db,
+    get_settings,
+    register_csrf_globals,
+    require_csrf,
+)
 
 router = APIRouter(prefix="/api", tags=["todos"])
+# HTML 页面用独立 router（无前缀），路径挂 /matters/{id}/todos
+pages_router = APIRouter(tags=["todo-pages"])
 
 
 # --------------------------------------------------------------------------
@@ -278,3 +288,188 @@ def project_status(
     """某事项的项目全貌。与 MCP 的 ``get_project_status`` 同源。"""
     return m.mcp_get_project_status(db, settings=settings, user_id=user.id,
                                     matter_id=matter_id)
+
+# ==================================================================
+# HTML 页面（表单 POST + 整页刷新）
+#
+# 刻意**不用 htmx**：项目里留言板那套也是表单 POST + 刷新，保持一致比
+# 引入第二套交互范式划算。等真需要局部刷新时再统一改。
+#
+# 用独立 router（``pages``，无前缀）而不是给``router`` 加路径：待办页挂在
+# /matters/{id}/todos，与 JSON 的 /api/matters/{id}/todos 一一对应，混在
+# 一个 router 里容易看错。
+# ==================================================================
+
+pages = Jinja2Templates(directory="hub/web/templates")
+register_csrf_globals(pages)
+
+_STATUS_LABELS = {
+    "open": "待办",
+    "doing": "在做",
+    "done": "已完成",
+    "dropped": "已放弃",
+}
+
+
+def _todo_context(db: Session, matter_id: str, user: User,
+                  settings: Settings, *, error: str | None = None) -> dict:
+    """待办页的渲染上下文。与 JSON 接口同源，避免两处口径漂。"""
+    matter = _check_matter_member(db, matter_id, user.id)
+    rows = db.scalars(
+        select(Todo).where(Todo.matter_id == matter_id)
+        .order_by(Todo.created_at.desc())
+    ).all()
+    names = m._resolve_names(db, [t.assignee_id for t in rows])
+    done, pending, rate = todos_svc.completion_rate(rows)
+    return {
+        "matter": matter,
+        "todos": [
+            m._todo_view(t, assignee_name=names.get(t.assignee_id))
+            for t in rows
+        ],
+        "participants": _participants_of(db, matter_id),
+        "stats": {
+            "done": done,
+            "pending": pending,
+            "total": len([t for t in rows
+                          if todos_svc.is_official(t) and t.status != "dropped"]),
+            "rate": rate,
+            "overdue": sum(1 for t in rows if todos_svc.is_overdue(t)),
+            "awaiting": sum(1 for t in rows if t.needs_confirm),
+        },
+        "status_labels": _STATUS_LABELS,
+        "current_user_id": user.id,
+        "error": error,
+    }
+
+
+@pages_router.get("/matters/{matter_id}/todos")
+def todos_page(
+    matter_id: str,
+    request: Request,
+    error: str = Query(""),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+    user: User = Depends(get_current_user),
+):
+    """待办页：看进度、建待办、确认 AI 抽的、改状态。"""
+    return pages.TemplateResponse(
+        request, "todos.html",
+        _todo_context(db, matter_id, user, settings, error=error or None))
+
+
+@pages_router.post("/matters/{matter_id}/todos")
+def create_todo_page(
+    request: Request,
+    matter_id: str,
+    title: str = Form(""),
+    detail: str = Form(""),
+    assignee_id: str = Form(""),
+    due_at: str = Form(""),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+    user: User = Depends(require_csrf),
+):
+    """表单建待办。
+
+    填错时**带着已填内容重渲染**，而不是抛错跳走——填错丢内容是最让人
+    恼火的事。
+    """
+    clean = title.strip()
+    if clean:
+        try:
+            m.mcp_create_todo(
+                db, settings=settings, user_id=user.id, matter_id=matter_id,
+                title=clean, detail=detail.strip() or None,
+                assignee_id=int(assignee_id) if assignee_id.strip() else None,
+                due_at=due_at.strip() or None,
+            )
+            db.commit()
+        except (ApiError, ValueError) as e:
+            db.rollback()
+            message = e.message if isinstance(e, ApiError) else "指派人或截止日格式不对"
+            ctx = _todo_context(db, matter_id, user, settings, error=message)
+            # 把用户填的原样带回去
+            ctx["draft"] = {"title": clean, "detail": detail,
+                            "assignee_id": assignee_id, "due_at": due_at}
+            return pages.TemplateResponse(
+                request, "todos.html", ctx, status_code=400)
+        return RedirectResponse(f"/matters/{matter_id}/todos", status_code=303)
+
+    ctx = _todo_context(db, matter_id, user, settings, error="待办标题不能为空")
+    ctx["draft"] = {"title": title, "detail": detail,
+                    "assignee_id": assignee_id, "due_at": due_at}
+    return pages.TemplateResponse(request, "todos.html", ctx, status_code=400)
+
+
+@pages_router.post("/todos/{todo_id}/update")
+def update_todo_page(
+    todo_id: str,
+    status: str = Form(""),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+    user: User = Depends(require_csrf),
+):
+    """表单改状态。非法转移带错误提示回页面。"""
+    todo = db.get(Todo, todo_id)
+    if todo is None:
+        raise ApiError(404, "RESOURCE_NOT_FOUND", "待办不存在")
+    _check_matter_member(db, todo.matter_id, user.id)
+    try:
+        m.mcp_update_todo(db, settings=settings, user_id=user.id,
+                          todo_id=todo_id, status=status)
+        db.commit()
+        return RedirectResponse(f"/matters/{todo.matter_id}/todos",
+                                status_code=303)
+    except ApiError as e:
+        db.rollback()
+        return RedirectResponse(
+            f"/matters/{todo.matter_id}/todos?error={e.message}",
+            status_code=303)
+
+
+@pages_router.post("/todos/{todo_id}/confirm")
+def confirm_todo_page(
+    todo_id: str,
+    assignee_id: str = Form(""),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_csrf),
+):
+    """表单确认 AI 待办（可顺手补指派）。"""
+    todo = db.get(Todo, todo_id)
+    if todo is None:
+        raise ApiError(404, "RESOURCE_NOT_FOUND", "待办不存在")
+    _check_matter_member(db, todo.matter_id, user.id)
+    if todo.needs_confirm:
+        if assignee_id.strip():
+            m._require_assignable(db, matter_id=todo.matter_id, user_id=user.id,
+                                  target_user_id=int(assignee_id))
+            todo.assignee_id = int(assignee_id)
+        todo.needs_confirm = False
+        todo.updated_at = utcnow()
+        db.commit()
+    return RedirectResponse(f"/matters/{todo.matter_id}/todos", status_code=303)
+
+
+@pages_router.post("/todos/{todo_id}/reject")
+def reject_todo_page(
+    todo_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_csrf),
+):
+    """表单拒掉 AI 抽错的待办（直接删）。
+
+    只对 AI 待办开放 —— 人工建的是留痕，删了就查不到当初是谁定的。
+    """
+    todo = db.get(Todo, todo_id)
+    if todo is None:
+        raise ApiError(404, "RESOURCE_NOT_FOUND", "待办不存在")
+    _check_matter_member(db, todo.matter_id, user.id)
+    if not todo.needs_confirm:
+        return RedirectResponse(
+            f"/matters/{todo.matter_id}/todos"
+            f"?error=人工建的待办不能删除；不做了请改成「已放弃」",
+            status_code=303)
+    db.delete(todo)
+    db.commit()
+    return RedirectResponse(f"/matters/{todo.matter_id}/todos", status_code=303)

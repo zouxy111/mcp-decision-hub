@@ -1240,6 +1240,141 @@ dialog.confirm::backdrop {
 .notes b { color: var(--fg); font-weight: 500; }
 .notes code { font-size: 12px; }
 
+/* ------------------------------------------- 待办事项（v21，2026-10-07） */
+/* 设计口径跟既有系统一致：零圆角、靠线分隔、状态用 11px 徽章 + 7px 方标，
+   不用胶囊也不用淡色底 —— 见文件头「素印」那段说明。 */
+
+.back-link {
+  display: inline-block;
+  margin-bottom: 10px;
+  font-size: 13px;
+  color: var(--fg-3);
+  text-decoration: none;
+}
+.back-link:hover { color: var(--fg); }
+
+/* 进度条：一行细线 + 填充，不做成仪表盘 */
+.stat-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 28px;
+}
+.stat { min-width: 76px; }
+.stat-num {
+  font-size: 22px;
+  font-weight: 500;
+  line-height: 1.2;
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+}
+.stat-key {
+  font-size: 12px;
+  color: var(--fg-3);
+  margin-top: 2px;
+}
+
+.field-row {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.field-row > .field { flex: 1 1 220px; }
+
+/* 清单：行间用 line分隔，整页一张台账而不是一叠卡片 */
+.todo-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.todo {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 14px 0;
+  border-top: 1px solid var(--line);
+}
+.todo:first-child { border-top: 0; }
+.todo-main { flex: 1; min-width: 0; }
+.todo-title {
+  font-size: 14px;
+  color: var(--fg);
+  line-height: 1.5;
+  word-break: break-word;
+}
+.todo-detail {
+  font-size: 13px;
+  color: var(--fg-2);
+  margin-top: 4px;
+  word-break: break-word;
+}
+.todo-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--fg-3);
+  margin-top: 6px;
+}
+.todo-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  flex-shrink: 0;
+}
+.inline-form { display: inline-flex; gap: 6px; align-items: center; }
+
+/* 状态：按「已完成就该退到背景里」处理 —— 完成的删线并降对比，
+   避免清单里已办的事跟未办的事抢注意力 */
+.todo--done .todo-title {
+  color: var(--fg-3);
+  text-decoration: line-through;
+  text-decoration-color: var(--line-3);
+}
+.todo--done .todo-detail,
+.todo--dropped .todo-detail { color: var(--fg-3); }
+.todo--dropped .todo-title { color: var(--fg-3); }
+
+/* AI 待确认：左侧一条虚线标出「还没算数」 */
+.todo--pending { border-left: 2px dashed var(--line-3); padding-left: 12px; }
+.todo[data-overdue="1"] .todo-title { color: var(--danger); }
+
+/* 11px 徽章 + 7px 方标，与既有 .badge 同一套读法 */
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  line-height: 1.6;
+  padding: 0 6px;
+  margin-left: 8px;
+  color: var(--fg-3);
+  border: 1px solid var(--line-3);
+  white-space: nowrap;
+}
+.tag::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  background: currentColor;
+}
+.tag--warn { color: var(--accent); border-color: var(--accent-edge); }
+.tag--error { color: var(--danger); border-color: var(--danger-edge); }
+
+.input--sm { width: auto; min-width: 120px; padding: 4px 8px; font-size: 12px; }
+
+.bullets {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--fg-2);
+  font-size: 13px;
+  line-height: 1.9;
+}
+.bullets b { color: var(--fg); font-weight: 500; }
+.muted { color: var(--fg-3); }
+.mt-8 { margin-top: 8px; }
+.mt-16 { margin-top: 16px; }
+
 /* ------------------------------------------------------------ 6. Utilities */
 .mt-0 { margin-top: 0; }
 .mt-8 { margin-top: 8px; }

@@ -13,6 +13,8 @@
     <h1>{{ matter.title }}</h1>
   </div>
   <div class="row">
+    {# 待办页入口（v21）：讨论里说定要做的事在这里跟。 #}
+    <a class="btn btn--ghost btn--sm" href="/matters/{{ matter.id }}/todos">待办事项</a>
     {{ state_badge(matter.status,
                    live=(matter.status == "in_progress" or matter.status == "collecting")) }}
   </div>
