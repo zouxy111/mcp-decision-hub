@@ -6,6 +6,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
 from hub.api import accounts, audit
+from hub import metrics
 from hub.config import Settings
 from hub.db.models import User
 from hub.domain.rate_limit import (
@@ -67,6 +68,7 @@ def _login_rate_check(request: Request, settings: Settings, limiter,
                  else settings.rate_limit_login_ip_per_minute)
         ok, retry = limiter.check(key, limit=limit)
         if not ok:
+            metrics.rate_limited(f"login_{dim}")
             return retry
     return None
 

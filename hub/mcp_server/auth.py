@@ -10,6 +10,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.types import Receive, Scope, Send
 
+from hub import metrics
 from hub.api.tokens import resolve_user_and_token
 from hub.domain.rate_limit import (
     RateLimiter,
@@ -70,6 +71,7 @@ class BearerAuthMiddleware:
             ok, retry = self.limiter.allow(
                 tok_key, limit=settings.rate_limit_token_per_minute)
             if not ok:
+                metrics.rate_limited("mcp_token")
                 resp = _retry_after_response(retry)
                 await resp(scope, receive, send)
                 return
@@ -78,6 +80,7 @@ class BearerAuthMiddleware:
             ok, retry = self.limiter.allow(
                 acct_key, limit=settings.rate_limit_account_per_minute)
             if not ok:
+                metrics.rate_limited("mcp_account")
                 resp = _retry_after_response(retry)
                 await resp(scope, receive, send)
                 return

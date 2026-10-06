@@ -20,6 +20,14 @@
   <a class="chip" href="/admin/model">模型配置</a>
 </nav>
 
+<div class="alert" style="margin-bottom:16px">
+  <div class="alert-body">
+    📈 Prometheus 指标端点已上线：<code>/metrics</code>（请求计数/耗时、限流拒绝、调度器扫描、队列深度）。
+    仅本机直连可访问（<code>curl http://127.0.0.1:8000/metrics</code>）；配置环境变量
+    <code>METRICS_TOKEN</code> 后可带 <code>Authorization: Bearer</code> 远程抓取。
+  </div>
+</div>
+
 {# ------------------------------------------------------- 调度器状态 #}
 <div class="section-title">调度器状态（FR-14b / PRD 10.4）</div>
 

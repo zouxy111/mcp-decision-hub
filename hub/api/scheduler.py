@@ -16,6 +16,7 @@ from sqlalchemy import select, update
 
 from hub.api import audit
 from hub.api.pipeline import maybe_drive_round
+from hub import metrics
 from hub.config import Settings
 from hub.db.models import Task
 from hub.domain.timeutil import utcnow
@@ -48,6 +49,7 @@ def scan_once(session_factory, settings: Settings, drive_queue=None) -> int:
     假），即永不超时——所有建任务路径均设置 deadline，此为隐含不变量。
     """
     round_ids_to_drive: list[str] = []
+    metrics.scheduler_scan()
     with session_factory() as session:
         now = utcnow()
         task_rows = session.execute(
@@ -80,4 +82,6 @@ def scan_once(session_factory, settings: Settings, drive_queue=None) -> int:
     if drive_queue is not None:
         for round_id in round_ids_to_drive:
             drive_queue.put_nowait(round_id)
+    if processed:
+        metrics.task_timeout(processed)
     return processed

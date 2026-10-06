@@ -116,6 +116,12 @@ def create_app(settings: Settings | None = None, *, llm=None) -> FastAPI:
             board_summary_task.cancel()
 
     app = FastAPI(title="mcp-decision-hub", lifespan=lifespan)
+    # Prometheus 指标（P2 指标看板）：请求计数/耗时埋点，/metrics 端点
+    # 仅本机或 METRICS_TOKEN 可访问，见 hub/metrics.py。
+    from hub import metrics as hub_metrics
+
+    app.add_middleware(hub_metrics.MetricsMiddleware, reg=hub_metrics.registry)
+    app.add_route("/metrics", hub_metrics.make_metrics_endpoint(), methods=["GET"])
     # 压缩（2026-10-05 甲方要求「写入速度提高一下」的配套）：
     # 云服务器在公网另一头（实测 RTT 约 180ms、有丢包），带宽比 CPU 贵得多。
     # 留言板读回（尤其 1000 条的大板子）是几百 KB 的 JSON，gzip 后通常只剩
