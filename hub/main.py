@@ -25,6 +25,7 @@ from hub.web import (
     routes_agents,
     routes_api,
     routes_auth,
+    routes_auth_api,
     routes_decision,
     routes_invitation,
     routes_matters,
@@ -158,6 +159,7 @@ def create_app(settings: Settings | None = None, *, llm=None) -> FastAPI:
         return await request_validation_exception_handler(request, exc)
 
     app.include_router(routes_auth.router)
+    app.include_router(routes_auth_api.router)  # web-ui 前端的 JSON 登录
     app.include_router(routes_matters.router)
     app.include_router(routes_decision.router)
     app.include_router(routes_agents.router)

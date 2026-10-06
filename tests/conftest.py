@@ -13,7 +13,10 @@ class CsrfTestClient(TestClient):
     Cookie）时不注入，行为与未认证请求一致。
     """
 
-    _EXEMPT_PREFIXES = ("/login", "/invite/consume")
+    # 登录/邀请消费豁免；``/api/`` 是 JSON 通道，认证走 Cookie/Bearer 而非
+    # CSRF 表单字段——测试客户端往 JSON 请求里塞 csrf_token 会被
+    # ``extra="forbid"`` 的 Pydantic 模型判422。
+    _EXEMPT_PREFIXES = ("/login", "/invite/consume", "/api/")
 
     def post(self, url, **kwargs):
         sid = self.cookies.get("hub_session")

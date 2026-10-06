@@ -13,7 +13,7 @@ Token 节省策略：
 """
 from datetime import timedelta
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -37,8 +37,12 @@ router = APIRouter(prefix="/api/meetings", tags=["meetings"])
 
 # ========== 依赖注入 ==========
 
-def get_llm(request) -> RuntimeLlm:
-    """从 app.state 获取 LLM 实例"""
+def get_llm(request: Request) -> RuntimeLlm:
+    """从 app.state 获取 LLM 实例。
+
+    ⚠ 注解不能去掉：``request`` 缺类型注解时 FastAPI 会把它当成必填
+    query 参数（``loc: ["query","request"]``），导致本依赖的端点一律 422。
+    """
     return request.app.state.llm
 
 
@@ -73,6 +77,57 @@ class SummaryResponse(BaseModel):
     ready: bool
     round: int | None = None
     summary: dict | None = None
+
+
+class MeetingBrief(BaseModel):
+    """会议列表项。前端列表页用，字段取最小集。"""
+
+    meeting_id: str
+    matter_id: str
+    matter_title: str | None = None
+    round_number: int
+    status: str
+    timeout_minutes: int
+    created_at: str
+    started_at: str | None = None
+    # 当前轮已提交立场人数，前端显示「2/3 已发言」
+    submitted_count: int = 0
+    # 应提交人数（参与人 + 视情况含发起人）
+    expected_count: int = 0
+
+
+class MeetingStanceOut(BaseModel):
+    stance_id: str
+    user_id: int
+    username: str
+    round_number: int
+    text: str
+    submitted_at: str
+
+
+class MeetingDetail(BaseModel):
+    """会议详情：含当前轮立场、参与者与提交状态、会议主题。
+
+    前端「进入会话」一次性拉全，避免再发四五个请求。
+    """
+
+    meeting_id: str
+    matter_id: str
+    matter_title: str | None = None
+    matter_background: str | None = None
+    round_number: int
+    status: str
+    timeout_minutes: int
+    created_at: str
+    started_at: str | None = None
+    # 当前轮立场
+    stances: list[MeetingStanceOut] = []
+    # 全部参与人（含是否已提交当前轮立场）
+    participants: list[dict] = []
+    # 当前用户是否已提交当前轮立场——前端据此决定禁用提交框
+    self_submitted: bool = False
+    # 尚未提交当前轮立场的用户名，前端显示「等待中」
+    waiting_for: list[str] = []
 
 
 # ========== 辅助函数 ==========
@@ -404,4 +459,168 @@ async def get_summary(
             "divergences": convergence.divergences,
             "follow_ups": convergence.follow_ups
         }
+    )
+
+
+# ========== 列表与详情（供 web-ui 前端使用） ==========
+
+
+def _visible_matter_ids(session: Session, user: User) -> list[str]:
+    """当前用户作为发起人**或**参与人的全部事项 id。
+
+    列表接口据此过滤，避免看到别人的会议。
+    """
+    as_initiator = session.execute(
+        select(Matter.id).where(Matter.initiator_id == user.id)
+    ).scalars().all()
+    as_participant = session.execute(
+        select(MatterParticipant.matter_id)
+        .where(MatterParticipant.user_id == user.id)
+    ).scalars().all()
+    return list(set(as_initiator) | set(as_participant))
+
+
+def _participant_usernames(session: Session, matter_id: str) -> list[str]:
+    """事项参与人的用户名列表（不含发起人，除非他也是参与人）。"""
+    return list(
+        session.execute(
+            select(User.username)
+            .join(MatterParticipant, MatterParticipant.user_id == User.id)
+            .where(MatterParticipant.matter_id == matter_id)
+        ).scalars().all()
+    )
+
+
+def _expected_count(session: Session, matter: Matter) -> int:
+    """本轮应收到的立场数：参与人数 + 发起人（若他也作答）。
+
+    与 :func:`_check_and_converge` 的收敛判定保持同一套口径。
+    """
+    count = session.execute(
+        select(func.count(MatterParticipant.user_id))
+        .where(MatterParticipant.matter_id == matter.id)
+    ).scalar() or 0
+    if matter.initiator_participates:
+        count += 1
+    return count
+
+
+@router.get("", response_model=list[MeetingBrief])
+def list_meetings(
+    matter_id: str | None = None,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_db),
+):
+    """会议列表。
+
+    ``matter_id`` 可选：给了返回该事项的会议；不给则返回当前用户作为
+    发起人或参与人的全部会议（前端首页用）。
+    """
+    stmt = None
+    if matter_id is not None:
+        # 显式指定时先校验权限——不能因为「不在可见集合」就静默返回空列表，
+        # 否则越权探测会得到 200+[]，与「事项存在但无权限」无法区分。
+        _require_matter_member(session, matter_id, current_user)
+        stmt = select(Meeting).where(Meeting.matter_id == matter_id)
+    else:
+        # 只列出当前用户有权限的会议
+        visible_matter_ids = _visible_matter_ids(session, current_user)
+        if not visible_matter_ids:
+            return []
+        stmt = select(Meeting).where(Meeting.matter_id.in_(visible_matter_ids))
+
+    stmt = stmt.order_by(Meeting.created_at.desc())
+
+    result = []
+    for meeting in session.scalars(stmt).all():
+        matter = session.get(Matter, meeting.matter_id)
+        submitted = session.execute(
+            select(func.count(func.distinct(MeetingStance.user_id)))
+            .where(MeetingStance.meeting_id == meeting.id)
+            .where(MeetingStance.round_number == meeting.round_number)
+        ).scalar() or 0
+        result.append(MeetingBrief(
+            meeting_id=meeting.id,
+            matter_id=meeting.matter_id,
+            matter_title=matter.title if matter else None,
+            round_number=meeting.round_number,
+            status=meeting.status,
+            timeout_minutes=meeting.timeout_minutes,
+            created_at=meeting.created_at.isoformat(),
+            started_at=meeting.started_at.isoformat() if meeting.started_at else None,
+            submitted_count=submitted,
+            expected_count=_expected_count(session, matter) if matter else 0,
+        ))
+    return result
+
+
+@router.get("/{meeting_id}", response_model=MeetingDetail)
+def get_meeting(
+    meeting_id: str,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_db),
+):
+    """会议详情：一次返回主题、当前轮立场、参与者与提交状态。
+
+    路径顺序注意：本路由必须注册在 ``/{meeting_id}/summary`` 之后不冲突，
+    且FastAPI 按声明顺序匹配——``/{meeting_id}`` 不会误吞 ``/{meeting_id}/summary``。
+    """
+    meeting = session.get(Meeting, meeting_id)
+    if not meeting:
+        raise ApiError(404, "MEETING_NOT_FOUND", "会议不存在")
+
+    # 权限：必须是事项成员
+    _require_matter_member(session, meeting.matter_id, current_user)
+
+    matter = session.get(Matter, meeting.matter_id)
+
+    # 当前轮立场
+    stances = session.execute(
+        select(MeetingStance)
+        .where(MeetingStance.meeting_id == meeting_id)
+        .where(MeetingStance.round_number == meeting.round_number)
+        .order_by(MeetingStance.submitted_at)
+    ).scalars().all()
+
+    stance_out = []
+    submitted_names = set()
+    for stance in stances:
+        user = session.get(User, stance.user_id)
+        if user:
+            submitted_names.add(user.username)
+        stance_out.append(MeetingStanceOut(
+            stance_id=stance.id,
+            user_id=stance.user_id,
+            username=user.username if user else f"user-{stance.user_id}",
+            round_number=stance.round_number,
+            text=stance.text,
+            submitted_at=stance.submitted_at.isoformat(),
+        ))
+
+    all_names = _participant_usernames(session, meeting.matter_id)
+    # 发起人若参与作答也要计入
+    if matter is not None and matter.initiator_participates:
+        initiator = session.get(User, matter.initiator_id)
+        if initiator and initiator.username not in all_names:
+            all_names.append(initiator.username)
+
+    participants = [
+        {"username": name, "submitted": name in submitted_names}
+        for name in all_names
+    ]
+
+    return MeetingDetail(
+        meeting_id=meeting.id,
+        matter_id=meeting.matter_id,
+        matter_title=matter.title if matter else None,
+        matter_background=matter.background if matter else None,
+        round_number=meeting.round_number,
+        status=meeting.status,
+        timeout_minutes=meeting.timeout_minutes,
+        created_at=meeting.created_at.isoformat(),
+        started_at=meeting.started_at.isoformat() if meeting.started_at else None,
+        stances=stance_out,
+        participants=participants,
+        self_submitted=current_user.username in submitted_names,
+        waiting_for=[n for n in all_names if n not in submitted_names],
     )
