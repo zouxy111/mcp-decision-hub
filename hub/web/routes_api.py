@@ -10,6 +10,15 @@ from sqlalchemy.orm import Session
 from hub.config import Settings
 from hub.db.models import User
 from hub.mcp_server import methods
+from hub.schemas.mcp_outputs import (
+    BoardDocumentListOut,
+    BoardDocumentOut,
+    BoardSummaryOut,
+    MessageListOut,
+    MessageOut,
+    PendingQuestionsOut,
+    RereadRequestOut,
+)
 from hub.schemas.stance import (
     StanceAnalysisRead,
     StanceCreate,
@@ -161,11 +170,12 @@ def declare_item(
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ):
-    """声明一个事项（rpQt6D 端点缺口之一）。
+    """声明一个事项 = 一块留言板（rpQt6D 端点缺口之一）。
 
     与 MCP 工具 ``declare_item`` 调用**同一个** ``methods.mcp_declare_item``
     —— D3 单一事实源：入参过 ``DeclareItemIn``、出参过 ``DeclareItemOut``，
-    参与人数 2–5 与不可逆标记等判定全在那一侧，本路由不重复判。
+    参与人（可空）与不可逆标记等判定全在那一侧，本路由不重复判。
+    2026-10-04 起声明出来的就是留言板（status=open），不再走轮次流程。
     """
     response.headers[CHANNEL_HEADER] = CHANNEL
     result = methods.mcp_declare_item(
@@ -257,3 +267,176 @@ def get_item_digest(
     return methods.mcp_get_digest(
         db, settings, user_id=user.id, matter_id=matter_id,
     )
+
+
+# ---------------------------------------------------------------------------
+# 留言板（2026-10-04 形态改造）：agent 侧的「发言 / 读回」两个端点。
+# 与 MCP 工具 post_message / list_messages 同一实现（D3 单一事实源）。
+# ---------------------------------------------------------------------------
+
+
+@router.post("/api/items/{matter_id}/messages", status_code=201,
+             response_model=MessageOut)
+def post_item_message(
+    matter_id: str,
+    response: Response,
+    request: Request,
+    payload: dict = Body(...),
+    user: User = Depends(require_bearer_unlimited),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    """在留言板发一条言 / 提问 / 回答。
+
+    2026-10-05：``human_approved`` 必填 —— Agent 上传前必须先问过本人并得到同意，
+    否则 422；``attachment_name`` + ``attachment_md`` 可带 md 文件；
+    ``reply_to_message_id`` 回答云端提问；``ask_user_id`` + ``kind="question"`` 定向提问。
+    """
+    response.headers[CHANNEL_HEADER] = CHANNEL
+    result = methods.mcp_post_message(
+        db, settings, user_id=user.id, matter_id=matter_id,
+        payload=dict(payload),
+    )
+    db.commit()
+    # 有新留言 → 后台增量更新这块板的滚动总结（读侧不阻塞）
+    request.app.state.board_queue.put_nowait(matter_id)
+    return result
+
+
+@router.get("/api/items/{matter_id}/messages",
+            response_model=MessageListOut)
+def list_item_messages(
+    matter_id: str,
+    response: Response,
+    limit: int | None = None,
+    user: User = Depends(require_bearer),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    """读回留言板（时间正序）+ 参与人名片。非成员 404。"""
+    response.headers[CHANNEL_HEADER] = CHANNEL
+    return methods.mcp_list_messages(
+        db, settings, user_id=user.id, matter_id=matter_id, limit=limit,
+    )
+
+
+@router.get("/api/questions", response_model=PendingQuestionsOut)
+def list_pending_questions(
+    response: Response,
+    matter_id: str | None = None,
+    user: User = Depends(require_bearer),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    """云端提给「你」的、还没回答的问题（本地 Agent 的拉取入口）。
+
+    「云端下发 → 本地处理（问过本人、拿到同意）→ 传回回答」这条链路的拉取端：
+    与 MCP 工具 ``list_pending_questions`` 同一实现。
+    """
+    response.headers[CHANNEL_HEADER] = CHANNEL
+    return methods.mcp_list_pending_questions(
+        db, settings, user_id=user.id, matter_id=matter_id,
+    )
+
+
+@router.get("/api/items/{matter_id}/board_summary",
+            response_model=BoardSummaryOut)
+def get_board_summary(
+    matter_id: str,
+    response: Response,
+    user: User = Depends(require_bearer),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    """这块板的**滚动总结**（云端实时维护，只查库不调模型，毫秒级返回）。
+
+    agent 想了解板子现状时先读这里（省上下文），需要原文再 ``list_messages``。
+    与 MCP 工具 ``get_board_summary`` 同一实现；非成员 404。
+    """
+    response.headers[CHANNEL_HEADER] = CHANNEL
+    return methods.mcp_get_board_summary(
+        db, settings, user_id=user.id, matter_id=matter_id,
+    )
+
+
+@router.get("/api/items/{matter_id}/board_summary/documents",
+            response_model=BoardDocumentListOut)
+def list_summary_documents(
+    matter_id: str,
+    response: Response,
+    limit: int | None = None,
+    user: User = Depends(require_bearer),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    """这块板攒下的**总结文档清单**（最新在前，不含正文）。
+
+    每完成一轮总结，云端就落一份 markdown 文档（``version`` 递增）；
+    要读全文用下面那个带 ``{version}`` 的端点。
+    """
+    response.headers[CHANNEL_HEADER] = CHANNEL
+    return methods.mcp_list_summary_documents(
+        db, settings, user_id=user.id, matter_id=matter_id, limit=limit,
+    )
+
+
+@router.get("/api/items/{matter_id}/board_summary/documents/{version}",
+            response_model=BoardDocumentOut)
+def get_summary_document(
+    matter_id: str,
+    version: int,
+    response: Response,
+    user: User = Depends(require_bearer),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    """取一份**总结文档全文**（markdown）。"""
+    response.headers[CHANNEL_HEADER] = CHANNEL
+    return methods.mcp_get_summary_document(
+        db, settings, user_id=user.id, matter_id=matter_id, version=version,
+    )
+
+
+@router.get("/api/items/{matter_id}/board_summary/document",
+            response_model=BoardDocumentOut)
+def get_latest_summary_document(
+    matter_id: str,
+    response: Response,
+    user: User = Depends(require_bearer),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    """取**最新一份**总结文档全文（``version`` 省略时的 REST 写法）。"""
+    response.headers[CHANNEL_HEADER] = CHANNEL
+    return methods.mcp_get_summary_document(
+        db, settings, user_id=user.id, matter_id=matter_id, version=None,
+    )
+
+
+@router.post("/api/items/{matter_id}/board_summary/reread",
+             response_model=RereadRequestOut)
+def request_board_reread(
+    matter_id: str,
+    response: Response,
+    request: Request,
+    payload: dict | None = Body(None),
+    user: User = Depends(require_bearer),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    """有人提了需求：下一轮总结**重读全板**（不是增量）。
+
+    常态下云端只读「上次总结之后的新留言」；只有确实需要重读时才调这里。
+    可以带 ``{"reason": "为什么"}`，理由会写进下一份总结文档。
+    """
+    response.headers[CHANNEL_HEADER] = CHANNEL
+    reason = None
+    if isinstance(payload, dict):
+        raw = payload.get("reason")
+        reason = str(raw) if raw else None
+    result = methods.mcp_request_board_reread(
+        db, settings, user_id=user.id, matter_id=matter_id, reason=reason,
+    )
+    db.commit()
+    request.app.state.board_queue.put_nowait(matter_id)
+    return result

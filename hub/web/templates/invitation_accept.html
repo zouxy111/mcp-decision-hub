@@ -1,0 +1,205 @@
+{% extends "base.html" %}
+{% block title %}加入协作 - MCP 决策中台{% endblock %}
+{% block content %}
+
+<div class="invite-page">
+  <div class="invite-card">
+    {% if error %}
+    <div class="alert alert--error mb-16" role="alert">
+      <div class="alert-body">{{ error }}</div>
+    </div>
+    {% endif %}
+
+    {% if invitation_info %}
+    <div class="invite-header">
+      <h1>您已受邀加入协作</h1>
+      <p class="lede">{{ invitation_info.creator_name }} 邀请您参与事项协作</p>
+    </div>
+
+    <div class="invite-meta">
+      <div class="meta-item">
+        <div class="meta-key">事项</div>
+        <div class="meta-val">{{ invitation_info.matter_title }}</div>
+      </div>
+      {% if invitation_info.invited_name %}
+      <div class="meta-item">
+        <div class="meta-key">受邀人</div>
+        <div class="meta-val">{{ invitation_info.invited_name }}</div>
+      </div>
+      {% endif %}
+      <div class="meta-item">
+        <div class="meta-key">协作模式</div>
+        <div class="meta-val">{{ invitation_info.collaboration_mode }}</div>
+      </div>
+    </div>
+
+    <form method="post" action="/invite/{{ short_code }}/accept" class="invite-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+      
+      <h2 class="form-section-title">创建您的账号</h2>
+      
+      <label class="field">
+        <span class="field-label">用户名<span class="req">*</span></span>
+        <input class="input" name="username" required maxlength="100"
+               autocomplete="username" spellcheck="false"
+               placeholder="请输入用户名">
+        <span class="field-hint">用于登录系统</span>
+      </label>
+
+      <label class="field">
+        <span class="field-label">邮箱<span class="req">*</span></span>
+        <input class="input" name="email" type="email" required 
+               autocomplete="email"
+               placeholder="your@email.com">
+        <span class="field-hint">用于接收通知</span>
+      </label>
+
+      <label class="field">
+        <span class="field-label">密码<span class="req">*</span></span>
+        <input class="input" name="password" type="password" required 
+               minlength="8" autocomplete="new-password"
+               placeholder="至少 8 位字符">
+      </label>
+
+      <label class="field">
+        <span class="field-label">确认密码<span class="req">*</span></span>
+        <input class="input" name="password_confirm" type="password" required 
+               minlength="8" autocomplete="new-password"
+               placeholder="再次输入密码">
+      </label>
+
+      <h2 class="form-section-title">先简单介绍一下你自己</h2>
+
+      <label class="field">
+        <span class="field-label">你的姓名<span class="req">*</span></span>
+        <input class="input" name="display_name" required maxlength="100"
+               placeholder="怎么称呼你，例如：李明">
+        <span class="field-hint">留言板上会显示这个名字，大家好知道在跟谁说话</span>
+      </label>
+
+      <label class="field">
+        <span class="field-label">你负责什么<span class="req">*</span></span>
+        <textarea class="input" name="responsibility" rows="3" required
+                  placeholder="例如：技术可行性评估——负责给出落地风险、验证方案和结论建议"></textarea>
+        <span class="field-hint">一句话说清你在这件事里负责/要交付的部分</span>
+      </label>
+
+      {% if invitation_info.collaboration_mode == 'meeting' %}
+      <h2 class="form-section-title">简单问卷</h2>
+      
+      <label class="field">
+        <span class="field-label">您对本次协作的期望</span>
+        <textarea class="input" name="expectations" rows="3"
+                  placeholder="请简要描述您希望在本次协作中实现的目标"></textarea>
+      </label>
+
+      <label class="field">
+        <span class="field-label">您的专业背景</span>
+        <input class="input" name="background" 
+               placeholder="如：产品、技术、运营等">
+      </label>
+      {% endif %}
+
+      <div class="form-actions">
+        <button type="submit" class="btn btn--primary btn--lg" data-busy-label="注册中">
+          接受邀请并创建账号
+        </button>
+      </div>
+    </form>
+
+    <p class="dim mt-16 mb-16">
+      注册完之后，把下面这段直接发给你的 AI 助手 ——
+      它读完就知道这块板子怎么用，以及它必须先问你什么。
+    </p>
+
+    {% include "_agent_onboarding.html" %}
+
+    {% else %}
+    <div class="invite-header">
+      <h1>邀请链接无效</h1>
+      <p class="lede">该邀请链接可能已过期、已被使用或已撤销</p>
+    </div>
+    <div class="form-actions">
+      <a href="/login" class="btn">返回登录</a>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+<style>
+.invite-page {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: var(--space-24);
+  background: var(--surface-0);
+}
+
+.invite-card {
+  width: 100%;
+  max-width: 560px;
+  background: var(--surface-1);
+  border-radius: var(--radius-lg);
+  padding: var(--space-32);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+}
+
+.invite-header {
+  text-align: center;
+  margin-bottom: var(--space-32);
+}
+
+.invite-header h1 {
+  font-size: var(--text-2xl);
+  margin-bottom: var(--space-8);
+}
+
+.invite-header .lede {
+  color: var(--text-dim);
+}
+
+.invite-meta {
+  background: var(--surface-2);
+  border-radius: var(--radius-md);
+  padding: var(--space-16);
+  margin-bottom: var(--space-32);
+}
+
+.invite-meta .meta-item {
+  display: grid;
+  grid-template-columns: 100px 1fr;
+  gap: var(--space-12);
+  padding: var(--space-8) 0;
+}
+
+.invite-meta .meta-item:not(:last-child) {
+  border-bottom: 1px solid var(--surface-3);
+}
+
+.form-section-title {
+  font-size: var(--text-lg);
+  margin: var(--space-24) 0 var(--space-16);
+  padding-bottom: var(--space-8);
+  border-bottom: 1px solid var(--surface-3);
+}
+
+.form-section-title:first-of-type {
+  margin-top: 0;
+}
+
+.invite-form .field {
+  margin-bottom: var(--space-16);
+}
+
+.invite-form .form-actions {
+  margin-top: var(--space-32);
+}
+
+.btn--lg {
+  width: 100%;
+  padding: var(--space-12) var(--space-24);
+  font-size: var(--text-base);
+}
+</style>
+
+{% endblock %}

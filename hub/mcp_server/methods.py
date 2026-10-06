@@ -13,6 +13,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from hub.api import audit
+from hub.api import board_summary as board_summary_svc
 from hub.api import matters as matters_svc
 from hub.api import resolutions as resolutions_svc
 from hub.api import stances as stance_svc
@@ -32,6 +33,7 @@ from hub.db.models import (
     Task,
     User,
 )
+from hub.domain import board as board_svc
 from hub.domain.approval import ApprovalWindowError, validate_approved_at
 from hub.domain.digest import compute_content_digest
 from hub.domain.idempotency import IdempotencyDecision, decide_idempotency
@@ -40,18 +42,25 @@ from hub.domain.limits import (
     validate_content_limits,
     validate_request_body_size,
 )
-from hub.domain.participants import ParticipantValidationError
 from hub.domain.timeutil import iso_z, parse_iso_z, utcnow
 from hub.schemas.mcp_outputs import (
     AskParticipantIn,
     AskParticipantOut,
+    BoardDocumentListOut,
+    BoardDocumentOut,
+    BoardSummaryOut,
     DecideItemIn,
     DeclareItemIn,
     DeclareItemOut,
     DigestOut,
     ItemListOut,
     MatterStatusOut,
+    MessageListOut,
+    MessageOut,
+    PendingQuestionsOut,
     PendingTasksOut,
+    PostMessageIn,
+    RereadRequestOut,
     ResolutionView,
     RoundSummaryOut,
     SubmitOutputOut,
@@ -60,7 +69,7 @@ from hub.schemas.mcp_outputs import (
 from hub.schemas.stance import StanceCreate, StanceListItem, StanceRead
 
 DEFAULT_LIMIT = 20
-MAX_LIMIT = 100
+MAX_LIMIT = 1000  # 与留言板容量上限对齐（2026-10-05 甲方要求放到 1000 条）
 
 
 def _contract(model_cls, data, *, mode: str = "python"):
@@ -754,7 +763,12 @@ def mcp_declare_item(
     user_id: int,
     payload: dict,
 ) -> dict:
-    """declare_item：调用方（令牌用户）作为发起人创建事项（items 载体）。"""
+    """declare_item：调用方（令牌用户）作为发起人创建事项（items 载体）。
+
+    2026-10-04 留言板形态改造：agent 声明出来的事项**也是一块留言板**
+    （``status="open"`` / ``mode="board"``），不再走「draft → start → 派题」
+    那套轮次流程。参与人可以为空——发起人建好板子后，用邀请链接把人拉进来。
+    """
     try:
         data = DeclareItemIn.model_validate(payload)
     except ValidationError as e:
@@ -769,22 +783,20 @@ def mcp_declare_item(
         except ValueError as e:
             raise ApiError(422, "VALIDATION_FAILED",
                            "overall_deadline 不是合法 ISO 8601 时间") from e
-    try:
-        matter = matters_svc.create_matter(
-            session, initiator=initiator, title=data.title, goal=data.question,
-            background=data.background, participant_ids=data.participant_ids,
-            initiator_participates=False, timeout_seconds=72 * 3600,
-            max_rounds=settings.max_rounds, draft_questions=[],
-            irreversible=data.irreversible,
-            irreversible_reason=data.irreversible_reason,
-        )
-    except ParticipantValidationError as e:
-        raise ApiError(422, "VALIDATION_FAILED", str(e)) from e
-    # 裁定 2 / 顺带项（2026-09-17）：irreversible 与理由随 create_matter
-    # 一并传入——此前在创建之后才赋值 `matter.irreversible`，恰好绕过
-    # matters.py 的「必填理由」校验（唯一能置 True 的通道绕过唯一那处校验，
-    # 柠檬果 2026-09-17 实测 4/4）；max_rounds 改读 settings（原硬编码 10，
-    # 运维改 MAX_ROUNDS 兜不住 agent 通道）。
+    # 裁决 5a：不可逆事项必须留变更理由。原来这条校验由 create_matter 代劳，
+    # 改用 create_board_matter 后要在这里显式守住（否则又是「唯一能置 True 的
+    # 通道绕过唯一那处校验」那个老毛病）。
+    if data.irreversible and not (data.irreversible_reason or "").strip():
+        raise ApiError(422, "VALIDATION_FAILED",
+                       "勾选「不可逆事项」必须填写变更理由")
+
+    matter = matters_svc.create_board_matter(
+        session, initiator=initiator, title=data.title, goal=data.question,
+        background=data.background, participant_ids=data.participant_ids,
+    )
+    matter.irreversible = bool(data.irreversible)
+    if data.irreversible_reason is not None:
+        matter.irreversible_reason = data.irreversible_reason.strip()
     matter.options = data.options
     matter.overall_deadline = deadline
     matter.item_version = 1
@@ -1007,3 +1019,210 @@ def mcp_decide_item(
     if view is None:
         raise ApiError(409, "INVALID_STATE_TRANSITION", "拍板后未找到决议")
     return _contract(ResolutionView, view, mode="json")
+
+
+# ---------------------------------------------------------------------------
+# 留言板（2026-10-04 形态改造）
+#
+# 与上面所有方法的关系：上面全是「轮次 + 任务」那条链路（派题、提交、摘要、
+# 收敛、拍板），留言板这条链路只有两个动作 —— 发言、读回。两者共用同一张
+# 成员闸门（发起人 ∪ 参与人），非成员一律 404（不泄露事项是否存在），
+# 与 ``_require_matter`` 同一口径。
+# ---------------------------------------------------------------------------
+
+
+def _board_api_error(exc: board_svc.BoardError) -> ApiError:
+    """成员闸门失败 → 404（不泄露事项是否存在）；其余一律 422。
+
+    注意别把「提问对象不是这块板的参与人」也当成 404 —— 那是入参校验，
+    不是权限问题（曾因粗暴匹配「参与人」三个字误判成 404）。
+    """
+    text = str(exc)
+    if text == "事项不存在" or text.startswith("你不是该事项的参与人"):
+        return ApiError(404, "RESOURCE_NOT_FOUND", "事项不存在")
+    return ApiError(422, "VALIDATION_FAILED", text)
+
+
+def mcp_post_message(
+    session: Session,
+    settings: Settings,
+    *,
+    user_id: int,
+    matter_id: str,
+    payload: dict,
+) -> dict:
+    """post_message：在留言板发一条言 / 提问 / 回答（MCP 工具 + REST 同一实现）。
+
+    ``human_approved`` 为 true 时落一条「本人已同意」的时间戳；Agent 代发
+    (``acting_as="agent_on_behalf"``) 不给这个同意就是 422 —— 上传前必须问过本人。
+    """
+    try:
+        data = PostMessageIn.model_validate(payload)
+    except ValidationError as e:
+        raise ApiError(422, "VALIDATION_FAILED", str(e)) from e
+    if data.human_approved is not True:
+        raise ApiError(
+            422, "VALIDATION_FAILED",
+            "上传前必须获得本人同意：请先把要上传的原文给本人看，"
+            "得到明确同意后再带 human_approved=true 重试",
+        )
+    try:
+        message = board_svc.post_message(
+            session, matter_id=matter_id, user_id=user_id,
+            content=data.content, kind=data.kind, acting_as=data.acting_as,
+            human_approved_at=utcnow(),
+            attachment_name=data.attachment_name,
+            attachment_md=data.attachment_md,
+            reply_to_message_id=data.reply_to_message_id,
+            ask_user_id=data.ask_user_id,
+        )
+    except board_svc.BoardError as e:
+        raise _board_api_error(e) from e
+    return _contract(MessageOut, board_svc.message_view(session, message),
+                     mode="json")
+
+
+def mcp_list_messages(
+    session: Session,
+    settings: Settings,
+    *,
+    user_id: int,
+    matter_id: str,
+    limit: int | None = None,
+) -> dict:
+    """list_messages：读回留言板（正序）+ 参与人名片 + 板子容量。"""
+    if limit is not None:
+        limit = min(max(1, limit), MAX_LIMIT)
+    try:
+        messages = board_svc.list_messages(
+            session, matter_id=matter_id, user_id=user_id, limit=limit,
+        )
+    except board_svc.BoardError as e:
+        raise _board_api_error(e) from e
+    return _contract(MessageListOut, {
+        "matter_id": matter_id,
+        "messages": messages,
+        "participants": board_svc.participant_cards(session, matter_id=matter_id),
+        "message_count": board_svc.message_count(session, matter_id=matter_id),
+        "message_limit": board_svc.MAX_MESSAGES_PER_BOARD,
+    }, mode="json")
+
+
+def mcp_list_pending_questions(
+    session: Session,
+    settings: Settings,
+    *,
+    user_id: int,
+    matter_id: str | None = None,
+) -> dict:
+    """list_pending_questions：云端提给「你」的、还没回答的问题。
+
+    这是「云端下发 → 本地处理 → 传回云端」这条链路的**拉取端**：
+    本地 Agent 先拉到这里的问题，问过本人拿到同意后，再用
+    ``post_message(reply_to_message_id=...)`` 把回答传回来。
+    """
+    rows = board_svc.list_pending_questions(
+        session, user_id=user_id, matter_id=matter_id,
+    )
+    # 显式投影：PendingQuestionOut 是 extra="forbid"，多余的键会被契约打回
+    questions = [{
+        "message_id": q["message_id"],
+        "matter_id": q["matter_id"],
+        "matter_title": q.get("matter_title"),
+        "content": q["content"],
+        "created_at": q["created_at"],
+        "asked_to_user_id": q["asked_to_user_id"],
+        "question_status": q["question_status"],
+        "username": q["username"],
+        "display_name": q["display_name"],
+        "responsibility": q["responsibility"],
+    } for q in rows]
+    return _contract(PendingQuestionsOut, {"questions": questions}, mode="json")
+
+
+def mcp_get_board_summary(
+    session: Session,
+    settings: Settings,
+    *,
+    user_id: int,
+    matter_id: str,
+) -> dict:
+    """get_board_summary：读这块板的**滚动总结**（只查库，不调模型）。
+
+    这是「省上下文」的入口：agent 想知道板子现状时先读这里（几百字），
+    需要原文细节再 ``list_messages``。非成员 404，与其它读侧同一口径。
+
+    v20：返回里带 ``document_version`` / ``document_count`` —— 每完成一轮
+    总结都会落一份 md 文档，要看全文用 ``get_summary_document``。
+    """
+    _require_matter(session, matter_id=matter_id, user_id=user_id)
+    view = board_summary_svc.summary_view(session, matter_id=matter_id)
+    return _contract(BoardSummaryOut, view, mode="json")
+
+
+def mcp_list_summary_documents(
+    session: Session,
+    settings: Settings,
+    *,
+    user_id: int,
+    matter_id: str,
+    limit: int | None = None,
+) -> dict:
+    """list_summary_documents：这块板攒下的总结文档清单（最新在前，不含正文）。"""
+    _require_matter(session, matter_id=matter_id, user_id=user_id)
+    if limit is not None:
+        limit = min(max(1, limit), MAX_LIMIT)
+    documents = board_summary_svc.list_documents(
+        session, matter_id=matter_id, limit=limit,
+    )
+    return _contract(BoardDocumentListOut, {
+        "matter_id": matter_id,
+        "documents": documents,
+        "document_count": board_summary_svc.document_count(
+            session, matter_id=matter_id),
+    }, mode="json")
+
+
+def mcp_get_summary_document(
+    session: Session,
+    settings: Settings,
+    *,
+    user_id: int,
+    matter_id: str,
+    version: int | None = None,
+) -> dict:
+    """get_summary_document：取一份总结文档全文（``version`` 省略 = 最新一份）。
+
+    默认返回 markdown 全文：可以直接贴给别人看、也可以存成本地文件。
+    """
+    _require_matter(session, matter_id=matter_id, user_id=user_id)
+    document = board_summary_svc.get_document(
+        session, matter_id=matter_id, version=version,
+    )
+    if document is None:
+        raise ApiError(404, "RESOURCE_NOT_FOUND",
+                       "这块板还没有总结文档（等云端跑完第一轮总结）")
+    return _contract(BoardDocumentOut, document, mode="json")
+
+
+def mcp_request_board_reread(
+    session: Session,
+    settings: Settings,
+    *,
+    user_id: int,
+    matter_id: str,
+    reason: str | None = None,
+) -> dict:
+    """request_board_reread：有人提了需求 —— 下一轮总结**重读全板**。
+
+    常态下云端只读「上次总结之后的新留言」（增量）；只有当有人明确说
+    「这个总结不对 / 现在的情况变了，重读一遍」时才走这条。带上 ``reason``
+    说明为什么要重读，会写进下一份文档里。
+    """
+    try:
+        result = board_summary_svc.request_reread(
+            session, matter_id=matter_id, user_id=user_id, reason=reason,
+        )
+    except board_svc.BoardError as e:
+        raise _board_api_error(e) from e
+    return _contract(RereadRequestOut, result, mode="json")

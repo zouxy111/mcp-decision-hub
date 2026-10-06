@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}{{ matter.title }} · 总结文档 v{{ document.version }} - MCP 决策中台{% endblock %}
+{% block content %}
+
+<div class="page-head page-head--row">
+  <div>
+    <nav class="crumbs" aria-label="面包屑">
+      <a href="/dashboard">总览</a>
+      <span class="sep">/</span>
+      <a href="/matters/{{ matter.id }}">{{ matter.title }}</a>
+      <span class="sep">/</span>
+      <span>总结文档 v{{ document.version }}</span>
+    </nav>
+    <h1>云端总结 v{{ document.version }}</h1>
+  </div>
+  <div class="row">
+    <a class="btn btn--sm" href="/matters/{{ matter.id }}#summary-docs">回到留言板</a>
+    <a class="btn btn--sm"
+       href="/matters/{{ matter.id }}/summary/{{ document.version }}.md">下载 .md</a>
+  </div>
+</div>
+
+<div class="panel mb-16">
+  <div class="panel-head">
+    <h2>这一版是什么时候、根据哪些留言写的</h2>
+    <span class="spacer"></span>
+    <span class="ticker">
+      {% if document.trigger == 'requested' %}按需求重读全板{% else %}增量更新{% endif %}
+    </span>
+  </div>
+  <div class="panel-body">
+    <div class="meta mb-16">
+      <div class="meta-item">
+        <div class="meta-key">生成时间</div>
+        <div class="meta-val mono">{{ document.created_at }}</div>
+      </div>
+      <div class="meta-item">
+        <div class="meta-key">覆盖留言</div>
+        <div class="meta-val mono">第 {{ document.covered_from }}–{{ document.covered_to }} 条</div>
+      </div>
+      <div class="meta-item">
+        <div class="meta-key">本轮新增</div>
+        <div class="meta-val mono">{{ document.delta_messages }} 条</div>
+      </div>
+      <div class="meta-item">
+        <div class="meta-key">触发方式</div>
+        <div class="meta-val mono">{{ document.trigger }}</div>
+      </div>
+    </div>
+    <p class="dim mb-0">
+      这份文档由云端 AI 自动生成，不是板上任何人的结论。要引用谁的观点，
+      请回板上的原留言核对。
+    </p>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel-head">
+    <h2>文档全文（markdown）</h2>
+  </div>
+  <div class="panel-body">
+    <pre class="board-attach-body">{{ document.content_md }}</pre>
+  </div>
+</div>
+
+{% endblock %}

@@ -4,6 +4,9 @@ MATTER_TRANSITIONS: dict[str, frozenset[str]] = {
     "draft": frozenset({"in_progress", "cancelled"}),
     "in_progress": frozenset({"collecting", "awaiting_decision", "blocked", "cancelled"}),
     "collecting": frozenset({"in_progress", "collecting", "cancelled"}),
+    # 留言板事项（2026-10-04）：建好即 open，没有 draft→start 这一段；
+    # 发起人可随时收尾（completed）或取消（cancelled）。
+    "open": frozenset({"completed", "cancelled"}),
     "awaiting_decision": frozenset({"in_progress", "completed", "cancelled"}),
     "blocked": frozenset({"in_progress", "collecting", "awaiting_decision", "cancelled"}),
     "completed": frozenset(),

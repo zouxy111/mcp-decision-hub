@@ -157,6 +157,60 @@ MIGRATIONS: tuple[Migration, ...] = (
         _steps.upgrade_add_llm_config,
         _steps.downgrade_add_llm_config,
     ),
+    Migration(
+        12,
+        "add_matter_collaboration_mode",
+        _steps.upgrade_add_matter_collaboration_mode,
+        _steps.downgrade_add_matter_collaboration_mode,
+    ),
+    Migration(
+        13,
+        "add_invitation_links",
+        _steps.upgrade_add_invitation_links,
+        _steps.downgrade_add_invitation_links,
+    ),
+    Migration(
+        14,
+        "add_batch_processing_queue",
+        _steps.upgrade_add_batch_processing_queue,
+        _steps.downgrade_add_batch_processing_queue,
+    ),
+    Migration(
+        15,
+        "allow_unlimited_invitation_uses",
+        _steps.upgrade_allow_unlimited_invitation_uses,
+        _steps.downgrade_allow_unlimited_invitation_uses,
+    ),
+    Migration(
+        16,
+        "add_meeting_tables",
+        _steps.upgrade_add_meeting_tables,
+        _steps.downgrade_add_meeting_tables,
+    ),
+    Migration(
+        17,
+        "add_board_tables",
+        _steps.upgrade_add_board_tables,
+        _steps.downgrade_add_board_tables,
+    ),
+    Migration(
+        18,
+        "add_board_message_extras",
+        _steps.upgrade_add_board_message_extras,
+        _steps.downgrade_add_board_message_extras,
+    ),
+    Migration(
+        19,
+        "add_board_summaries",
+        _steps.upgrade_add_board_summaries,
+        _steps.downgrade_add_board_summaries,
+    ),
+    Migration(
+        20,
+        "add_board_summary_documents",
+        _steps.upgrade_add_board_summary_documents,
+        _steps.downgrade_add_board_summary_documents,
+    ),
 )
 
 _VERSION_TABLE = "schema_migrations"

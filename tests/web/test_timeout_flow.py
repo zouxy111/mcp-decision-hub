@@ -31,17 +31,20 @@ def _make_users(db_session):
     return init, alice, bob
 
 
-def _create_and_start_manual_matter(client, db_session, alice, bob):
-    """发起人经 Web 路由创建手动问题事项并开始。"""
+def _create_and_start_manual_matter(client, db_session, init, alice, bob):
+    """造一个轮次形态事项并开始。
+
+    Web 自 2026-10-04 起只新建留言板事项，所以轮次形态直接走服务层造，
+    再经 Web 路由「开始」——本文件断言的是超时扫描，不是建项形态。
+    """
+    matter = matter_svc.create_matter(
+        db_session, initiator=init, title="选型决策", goal="定下方案",
+        background="背景材料", participant_ids=[alice.id, bob.id],
+        initiator_participates=False, timeout_seconds=72 * 3600,
+        max_rounds=10, draft_questions=["问题一？"],
+    )
+    db_session.commit()
     _login(client, "init")
-    data = {
-        "title": "选型决策", "goal": "定下方案", "background": "背景材料",
-        "timeout_hours": "72", "questions_text": "问题一？",
-        "participant_ids": [str(alice.id), str(bob.id)],
-    }
-    resp = client.post("/matters/new", data=data, follow_redirects=False)
-    assert resp.status_code == 303
-    matter = db_session.scalar(select(Matter))
     resp = client.post(f"/matters/{matter.id}/start", follow_redirects=False)
     assert resp.status_code == 303
     db_session.expire_all()
@@ -72,8 +75,8 @@ def _scan_via_app(client):
 
 def test_scan_once_times_out_expired_task_app_level(client, db_session,
                                                     session_factory):
-    _, alice, bob = _make_users(db_session)
-    matter = _create_and_start_manual_matter(client, db_session, alice, bob)
+    init, alice, bob = _make_users(db_session)
+    matter = _create_and_start_manual_matter(client, db_session, init, alice, bob)
     assert matter.status == "collecting"
     task_b = db_session.scalar(select(Task).where(Task.assignee_id == bob.id))
     _expire_task(session_factory, task_b.id)
@@ -168,8 +171,8 @@ def test_lifespan_worker_scans_expired_task_on_startup(settings,
 
 def test_repeated_scan_no_duplicate_audit_app_level(client, db_session,
                                                     session_factory):
-    _, alice, bob = _make_users(db_session)
-    matter = _create_and_start_manual_matter(client, db_session, alice, bob)
+    init, alice, bob = _make_users(db_session)
+    matter = _create_and_start_manual_matter(client, db_session, init, alice, bob)
     task_b = db_session.scalar(select(Task).where(Task.assignee_id == bob.id))
     _expire_task(session_factory, task_b.id)
 

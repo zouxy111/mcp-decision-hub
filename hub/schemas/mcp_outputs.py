@@ -23,12 +23,18 @@ class DeclareItemIn(_Strict):
     participant_ids 为 2–5 名参与人（FR-05）；question 复用 Matter.goal；
     irreversible / options / overall_deadline / item_version 落在 A1 的
     v4 迁移列上。irreversible=true 时 irreversible_reason 必填
-    （裁决 5a，2026-09-14；裁定 2，2026-09-17：校验在全通道生效）。"""
+    （裁决 5a，2026-09-14；裁定 2，2026-09-17：校验在全通道生效）。
+
+    2026-10-04 留言板形态改造：新建事项一律是留言板，**不再强制 2–5 人**
+    —— 正常用法是发起人先建板、再发邀请链接把人拉进来，所以 participant_ids
+    可以为空（此时板上只有发起人）。上限沿用留言板的上限（2026-10-05
+    甲方要求：**20 人**，含发起人）。
+    """
 
     title: str = Field(min_length=1, max_length=255)
     question: str = Field(min_length=1)
     background: str = ""
-    participant_ids: list[int] = Field(min_length=2, max_length=5)
+    participant_ids: list[int] = Field(default_factory=list, max_length=20)
     irreversible: bool = False
     irreversible_reason: str | None = None
     options: list[str] | None = None
@@ -283,3 +289,170 @@ class MatterStatusOut(_Strict):
     recent_rounds: list[RoundStatusView]
     resolution: ResolutionView | None
     participant_progress: list[ParticipantProgressItem] | None = None
+
+
+# ---------------------------------------------------------------------------
+# 留言板（2026-10-04 形态改造 / 2026-10-05 扩展）：
+# post_message / list_messages / list_pending_questions 的入出参契约。
+#
+# 2026-10-05 新增三件事：上传前必须本人同意（human_approved 必填）、
+# 可以传 md 文件（attachment_name + attachment_md）、
+# 云端提问 → 本地处理 → 传回回答（kind=question/answer + reply_to_message_id）。
+# ---------------------------------------------------------------------------
+
+
+class PostMessageIn(_Strict):
+    """post_message 入参。
+
+    ``human_approved`` **必填**：只有本人看过原文并明确同意后，Agent 才能传
+    ``True``；传 ``False`` 由服务层 422 打回（甲方硬要求）。
+    """
+
+    content: str = Field(default="", max_length=8000)
+    kind: Literal["message", "decision", "question", "answer"] = "message"
+    # human：本人直接发言；agent_on_behalf：本人 Agent 代发（留痕用）
+    acting_as: Literal["human", "agent_on_behalf"] = "human"
+    # 本人同意上传（必填，没有默认值 —— 不给"忘了传"留后门）
+    human_approved: bool
+    # md 附件：文件名 + 全文
+    attachment_name: str | None = Field(default=None, max_length=255)
+    attachment_md: str | None = None
+    # 回答某条提问；向某人提问
+    reply_to_message_id: str | None = None
+    ask_user_id: int | None = None
+
+
+class MessageOut(_Strict):
+    """一条留言的对外形状。字段无默认值 —— exclude_defaults 不会吃掉它们。"""
+
+    message_id: str
+    matter_id: str
+    kind: str
+    acting_as: str
+    content: str
+    created_at: str
+    human_approved: bool
+    human_approved_at: str | None
+    attachment_name: str | None
+    attachment_md: str | None
+    asked_to_user_id: int | None
+    reply_to_message_id: str | None
+    question_status: str | None
+    user_id: int
+    username: str | None
+    display_name: str | None
+    responsibility: str | None
+
+
+class ParticipantCardOut(_Strict):
+    """参与人名片：受邀注册时自报的「姓名 / 负责什么」。"""
+
+    user_id: int
+    username: str
+    display_name: str | None
+    responsibility: str | None
+
+
+class MessageListOut(_Strict):
+    """list_messages 出参：按时间正序的留言 + 参与人名片。"""
+
+    matter_id: str
+    messages: list[MessageOut]
+    participants: list[ParticipantCardOut]
+    # 板子容量：已用 / 上限（2026-10-05 甲方要求放到 1000 条）
+    message_count: int
+    message_limit: int
+
+
+class PendingQuestionOut(_Strict):
+    """云端提给「你」的待回答问题（本地 Agent 拉取用）。"""
+
+    message_id: str
+    matter_id: str
+    matter_title: str | None
+    content: str
+    created_at: str
+    asked_to_user_id: int | None
+    question_status: str | None
+    username: str | None
+    display_name: str | None
+    responsibility: str | None
+
+
+class PendingQuestionsOut(_Strict):
+    """list_pending_questions 出参。"""
+
+    questions: list[PendingQuestionOut]
+
+
+class BoardSummaryOut(_Strict):
+    """get_board_summary 出参：云端对这块板的滚动总结。
+
+    ``status``：``ok`` 最新 / ``stale`` 有新留言还没总结完（先用这一版）/
+    ``empty`` 还没有总结 / ``failed`` 上一轮生成失败（改用 list_messages）。
+
+    ``document_version`` / ``document_count``：每完成一轮总结都会落一份 md
+    文档（v20），这两个字段说明当前总结是第几版、一共攒了几份
+    —— 要读全文用 ``get_summary_document`` / ``list_summary_documents``。
+    """
+
+    matter_id: str
+    summary: str
+    judgement: str
+    key_points: list[str]
+    open_questions: list[str]
+    message_count: int
+    covered_messages: int
+    document_version: int = 0
+    document_count: int = 0
+    updated_at: str | None
+    status: str
+
+
+class BoardDocumentOut(_Strict):
+    """get_summary_document 出参：一份总结文档（含 markdown 全文）。"""
+
+    matter_id: str
+    version: int
+    created_at: str
+    covered_from: int
+    covered_to: int
+    delta_messages: int
+    trigger: str
+    summary: str
+    judgement: str
+    key_points: list[str]
+    open_questions: list[str]
+    content_md: str
+
+
+class BoardDocumentBriefOut(_Strict):
+    """总结文档清单里的一条（不含正文，省上下文）。"""
+
+    version: int
+    created_at: str
+    covered_from: int
+    covered_to: int
+    delta_messages: int
+    trigger: str
+    summary: str
+    document_chars: int
+
+
+class BoardDocumentListOut(_Strict):
+    """list_summary_documents 出参：这块板的总结文档清单，最新在前。"""
+
+    matter_id: str
+    documents: list[BoardDocumentBriefOut]
+    document_count: int
+
+
+class RereadRequestOut(_Strict):
+    """request_board_reread 出参：有人提了需求，下一轮总结重读全板。"""
+
+    matter_id: str
+    requested: bool
+    message_count: int
+    requested_by_user_id: int | None = None
+    reason: str | None = None
+    requested_at: str

@@ -111,6 +111,15 @@ def _validate_schema(schema_name: str, data) -> None:
             or any(not isinstance(n, int) or isinstance(n, bool) for n in cited)
         ):
             raise LLMSchemaError("cited_rounds 必须是非空整数数组")
+    elif schema_name == "board_summary":
+        # 留言板滚动总结（v19）：进展与判断必须非空（不生成空总结），
+        # key_points / open_questions 允许为空数组（板子刚开、还没人说话）。
+        for key in ("summary", "judgement"):
+            value = data.get(key)
+            if not isinstance(value, str) or not value.strip():
+                raise LLMSchemaError(f"{key} 必须是非空字符串")
+        _require_str_list(data, "key_points")
+        _require_str_list(data, "open_questions")
     else:
         raise LLMSchemaError(f"未知 schema: {schema_name}")
 

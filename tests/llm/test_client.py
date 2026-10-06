@@ -217,3 +217,37 @@ def test_backoff_schedule():
     assert len(sleeps) == 3
     assert sleeps == sorted(sleeps)
     assert all(0 < d <= 30.0 for d in sleeps)
+
+
+# ---------------------------------------------------------------------------
+# 留言板滚动总结（v19）：schema 必须在客户端注册，否则真实链路会以
+# LLM_SCHEMA_INVALID 重试三次后失败（云端实测踩到过这个坑）。
+# ---------------------------------------------------------------------------
+
+
+def test_board_summary_schema_registered():
+    from hub.llm.client import LLMSchemaError, _validate_schema
+
+    # 合法：进展与判断非空，两个列表可以为空（板子刚开）
+    _validate_schema("board_summary", {
+        "summary": "目前只有发起人放了背景资料。",
+        "judgement": "信息太少，还看不出结论。",
+        "key_points": [],
+        "open_questions": ["真实业务数据上的表现如何"],
+    })
+
+    with pytest.raises(LLMSchemaError):
+        _validate_schema("board_summary", {
+            "summary": "", "judgement": "j",
+            "key_points": [], "open_questions": [],
+        })
+    with pytest.raises(LLMSchemaError):
+        _validate_schema("board_summary", {
+            "summary": "s", "judgement": "   ",
+            "key_points": [], "open_questions": [],
+        })
+    with pytest.raises(LLMSchemaError):
+        _validate_schema("board_summary", {
+            "summary": "s", "judgement": "j",
+            "key_points": "不是数组", "open_questions": [],
+        })

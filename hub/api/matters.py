@@ -71,6 +71,90 @@ def create_matter(
     return matter
 
 
+# ---------------------------------------------------------------------------
+# 留言板事项（2026-10-04 形态改造）
+#
+# 与上面的 create_matter 是**两种形态**，刻意不复用：
+#   * 轮次事项（create_matter）：draft → start → 派题 → 收答案 → 收敛，
+#     参与人 2–5 名由平台派活。
+#   * 留言板事项（本函数）：建好即开放，参与人随时留言、互相可见，
+#     平台不派题、不设截止、不做轮次收敛。
+# 留言板不要求「一次凑够 2 人」——正常用法就是发起人先建板、再发邀请链接
+# 把人一个个拉进来，所以下限是 1（只有发起人）。
+# 上限（2026-10-05 甲方要求）：**20 人**（含发起人）。
+# ---------------------------------------------------------------------------
+
+BOARD_MAX_PARTICIPANTS = 20
+
+
+def create_board_matter(
+    session: Session,
+    *,
+    initiator: User,
+    title: str,
+    goal: str = "",
+    background: str = "",
+    participant_ids: list[int] | None = None,
+    mode: str = "board",
+) -> Matter:
+    """创建一个留言板事项：``status="open"``，没有草稿态、没有第一轮。"""
+    if not title.strip():
+        raise ApiError(422, "VALIDATION_FAILED", "主题为必填项")
+    unique_ids = list(dict.fromkeys(participant_ids or []))
+    if initiator.id not in unique_ids:
+        unique_ids.insert(0, initiator.id)
+    if len(unique_ids) > BOARD_MAX_PARTICIPANTS:
+        raise ApiError(422, "PARTICIPANT_COUNT_INVALID",
+                       f"留言板参与人上限 {BOARD_MAX_PARTICIPANTS} 名")
+    found = session.scalars(
+        select(User.id).where(User.id.in_(unique_ids), User.is_active.is_(True))
+    ).all()
+    if len(found) != len(unique_ids):
+        raise ApiError(404, "RESOURCE_NOT_FOUND", "参与人账号不存在或未激活")
+
+    matter = Matter(
+        initiator_id=initiator.id,
+        title=title.strip(),
+        goal=goal.strip(),
+        background=background,
+        status="open",
+        timeout_seconds=0,
+        max_rounds=0,
+        initiator_participates=True,
+        draft_questions=[],
+    )
+    matter.mode = mode
+    session.add(matter)
+    session.flush()
+    for uid in unique_ids:
+        session.add(MatterParticipant(matter_id=matter.id, user_id=uid))
+    audit.record_audit(session, audit.MATTER_CREATED, actor_user_id=initiator.id,
+                       matter_id=matter.id,
+                       detail={"participant_ids": unique_ids, "mode": mode})
+    session.flush()
+    return matter
+
+
+def set_participant_profile(
+    session: Session,
+    *,
+    matter_id: str,
+    user_id: int,
+    display_name: str | None = None,
+    responsibility: str | None = None,
+) -> MatterParticipant:
+    """写入参与人在本事项的名片（邀请注册时采集：我叫什么 / 我负责什么）。"""
+    row = session.get(MatterParticipant, (matter_id, user_id))
+    if row is None:
+        raise ApiError(404, "RESOURCE_NOT_FOUND", "该用户不是本事项参与人")
+    if display_name is not None and display_name.strip():
+        row.display_name = display_name.strip()[:100]
+    if responsibility is not None and responsibility.strip():
+        row.responsibility = responsibility.strip()
+    session.flush()
+    return row
+
+
 def start_matter(session: Session, *, matter_id: str, actor: User) -> Matter:
     """Start a matter: draft → in_progress (conditional UPDATE), then either
     create round 1 synchronously from manual questions (M1 path, no LLM) or
@@ -262,7 +346,7 @@ def continue_matter(session: Session, *, matter_id: str, actor: User) -> str:
 
 
 CANCELLABLE_MATTER_STATUSES = frozenset(
-    {"draft", "in_progress", "collecting", "awaiting_decision", "blocked"}
+    {"draft", "in_progress", "collecting", "awaiting_decision", "blocked", "open"}
 )
 
 

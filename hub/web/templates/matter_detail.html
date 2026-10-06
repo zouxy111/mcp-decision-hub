@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import state_badge, ts %}
+{% from "_macros.html" import state_badge, ts, empty_state %}
 {% block title %}{{ matter.title }} - MCP 决策中台{% endblock %}
 {% block content %}
 
@@ -57,6 +57,20 @@
     <div class="meta-key">状态</div>
     <div class="meta-val">{{ state_badge(matter.status) }}</div>
   </div>
+  {% if is_board %}
+  <div class="meta-item">
+    <div class="meta-key">协作形式</div>
+    <div class="meta-val">留言板 · 随时发言、互相可见</div>
+  </div>
+  <div class="meta-item">
+    <div class="meta-key">参与人</div>
+    <div class="meta-val mono">{{ board_participants | length }} 人</div>
+  </div>
+  <div class="meta-item">
+    <div class="meta-key">留言</div>
+    <div class="meta-val mono">{{ board_messages | length }} 条</div>
+  </div>
+  {% else %}
   <div class="meta-item">
     <div class="meta-key">累计轮次</div>
     <div class="meta-val mono">{{ rounds_used }}</div>
@@ -69,7 +83,351 @@
     <div class="meta-key">LLM 服务商</div>
     <div class="meta-val">{{ llm_provider }}</div>
   </div>
+  {% endif %}
 </div>
+
+{# ------------------------------------------------------------- 留言板 #}
+{% if is_board %}
+{% if board_summary and board_summary.status != 'empty' %}
+<div class="panel mb-16" id="cloud-summary">
+  <div class="panel-head">
+    <h2>云端自动总结</h2>
+    <span class="spacer"></span>
+    <span class="ticker">
+      {% if board_summary.status == 'ok' %}
+        已覆盖 {{ board_summary.covered_messages }}/{{ board_summary.message_count }} 条 · {{ board_summary.updated_at }}
+      {% elif board_summary.status == 'stale' %}
+        有 {{ board_summary.message_count - board_summary.covered_messages }} 条新留言还没总结完 · 当前版本 {{ board_summary.updated_at }}
+      {% elif board_summary.status == 'failed' %}
+        上次生成失败，下面是上一版
+      {% endif %}
+    </span>
+  </div>
+  <div class="panel-body">
+    {% if board_summary.summary %}
+    <div class="meta-key">当前进展</div>
+    <p class="mb-16">{{ board_summary.summary }}</p>
+    {% endif %}
+    {% if board_summary.judgement %}
+    <div class="meta-key">当前判断</div>
+    <p class="mb-16">{{ board_summary.judgement }}</p>
+    {% endif %}
+    <div class="grid grid--main">
+      <div>
+        <div class="meta-key">已经明确</div>
+        {% if board_summary.key_points %}
+        <ul>{% for item in board_summary.key_points %}<li>{{ item }}</li>{% endfor %}</ul>
+        {% else %}<p class="dim mb-0">暂无</p>{% endif %}
+      </div>
+      <div>
+        <div class="meta-key">还没解决</div>
+        {% if board_summary.open_questions %}
+        <ul>{% for item in board_summary.open_questions %}<li>{{ item }}</li>{% endfor %}</ul>
+        {% else %}<p class="dim mb-0">暂无</p>{% endif %}
+      </div>
+    </div>
+    <p class="dim mb-0 mt-8">
+      这块总结由云端 AI 增量维护：每次有新留言就结合上一版更新一次，只读新留言、
+      不重读全板。参与人的 AI 助手可以只读这份总结（省上下文），需要原文再看下面的留言。
+    </p>
+  </div>
+</div>
+{% endif %}
+
+{% if is_board %}
+<div class="panel mb-16" id="summary-docs">
+  <div class="panel-head">
+    <h2>总结文档</h2>
+    <span class="spacer"></span>
+    <span class="ticker">
+      {% if board_summary and board_summary.document_version %}
+        最新第 {{ board_summary.document_version }} 版 · 共 {{ board_summary.document_count }} 份
+      {% else %}还没有文档{% endif %}
+    </span>
+  </div>
+  <div class="panel-body">
+    <p class="dim mb-8">
+      每跑完一轮云端总结就自动落一份 markdown 文档（旧版本不会覆盖，随时能回看）。
+      文档里「本轮新增的留言」那一节就是这一轮真正变化的部分。
+    </p>
+    {% if board_summary_documents %}
+    <ul class="board-list mb-16">
+      {% for doc in board_summary_documents %}
+      <li class="board-item" data-kind="decision">
+        <div class="board-head">
+          <b>v{{ doc.version }}</b>
+          <span class="board-role">
+            覆盖第 {{ doc.covered_from }}–{{ doc.covered_to }} 条
+            · 本轮新增 {{ doc.delta_messages }} 条
+            {% if doc.trigger == 'requested' %}· 按需求重读全板{% endif %}
+          </span>
+          <span class="spacer"></span>
+          <span class="mono dim">{{ doc.created_at }}</span>
+        </div>
+        <div class="board-body">{{ doc.summary }}</div>
+        <div class="row mt-8">
+          <a class="btn btn--sm" href="/matters/{{ matter.id }}/summary/{{ doc.version }}">看全文</a>
+          <a class="btn btn--sm" href="/matters/{{ matter.id }}/summary/{{ doc.version }}.md">下载 .md</a>
+        </div>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="dim mb-16">
+      还没有总结文档。板上有留言之后，云端跑完第一轮总结就会有。
+    </p>
+    {% endif %}
+    <details class="board-attach">
+      <summary>这份总结不对？让云端重读全板重新总结一次</summary>
+      <form method="post" action="/matters/{{ matter.id }}/summary/reread" class="mt-8">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+        <label class="field mb-8">
+          <span class="field-label">为什么要重读（会写进下一份文档）</span>
+          <input class="input" name="reason" maxlength="500"
+                 placeholder="例：板子上的情况变了，按需求重新看一遍全部留言">
+        </label>
+        <p class="dim mb-8">
+          常态下云端只读「上一版总结之后的新留言」（快、省上下文）；
+          这里提交后下一轮会从第一条留言重新读一遍，每一批都会落一份新文档。
+        </p>
+        <button type="submit" class="btn" data-busy-label="提交中">提交重读需求</button>
+      </form>
+    </details>
+  </div>
+</div>
+{% endif %}
+
+{% if board_pending_questions %}
+<div class="panel mb-16" id="pending">
+  <div class="panel-head">
+    <h2>待你回答（{{ board_pending_questions | length }}）</h2>
+    <span class="spacer"></span>
+    <span class="ticker">云端下发的提问 · 本地问过本人再传回来</span>
+  </div>
+  <div class="panel-body">
+    <ul class="board-list">
+      {% for q in board_pending_questions %}
+      <li class="board-item" data-kind="question">
+        <div class="board-head">
+          <b>{{ q.display_name or q.username }}</b> 问你
+          <span class="spacer"></span>
+          <span class="mono dim">{{ q.created_at }}</span>
+        </div>
+        <div class="board-body">{{ q.content }}</div>
+        <form method="post" action="/matters/{{ matter.id }}/messages" class="mt-8">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+          <input type="hidden" name="reply_to_message_id" value="{{ q.message_id }}">
+          <label class="field mb-8">
+            <span class="field-label">你的回答</span>
+            <textarea class="input" name="content" rows="3"
+                      placeholder="先跟你的 AI 助手把判断、依据、不确定的地方说清楚，再贴到这里"></textarea>
+          </label>
+          <button type="submit" class="btn btn--primary" data-busy-label="提交中">提交回答</button>
+        </form>
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+</div>
+{% endif %}
+
+<div class="panel mb-16" id="board">
+  <div class="panel-head">
+    <h2>留言板</h2>
+    <span class="spacer"></span>
+    <span class="ticker">
+      {{ board_message_count }}/{{ board_message_limit }} 条 · {{ board_participants | length }} 人
+    </span>
+  </div>
+  <div class="panel-body">
+    {% if board_message_count >= board_message_limit %}
+    <div class="alert alert--error mb-16" role="alert">
+      <div class="alert-body">这块板子已经满 {{ board_message_limit }} 条了，不能再发新留言。</div>
+    </div>
+    {% else %}
+    <form method="post" action="/matters/{{ matter.id }}/messages"
+          enctype="multipart/form-data" class="mb-16">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+      <label class="field">
+        <span class="field-label">说点什么</span>
+        <textarea class="input" name="content" rows="4"
+                  placeholder="直接写你的判断、依据、疑问或建议，不用等别人先发言"></textarea>
+        <span class="field-hint">
+          三段就够：<b>我的判断</b> → <b>依据是什么</b> → <b>哪里还不确定</b>。
+          用大白话说，不用写报告，也别写缩写和内部术语。
+        </span>
+      </label>
+      <label class="field">
+        <span class="field-label">附一份 markdown 文件</span>
+        <input class="input" type="file" name="attachment" accept=".md,.markdown,.txt">
+        <span class="field-hint">
+          内容长（比如一整份分析）就写成 .md 传上来，板上直接能看。只收 UTF-8 的 .md / .txt。
+        </span>
+      </label>
+      <label class="field">
+        <span class="field-label">向某个人提问（选填）</span>
+        <select class="input" name="ask_user_id">
+          <option value="">不提问，只是发言</option>
+          {% for p in board_participants %}
+          <option value="{{ p.user_id }}">
+            {{ p.display_name or p.username }}{% if p.responsibility %} · {{ p.responsibility }}{% endif %}
+          </option>
+          {% endfor %}
+        </select>
+        <span class="field-hint">
+          选中后这条会变成定向提问；对方的助手会在本地拉到它，问过他本人再把回答传回来。
+        </span>
+      </label>
+      {% if is_initiator %}
+      <label class="field">
+        <span class="field-label">作为结论发布</span>
+        <span class="field-hint">
+          <input type="checkbox" name="kind" value="decision">
+          勾选后这条留言会标记为「结论」（置顶显示，只有发起人能用）
+        </span>
+      </label>
+      {% endif %}
+      <div class="form-actions form-actions--flush">
+        <button type="submit" class="btn btn--primary" data-busy-label="发布中">发布留言</button>
+      </div>
+    </form>
+    {% endif %}
+
+    {% if board_messages_shown is not none and board_message_count > board_messages_shown %}
+    <div class="alert alert--info mb-16" role="status">
+      <div class="alert-body">
+        板上共 {{ board_message_count }} 条，这里只渲染最近 {{ board_messages_shown }} 条
+        （1000 条一次全渲染会把浏览器拖垮）。
+        <a href="/matters/{{ matter.id }}?messages=all">看全部</a>，
+        或用接口 <span class="mono">GET /api/items/{{ matter.id }}/messages</span> 读全量。
+      </div>
+    </div>
+    {% elif board_messages_all and board_message_count > 200 %}
+    <div class="alert alert--info mb-16" role="status">
+      <div class="alert-body">
+        正在一次渲染全部 {{ board_message_count }} 条，页面可能会卡一下。
+        <a href="/matters/{{ matter.id }}">只看最近 100 条</a>。
+      </div>
+    </div>
+    {% endif %}
+
+    <details class="board-attach mb-16">
+      <summary>给参与人的 AI 助手：直接读这块板子（不用开浏览器）</summary>
+      <p class="dim mt-8 mb-8">
+        参与人把他的令牌交给助手后，助手用自己那边的 HTTP 客户端或 MCP 客户端直接读就行，
+        <b>不需要浏览器自动化</b>（不要让它去点网页、截图）。把下面几条命令复制给它
+        （<span class="mono">hdt_xxx</span> 换成参与人自己的令牌）：
+      </p>
+      <pre class="board-attach-body"># 1) 板子现在什么情况（最快、最省上下文）
+curl -s --compressed /api/items/{{ matter.id }}/board_summary -H "Authorization: Bearer hdt_xxx"
+
+# 2) 最新一份总结文档全文（纯 markdown，可以直接转给本人看）
+curl -s --compressed /api/items/{{ matter.id }}/board_summary/document -H "Authorization: Bearer hdt_xxx"
+
+# 3) 这块板攒了哪几版总结文档
+curl -s --compressed /api/items/{{ matter.id }}/board_summary/documents -H "Authorization: Bearer hdt_xxx"
+
+# 4) 要看原文再拉留言（别一上来拉全板）
+curl -s --compressed "/api/items/{{ matter.id }}/messages?limit=50" -H "Authorization: Bearer hdt_xxx"
+
+# 5) 有没有人点名向我提问
+curl -s --compressed /api/questions -H "Authorization: Bearer hdt_xxx"</pre>
+      <p class="dim mt-8 mb-0">
+        域名换成打开本站用的那个（含端口）。完整规矩见
+        <a class="mono" href="/static/skills/collaborate-on-board/SKILL.md">collaborate-on-board 这份 skill</a>。
+      </p>
+    </details>
+    {% if board_messages %}
+    <ul class="board-list">
+      {% for m in board_messages %}
+      <li class="board-item"{% if m.kind in ('decision', 'question') %} data-kind="{{ m.kind }}"{% endif %}>
+        <div class="board-head">
+          <b>{{ m.display_name or m.username }}</b>
+          {% if m.responsibility %}<span class="board-role">{{ m.responsibility }}</span>{% endif %}
+          {% if m.kind == 'decision' %}<span class="ticker">结论</span>{% endif %}
+          {% if m.kind == 'question' %}
+            <span class="ticker">
+              提问{% if m.question_status == 'answered' %} · 已回答{% else %} · 待回答{% endif %}
+            </span>
+          {% endif %}
+          {% if m.kind == 'answer' %}<span class="ticker">回答</span>{% endif %}
+          {% if m.acting_as == 'agent_on_behalf' %}
+            <span class="ticker">本人 Agent 代发{% if m.human_approved %} · 本人已确认{% endif %}</span>
+          {% endif %}
+          <span class="spacer"></span>
+          <span class="mono dim">{{ m.created_at }}</span>
+        </div>
+        {% if m.content %}<div class="board-body">{{ m.content }}</div>{% endif %}
+        {% if m.attachment_md %}
+        <details class="board-attach">
+          <summary>附件：{{ m.attachment_name }}（点开看全文）</summary>
+          <pre class="board-attach-body">{{ m.attachment_md }}</pre>
+        </details>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    {{ empty_state("还没有人留言", "你是第一个——写下你的判断，别人进来就能看到。") }}
+    {% endif %}
+  </div>
+</div>
+
+<div class="panel mb-16">
+  <div class="panel-head">
+    <h2>参与人</h2>
+    <span class="spacer"></span>
+    <span class="ticker">受邀注册时自报的姓名与负责内容</span>
+  </div>
+  <div class="panel-body">
+    {% if board_participants %}
+    <table class="table">
+      <thead><tr><th>姓名</th><th>负责什么</th><th>账号</th></tr></thead>
+      <tbody>
+        {% for p in board_participants %}
+        <tr>
+          <td>{{ p.display_name or "（未填写）" }}</td>
+          <td>{{ p.responsibility or "（未填写）" }}</td>
+          <td class="mono dim">{{ p.username }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="dim mb-0">还没有参与人。到事项页发一条邀请链接，别人注册后就出现在这里。</p>
+    {% endif %}
+  </div>
+</div>
+
+<style>
+.board-list { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-12); }
+.board-item {
+  border: 1px solid var(--surface-3);
+  border-left: 3px solid var(--surface-3);
+  border-radius: var(--radius-md);
+  padding: var(--space-12) var(--space-16);
+  background: var(--surface-2);
+}
+.board-item[data-kind="decision"] { border-left-color: var(--accent, #6aa9ff); }
+.board-item[data-kind="question"] { border-left-color: #e8a33d; }
+.board-head {
+  display: flex; flex-wrap: wrap; align-items: baseline;
+  gap: var(--space-8); margin-bottom: var(--space-8);
+}
+.board-role { color: var(--text-dim); font-size: var(--text-sm); }
+.board-body { white-space: pre-wrap; line-height: 1.6; }
+/* md 附件：默认收起，点开看全文（云端能读 = 正文存在库里，直接渲染） */
+.board-attach { margin-top: var(--space-8); }
+.board-attach summary { cursor: pointer; color: var(--text-dim); font-size: var(--text-sm); }
+.board-attach-body {
+  margin: var(--space-8) 0 0; padding: var(--space-12);
+  background: var(--surface-0); border: 1px solid var(--surface-3);
+  border-radius: var(--radius-md);
+  white-space: pre-wrap; word-break: break-word;
+  max-height: 420px; overflow: auto; font-size: var(--text-sm);
+}
+</style>
+{% endif %}
 
 {# ----------------------------------------------------------- 下一步操作 #}
 {% if can_continue or can_cancel or can_draft_from_blocked

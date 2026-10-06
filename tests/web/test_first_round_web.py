@@ -54,20 +54,21 @@ def test_detail_shows_generating_notice(client, db_session, users):
 
 def test_web_blank_questions_llm_flow(client, db_session, session_factory):
     """表单留空 → 开始 → 后台出题后出现任务并 collecting（端到端走队列）。"""
-    make_user(db_session, "init", password="pw-123456")
+    init = make_user(db_session, "init", password="pw-123456")
     alice_u = make_user(db_session, "alice", password="pw-123456")
     bob_u = make_user(db_session, "bob", password="pw-123456")
     db_session.commit()
-    _login(client, "init")
-    data = {
-        "title": "选型决策", "goal": "定下方案", "background": "背景材料",
-        "timeout_hours": "72", "questions_text": "",
-        "participant_ids": [str(alice_u.id), str(bob_u.id)],
-    }
-    resp = client.post("/matters/new", data=data, follow_redirects=False)
-    assert resp.status_code == 303
-    matter = db_session.scalar(select(Matter))
+    # Web 自 2026-10-04 起只新建留言板事项，所以轮次形态走服务层造，
+    # 再经 Web 路由「开始」——这条 LLM 出题链路仍是存量事项的唯一路径。
+    matter = matter_svc.create_matter(
+        db_session, initiator=init, title="选型决策", goal="定下方案",
+        background="背景材料",
+        participant_ids=[alice_u.id, bob_u.id], initiator_participates=False,
+        timeout_seconds=72 * 3600, max_rounds=10, draft_questions=[],
+    )
+    db_session.commit()
     assert matter.draft_questions == []
+    _login(client, "init")
     resp = client.post(f"/matters/{matter.id}/start", follow_redirects=False)
     assert resp.status_code == 303
 

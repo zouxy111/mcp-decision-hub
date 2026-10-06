@@ -2,13 +2,14 @@
 
 import asyncio
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from hub.api import audit as audit_svc
+from hub.api import board_summary as board_summary_svc
 from hub.api import matters as matter_svc
 from hub.api import reassignment as reassign_svc
 from hub.api.audit_query import (
@@ -24,6 +25,8 @@ from hub.api.pipeline import (
 from hub.api.resolutions import draft_resolution_from_blocked, get_latest_resolution
 from hub.config import Settings
 from hub.db.models import Matter, MatterParticipant, Output, Round, RoundSummary, Task, User
+from hub.domain import board as board_svc
+from hub.domain.timeutil import utcnow
 from hub.web.deps import (
     get_current_user,
     get_db,
@@ -88,20 +91,16 @@ def matter_create(
     settings: Settings = Depends(get_settings),
 ):
     ids = list(participant_ids)
-    if initiator_participates and user.id not in ids:
-        ids.append(user.id)
     try:
-        matter = matter_svc.create_matter(
+        # 2026-10-04 形态改造：新建事项一律是**留言板** —— 建好即开放，
+        # 不派题、不等 2–5 人凑齐（发起人可以先建板再去发邀请链接）。
+        matter = matter_svc.create_board_matter(
             db,
             initiator=user,
             title=title,
             goal=goal,
             background=background,
             participant_ids=ids,
-            initiator_participates=initiator_participates,
-            timeout_seconds=timeout_hours * 3600,
-            max_rounds=settings.max_rounds,
-            draft_questions=questions_text.splitlines(),
         )
     except ApiError as e:
         db.commit()  # persist any audit the service wrote
@@ -118,7 +117,32 @@ def matter_create(
     return RedirectResponse(f"/matters/{matter.id}", status_code=303)
 
 
-def _build_detail(db: Session, matter: Matter, user: User, settings: Settings) -> dict:
+def _board_messages_for_web(db: Session, matter: Matter, user: User,
+                            limit: int | None = None) -> list[dict]:
+    """留言板 Web 视图：时间转成模板约定的 %Y-%m-%dT%H:%M:%SZ（UTC）。
+
+    ``limit`` 默认只取最近 :data:`BOARD_WEB_MESSAGE_LIMIT` 条 —— 留言板容量
+    已经放到 1000 条，一页渲染 1000 条（还带 20 万字的附件）会让**浏览器**
+    卡住，慢的不是数据库。要一次看全用 ``?messages=all``。
+    """
+    rows = board_svc.list_messages(db, matter_id=matter.id, user_id=user.id,
+                                   limit=limit)
+    for row in rows:
+        stamp = row.get("created_at") or ""
+        row["created_at"] = (stamp.split(".")[0] + "Z") if stamp else "-"
+    return rows
+
+
+# 网页上默认渲染最近多少条留言（接口侧不受这个限制）。
+BOARD_WEB_MESSAGE_LIMIT = 100
+
+
+def _build_detail(db: Session, matter: Matter, user: User, settings: Settings,
+                  *, messages_query: str | None = None) -> dict:
+    if messages_query and messages_query.strip().lower() == "all":
+        web_message_limit = None
+    else:
+        web_message_limit = BOARD_WEB_MESSAGE_LIMIT
     rounds = db.scalars(
         select(Round).where(Round.matter_id == matter.id)
         .order_by(Round.round_number)
@@ -191,6 +215,45 @@ def _build_detail(db: Session, matter: Matter, user: User, settings: Settings) -
     return {
         "matter": matter,
         "is_initiator": is_initiator,
+        # 留言板形态（2026-10-04）：整个协作界面就是一块留言板，
+        # 没有轮次、没有任务、没有提交状态。
+        "is_board": matter.mode == "board",
+        "board_messages": (
+            _board_messages_for_web(db, matter, user, limit=web_message_limit)
+            if matter.mode == "board" else []
+        ),
+        "board_messages_shown": (
+            None if web_message_limit is None
+            else min(web_message_limit,
+                     board_svc.message_count(db, matter_id=matter.id))
+        ),
+        "board_messages_all": web_message_limit is None,
+        "board_participants": (
+            board_svc.participant_cards(db, matter_id=matter.id)
+            if matter.mode == "board" else []
+        ),
+        # 「云端提问 → 本地处理 → 传回回答」在网页上的落点：待我回答的提问，
+        # 以及板子容量（2026-10-05 甲方要求放到 1000 条）。
+        "board_pending_questions": (
+            board_svc.list_pending_questions(db, user_id=user.id,
+                                             matter_id=matter.id)
+            if matter.mode == "board" else []
+        ),
+        "board_message_count": (
+            board_svc.message_count(db, matter_id=matter.id)
+            if matter.mode == "board" else 0
+        ),
+        "board_message_limit": board_svc.MAX_MESSAGES_PER_BOARD,
+        # 云端滚动总结：读侧只查库（毫秒级），有新增未总结时 status=stale
+        "board_summary": (
+            board_summary_svc.summary_view(db, matter_id=matter.id)
+            if matter.mode == "board" else None
+        ),
+        # 每轮总结落一份 md 文档（v20）：网页上给最近 10 份 + 下载入口
+        "board_summary_documents": (
+            board_summary_svc.list_documents(db, matter_id=matter.id, limit=10)
+            if matter.mode == "board" else []
+        ),
         "round_views": round_views,
         "llm_provider": settings.llm_provider_name,
         "rounds_used": rounds_used,
@@ -276,6 +339,7 @@ def _resolution_convergence(db: Session, matter: Matter) -> str | None:
 def matter_detail(
     request: Request,
     matter_id: str,
+    messages: str | None = None,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
     settings: Settings = Depends(get_settings),
@@ -283,10 +347,160 @@ def matter_detail(
     matter = matter_svc.get_matter_for_user(db, matter_id=matter_id, user=user)
     if matter is None:
         raise HTTPException(status_code=404, detail="事项不存在或不可见")
-    context = _build_detail(db, matter, user, settings)
+    context = _build_detail(db, matter, user, settings, messages_query=messages)
     context["current_user_is_admin"] = user.is_admin
     context["error"] = None
     return templates.TemplateResponse(request, "matter_detail.html", context)
+
+
+# ---------------------------------------------------------------------------
+# 云端总结文档（v20，2026-10-05）
+#
+# 每完成一轮总结就落一份 md 文档。网页上给三件事：看清单、看全文、下载成文件。
+# ---------------------------------------------------------------------------
+
+
+def _summary_document_or_404(db: Session, matter: Matter,
+                             version: int | None) -> dict:
+    document = board_summary_svc.get_document(
+        db, matter_id=matter.id, version=version)
+    if document is None:
+        raise HTTPException(status_code=404, detail="这块板还没有这一版总结文档")
+    return document
+
+
+@router.get("/matters/{matter_id}/summary/{version}.md")
+def matter_summary_document_download(
+    matter_id: str,
+    version: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """把总结文档下载成本地 .md 文件（可以直接转发给别人）。"""
+    matter = matter_svc.get_matter_for_user(db, matter_id=matter_id, user=user)
+    if matter is None:
+        raise HTTPException(status_code=404, detail="事项不存在或不可见")
+    document = _summary_document_or_404(db, matter, version)
+    filename = f"summary-v{document['version']}.md"
+    return PlainTextResponse(
+        document["content_md"],
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/matters/{matter_id}/summary/{version}", response_class=HTMLResponse)
+def matter_summary_document_page(
+    request: Request,
+    matter_id: str,
+    version: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+    settings: Settings = Depends(get_settings),
+):
+    """看某一版总结文档全文（网页上直接读，不用下载）。"""
+    matter = matter_svc.get_matter_for_user(db, matter_id=matter_id, user=user)
+    if matter is None:
+        raise HTTPException(status_code=404, detail="事项不存在或不可见")
+    document = _summary_document_or_404(db, matter, version)
+    return templates.TemplateResponse(request, "matter_summary_document.html", {
+        "matter": matter,
+        "document": document,
+        "current_user_is_admin": user.is_admin,
+    })
+
+
+@router.post("/matters/{matter_id}/summary/reread", response_class=HTMLResponse)
+def matter_request_reread(
+    request: Request,
+    matter_id: str,
+    reason: str = Form(""),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_csrf),
+    settings: Settings = Depends(get_settings),
+):
+    """有人提了需求：请云端下一轮**重读全板**再重新总结一次。
+
+    常态下云端只读「上次总结之后的新留言」；这条是给「总结已经不对了 / 现在
+    的情况跟总结差很远」准备的。提完立刻回页面，后台慢慢跑。
+    """
+    matter = matter_svc.get_matter_for_user(db, matter_id=matter_id, user=user)
+    if matter is None:
+        raise HTTPException(status_code=404, detail="事项不存在或不可见")
+    try:
+        board_summary_svc.request_reread(
+            db, matter_id=matter_id, user_id=user.id, reason=reason)
+        db.commit()
+        request.app.state.board_queue.put_nowait(matter_id)
+    except board_svc.BoardError as e:
+        db.rollback()
+        context = _build_detail(db, matter, user, settings)
+        context["current_user_is_admin"] = user.is_admin
+        context["error"] = str(e)
+        return templates.TemplateResponse(request, "matter_detail.html", context,
+                                          status_code=400)
+    return RedirectResponse(f"/matters/{matter_id}#cloud-summary", status_code=303)
+
+
+@router.post("/matters/{matter_id}/messages", response_class=HTMLResponse)
+async def matter_post_message(
+    request: Request,
+    matter_id: str,
+    content: str = Form(""),
+    kind: str = Form("message"),
+    ask_user_id: str = Form(""),
+    reply_to_message_id: str = Form(""),
+    attachment: UploadFile | None = File(None),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_csrf),
+    settings: Settings = Depends(get_settings),
+):
+    """在留言板发言 / 提问 / 回答（2026-10-04 起留言板是唯一协作流程）。
+
+    2026-10-05：本条路由是**本人自己在网页上发**，所以同意时间戳直接取当前时间
+    （本人操作 = 本人同意）；Agent 走 API/MCP 通道时必须显式带 human_approved。
+    支持上传 .md 附件（正文存库，云端可读）。
+    """
+    matter = matter_svc.get_matter_for_user(db, matter_id=matter_id, user=user)
+    if matter is None:
+        raise HTTPException(status_code=404, detail="事项不存在或不可见")
+
+    def _fail(message: str):
+        context = _build_detail(db, matter, user, settings)
+        context["current_user_is_admin"] = user.is_admin
+        context["error"] = message
+        return templates.TemplateResponse(request, "matter_detail.html", context,
+                                          status_code=400)
+
+    attachment_name = None
+    attachment_md = None
+    if attachment is not None and attachment.filename:
+        raw = await attachment.read()
+        try:
+            attachment_md = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            return _fail("附件要用 UTF-8 编码的纯文本 / markdown 文件")
+        attachment_name = attachment.filename
+
+    ask_uid = int(ask_user_id) if ask_user_id.strip().isdigit() else None
+    if ask_uid:
+        kind = "question"
+
+    try:
+        board_svc.post_message(
+            db, matter_id=matter_id, user_id=user.id, content=content,
+            kind=kind, acting_as="human", human_approved_at=utcnow(),
+            attachment_name=attachment_name, attachment_md=attachment_md,
+            reply_to_message_id=reply_to_message_id.strip() or None,
+            ask_user_id=ask_uid,
+        )
+        db.commit()
+        # 有新留言 → 后台增量更新滚动总结（页面不等它，下次刷新就能看到）
+        request.app.state.board_queue.put_nowait(matter_id)
+    except board_svc.BoardError as e:
+        db.rollback()
+        return _fail(str(e))
+    return RedirectResponse(f"/matters/{matter_id}#board", status_code=303)
 
 
 @router.post("/matters/{matter_id}/start", response_class=HTMLResponse)

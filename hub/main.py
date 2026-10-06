@@ -7,12 +7,14 @@ from fastapi import FastAPI
 from fastapi.encoders import jsonable_encoder
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from hub.api import meetings
 from hub.api.accounts import seed_admin
 from hub.api.errors import ApiError, error_payload
-from hub.background import drive_worker, resume_worker, timeout_worker
+from hub.background import board_summary_worker, drive_worker, resume_worker, timeout_worker
 from hub.config import Settings, load_settings
 from hub.db.session import init_db, make_engine, make_session_factory
 from hub.domain.rate_limit import RateLimiter
@@ -24,6 +26,7 @@ from hub.web import (
     routes_api,
     routes_auth,
     routes_decision,
+    routes_invitation,
     routes_matters,
 )
 
@@ -66,6 +69,8 @@ def create_app(settings: Settings | None = None, *, llm=None) -> FastAPI:
         llm = _make_llm(settings, session_factory)
     drive_queue: asyncio.Queue[str] = asyncio.Queue()
     resume_queue: asyncio.Queue[tuple[str, str]] = asyncio.Queue()
+    # 留言板滚动总结队列（v19）：每次新留言丢 matter_id 进来，后台增量更新
+    board_queue: asyncio.Queue[str] = asyncio.Queue()
 
     mcp_asgi = None
     mcp_inner_lifespan = None
@@ -73,7 +78,7 @@ def create_app(settings: Settings | None = None, *, llm=None) -> FastAPI:
     if create_mcp_asgi is not None:
         mcp_asgi, mcp_inner_lifespan = create_mcp_asgi(
             session_factory, settings, drive_queue, resume_queue=resume_queue,
-            limiter=limiter,
+            limiter=limiter, board_queue=board_queue,
         )
 
     @asynccontextmanager
@@ -95,6 +100,9 @@ def create_app(settings: Settings | None = None, *, llm=None) -> FastAPI:
         timeout_scan_task = asyncio.create_task(
             timeout_worker(session_factory, settings, drive_queue)
         )
+        board_summary_task = asyncio.create_task(
+            board_summary_worker(board_queue, session_factory, settings, llm)
+        )
         try:
             if mcp_inner_lifespan is not None:
                 async with mcp_inner_lifespan(app):
@@ -105,14 +113,21 @@ def create_app(settings: Settings | None = None, *, llm=None) -> FastAPI:
             worker.cancel()
             gate_worker.cancel()
             timeout_scan_task.cancel()
+            board_summary_task.cancel()
 
     app = FastAPI(title="mcp-decision-hub", lifespan=lifespan)
+    # 压缩（2026-10-05 甲方要求「写入速度提高一下」的配套）：
+    # 云服务器在公网另一头（实测 RTT 约 180ms、有丢包），带宽比 CPU 贵得多。
+    # 留言板读回（尤其 1000 条的大板子）是几百 KB 的 JSON，gzip 后通常只剩
+    # 一两成，省下的是实打实的等待时间。阈值 1KB，小响应不折腾。
+    app.add_middleware(GZipMiddleware, minimum_size=1024)
     app.state.settings = settings
     app.state.session_factory = session_factory
     app.state.limiter = limiter
     app.state.llm = llm
     app.state.drive_queue = drive_queue
     app.state.resume_queue = resume_queue
+    app.state.board_queue = board_queue
 
     @app.exception_handler(ApiError)
     async def _api_error_handler(_request, exc: ApiError) -> JSONResponse:
@@ -143,6 +158,8 @@ def create_app(settings: Settings | None = None, *, llm=None) -> FastAPI:
     app.include_router(routes_admin.router)
     app.include_router(routes_api.router)
     app.include_router(routes_agent_rest.router)
+    app.include_router(routes_invitation.router)
+    app.include_router(meetings.router)  # 会议模式 API
     # 前端静态资源同源托管：模板只需 /static/console.css 与 /static/console.js，
     # 不再依赖 unpkg 等外部 CDN（此前 htmx 走公网，网络不通即静默失效）。
     # html=True：目录请求解析 index.html。没有它时 /static/skills/ 与 /static/skills

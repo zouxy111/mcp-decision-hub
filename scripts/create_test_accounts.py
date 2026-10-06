@@ -7,12 +7,13 @@
   .venv/bin/python scripts/create_test_accounts.py
 """
 
+from argon2 import PasswordHasher
 from sqlalchemy import select
+
 from hub.api.tokens import issue_token
 from hub.config import load_settings
 from hub.db.models import User
 from hub.db.session import init_db, make_engine, make_session_factory
-from argon2 import PasswordHasher
 
 USERS = [
     {"username": "smoke_alice", "email": "alice@example.com"},
@@ -81,8 +82,8 @@ def main():
         print("\n" + "-"*60)
         print("🌐 Web 登录信息：")
         print("-"*60)
-        print(f"  URL: https://hub.tdp-demo.work/login")
-        print(f"  Username: owner_test")
+        print("  URL: https://hub.tdp-demo.work/login")
+        print("  Username: owner_test")
         print(f"  Password: {PASSWORD}")
         
         print("\n" + "-"*60)

@@ -1,6 +1,7 @@
 import pytest
 from sqlalchemy import select
 
+from hub.api import matters as matter_svc
 from hub.db.models import Matter, Round, Task
 from tests.conftest import make_user
 
@@ -30,6 +31,20 @@ def _create_form(a, b, **overrides):
     return data
 
 
+def _make_round_matter(db_session, init, a, b,
+                       questions=("问题一？", "问题二？")):
+    """造一个**存量形态**（轮次）事项：Web 自 2026-10-04 起只新建留言板，
+    轮次形态只剩存量数据与直接走服务层的场景，所以这里绕过 Web 建。"""
+    matter = matter_svc.create_matter(
+        db_session, initiator=init, title="选型决策", goal="定下方案",
+        background="背景材料", participant_ids=[a.id, b.id],
+        initiator_participates=False, timeout_seconds=72 * 3600,
+        max_rounds=10, draft_questions=list(questions),
+    )
+    db_session.commit()
+    return matter
+
+
 def test_new_page_shows_notice_and_users(client, users, settings):
     init, a, b, _ = users
     _login(client, "init")
@@ -41,13 +56,17 @@ def test_new_page_shows_notice_and_users(client, users, settings):
     assert "alice" in resp.text and "bob" in resp.text
 
 
-def test_create_with_one_participant_shows_error(client, users):
+def test_create_with_one_participant_is_allowed(client, users, db_session):
+    """留言板形态：发起人先建板、再发邀请链接拉人，所以 1 个人也能建。"""
     init, a, b, _ = users
     _login(client, "init")
     resp = client.post("/matters/new", data=_create_form(a, b,
-                                                         participant_ids=[str(a.id)]))
-    assert resp.status_code == 200
-    assert "2–5" in resp.text
+                                                         participant_ids=[str(a.id)]),
+                       follow_redirects=False)
+    assert resp.status_code == 303
+    matter = db_session.scalar(select(Matter))
+    assert matter.status == "open"
+    assert matter.mode == "board"
 
 
 def test_create_success_redirects_to_detail(client, users, db_session):
@@ -58,14 +77,28 @@ def test_create_success_redirects_to_detail(client, users, db_session):
     assert resp.status_code == 303
     matter = db_session.scalar(select(Matter))
     assert resp.headers["location"] == f"/matters/{matter.id}"
-    assert matter.status == "draft"
+    # 2026-10-04 形态改造：新建即开放的留言板，不再有 draft → 开始 那一段
+    assert matter.status == "open"
+    assert matter.mode == "board"
+
+
+def test_created_board_shows_message_form(client, users, db_session):
+    """新建的事项页直接是留言板：能看到输入框和参与人名片区。"""
+    init, a, b, _ = users
+    _login(client, "init")
+    client.post("/matters/new", data=_create_form(a, b), follow_redirects=False)
+    matter = db_session.scalar(select(Matter))
+    resp = client.get(f"/matters/{matter.id}")
+    assert resp.status_code == 200
+    assert "留言板" in resp.text
+    assert "发布留言" in resp.text
+    assert "还没有人留言" in resp.text
 
 
 def test_start_via_web_creates_tasks(client, users, db_session):
     init, a, b, _ = users
     _login(client, "init")
-    client.post("/matters/new", data=_create_form(a, b), follow_redirects=False)
-    matter = db_session.scalar(select(Matter))
+    matter = _make_round_matter(db_session, init, a, b)
     resp = client.post(f"/matters/{matter.id}/start", follow_redirects=False)
     assert resp.status_code == 303
     db_session.expire_all()
@@ -79,8 +112,7 @@ def test_start_via_web_creates_tasks(client, users, db_session):
 def test_double_start_shows_409_error(client, users, db_session):
     init, a, b, _ = users
     _login(client, "init")
-    client.post("/matters/new", data=_create_form(a, b), follow_redirects=False)
-    matter = db_session.scalar(select(Matter))
+    matter = _make_round_matter(db_session, init, a, b)
     client.post(f"/matters/{matter.id}/start", follow_redirects=False)
     resp = client.post(f"/matters/{matter.id}/start")
     assert resp.status_code == 409
@@ -100,8 +132,7 @@ def test_detail_outsider_404(client, users, db_session):
 def test_detail_participant_sees_own_task_only(client, users, db_session):
     init, a, b, _ = users
     _login(client, "init")
-    client.post("/matters/new", data=_create_form(a, b), follow_redirects=False)
-    matter = db_session.scalar(select(Matter))
+    matter = _make_round_matter(db_session, init, a, b)
     client.post(f"/matters/{matter.id}/start", follow_redirects=False)
     _login(client, "alice")
     resp = client.get(f"/matters/{matter.id}")
@@ -116,8 +147,7 @@ def test_detail_initiator_sees_all_tasks_and_provider(client, users, db_session,
                                                       settings):
     init, a, b, _ = users
     _login(client, "init")
-    client.post("/matters/new", data=_create_form(a, b), follow_redirects=False)
-    matter = db_session.scalar(select(Matter))
+    matter = _make_round_matter(db_session, init, a, b)
     client.post(f"/matters/{matter.id}/start", follow_redirects=False)
     resp = client.get(f"/matters/{matter.id}")
     assert resp.status_code == 200

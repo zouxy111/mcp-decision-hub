@@ -147,3 +147,50 @@ def _scan_safe(session_factory, settings, drive_queue) -> int:
     state.consecutive_failures = 0
     state.total_timeouts += processed
     return processed
+
+
+# ---------------------------------------------------------------------------
+# 留言板滚动总结 worker（v19，2026-10-05）
+#
+# 每次有新留言，路由把 matter_id 丢进 board_queue；worker 在后台线程里跑增量
+# 总结。读侧（GET summary）永远只查库，不在这里阻塞 —— 这是「保证速度」的
+# 分工：把慢活儿（LLM）挪到后台。
+# ---------------------------------------------------------------------------
+
+
+async def board_summary_worker(queue: asyncio.Queue, session_factory, settings,
+                               llm) -> None:
+    while True:
+        try:
+            matter_id = await asyncio.wait_for(
+                queue.get(), timeout=POLL_TIMEOUT_SECONDS
+            )
+        except TimeoutError:
+            continue
+        try:
+            async with _matter_lock(matter_id):
+                await asyncio.to_thread(_board_summary_safe, session_factory,
+                                        matter_id, llm)
+        finally:
+            queue.task_done()
+
+
+def _board_summary_safe(session_factory, matter_id: str, llm) -> None:
+    from hub.api import board_summary as summary_svc
+
+    with session_factory() as session:
+        try:
+            # 一直追到追上为止：每次最多吃 MAX_DELTA_MESSAGES 条，
+            # 板子很长时分几轮追平，但每一轮都很快、上下文都很小。
+            # 上限按「1000 条的板子整板重读」留足（40 批 × 40 条）。
+            for _ in range(summary_svc.MAX_CATCH_UP_ROUNDS):
+                outcome = summary_svc.refresh_summary(
+                    session, llm=llm, matter_id=matter_id,
+                )
+                session.commit()
+                if outcome in ("up_to_date", "no_matter", "empty_board",
+                               "failed"):
+                    break
+        except Exception:  # noqa: BLE001 - 后台任务不能把 worker 打死
+            session.rollback()
+            logging.exception("留言板总结失败 matter_id=%s", matter_id)

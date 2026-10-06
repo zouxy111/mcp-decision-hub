@@ -211,21 +211,26 @@ def test_declare_item不可逆带理由_落库留痕(client, db_session, users):
     assert matter.irreversible_reason == "涉及生产数据删除"
 
 
-# ---------- 顺带：max_rounds 遵循配置 ----------
+# ---------- 顺带：agent 通道建出来的事项形态 ----------
 
 
-def test_declare_item的max_rounds遵循settings(db_session, settings, users):
-    """原 methods.py:777 硬编码 max_rounds=10，运维改 MAX_ROUNDS 兜不住
-    agent 通道建的事项（柠檬果 P2 实测：同一 MAX_ROUNDS=1 环境下网页 1、
-    REST 10）。改为读 settings.max_rounds。"""
-    import dataclasses
+def test_declare_item建的留言板不带轮次预算(db_session, settings, users):
+    """2026-10-04 留言板形态改造后，本用例替换原「max_rounds 遵循 settings」。
 
-    s3 = dataclasses.replace(settings, max_rounds=3)
+    原用例修的是「轮次事项经 agent 通道建档时绕过 MAX_ROUNDS」：
+    methods.py 曾硬编码 max_rounds=10。现在 agent 通道建出来的**不是轮次事项
+    而是留言板**（status=open / mode=board），压根没有轮次预算，
+    MAX_ROUNDS 对这个通道不再有语义，所以断言改为「形态即留言板、无轮次预算」。
+    轮次事项的 max_rounds 语义仍由 create_matter 的用例覆盖。
+    """
     out = methods.mcp_declare_item(
-        db_session, s3, user_id=users["init"].id,
+        db_session, settings, user_id=users["init"].id,
         payload={"title": "T", "question": "Q", "background": "",
                  "participant_ids": [users["alice"].id, users["bob"].id]},
     )
     db_session.expire_all()
     matter = db_session.get(Matter, out["matter_id"])
-    assert matter.max_rounds == 3
+    assert matter.status == "open"
+    assert matter.mode == "board"
+    assert matter.max_rounds == 0
+    assert matter.timeout_seconds == 0

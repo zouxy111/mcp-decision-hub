@@ -15,7 +15,7 @@ set -eu
 
 BASE="${SKILLS_BASE_URL:-https://hub.tdp-demo.work/static/skills}"
 DIR="${SKILLS_DIR:-$HOME/.workbuddy/skills}"
-ALL="connect-decision-hub build-decision-model"
+ALL="connect-decision-hub build-decision-model collaborate-on-board"
 
 if [ "$#" -eq 0 ]; then
   # shellcheck disable=SC2086

@@ -6,12 +6,12 @@
 <div class="page-head page-head--row">
   <div>
     <h1>我的事项</h1>
-    <p class="lede mb-0">多智能体协作决策的事项入口。进入任意一条可查看轮次问题、本轮摘要、各方立场与最终决议。</p>
+    <p class="lede mb-0">协作事项入口。新建即是一块留言板：谁都能随时发言、互相可见，不需要等平台派题。</p>
   </div>
   <a class="btn btn--primary" href="/matters/new">新建事项</a>
 </div>
 
-{% set states = ["draft", "in_progress", "collecting", "blocked",
+{% set states = ["open", "draft", "in_progress", "collecting", "blocked",
                  "awaiting_decision", "completed", "cancelled"] %}
 <nav class="chips" aria-label="按状态筛选">
   <a class="chip" href="/dashboard"

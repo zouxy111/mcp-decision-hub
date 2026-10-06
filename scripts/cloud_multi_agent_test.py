@@ -24,7 +24,6 @@
 import argparse
 import asyncio
 import hashlib
-import json
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -247,7 +246,9 @@ async def test_two_agents_collaboration(
     bob_task = bob_tasks[0] if bob_tasks else None
     
     # 使用指定的 matter_id 或从任务中获取
-    target_matter_id = matter_id or (alice_task["matter_id"] if alice_task else bob_task["matter_id"])
+    target_matter_id = matter_id or (
+        alice_task["matter_id"] if alice_task else bob_task["matter_id"]
+    )
     
     # 找到对应的任务
     alice_task = next((t for t in alice_tasks if t["matter_id"] == target_matter_id), None)
@@ -265,7 +266,7 @@ async def test_two_agents_collaboration(
     # 获取详细信息
     if alice_task:
         alice_detail = await tester.get_task_detail(alice_token, alice_task["task_id"])
-        print(f"\n📋 Alice 的任务:")
+        print("\n📋 Alice 的任务:")
         print(f"  - 事项: {alice_detail['matter']['title']}")
         print(f"  - 轮次: {alice_detail['round']['round_number']}")
         print(f"  - 问题数: {len(alice_detail['round']['questions'])}")
@@ -274,7 +275,7 @@ async def test_two_agents_collaboration(
     
     if bob_task:
         bob_detail = await tester.get_task_detail(bob_token, bob_task["task_id"])
-        print(f"\n📋 Bob 的任务:")
+        print("\n📋 Bob 的任务:")
         print(f"  - 事项: {bob_detail['matter']['title']}")
         print(f"  - 轮次: {bob_detail['round']['round_number']}")
         print(f"  - 问题数: {len(bob_detail['round']['questions'])}")
@@ -289,7 +290,10 @@ async def test_two_agents_collaboration(
         alice_answers = [
             {
                 "question_id": q["question_id"],
-                "content": alice_answer or f"我是 Alice，我认为应该选方案 A。理由：稳定性更高，风险可控。（轮次：{alice_detail['round']['round_number']}）"
+                "content": alice_answer or (
+                    "我是 Alice，我认为应该选方案 A。理由：稳定性更高，"
+                    f"风险可控。（轮次：{alice_detail['round']['round_number']}）"
+                )
             }
             for q in alice_detail['round']['questions']
         ]
@@ -308,7 +312,10 @@ async def test_two_agents_collaboration(
         bob_answers = [
             {
                 "question_id": q["question_id"],
-                "content": bob_answer or f"我是 Bob，我倾向于方案 B。理由：成本更低，适合当前资源。（轮次：{bob_detail['round']['round_number']}）"
+                "content": bob_answer or (
+                    "我是 Bob，我倾向于方案 B。理由：成本更低，"
+                    f"适合当前资源。（轮次：{bob_detail['round']['round_number']}）"
+                )
             }
             for q in bob_detail['round']['questions']
         ]

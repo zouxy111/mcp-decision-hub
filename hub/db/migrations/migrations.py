@@ -615,3 +615,632 @@ def downgrade_add_llm_config(conn: sqlite3.Connection) -> None:
     DEEPSEEK_API_KEY 不受影响，回滚后服务照常可用。
     """
     conn.execute("DROP TABLE IF EXISTS llm_config")
+
+
+# ============================================================================
+# Phase 1: 邀请链接与批处理基础（v12, v13, v14）
+# ============================================================================
+
+_NEW_MATTER_COLLABORATION_DDL = """
+ALTER TABLE matters ADD COLUMN mode VARCHAR(32) DEFAULT 'project';
+ALTER TABLE matters ADD COLUMN auto_start BOOLEAN NOT NULL DEFAULT 0;
+"""
+
+_NEW_INVITATION_LINKS_DDL = """
+CREATE TABLE invitation_links (
+    id VARCHAR(48) NOT NULL PRIMARY KEY,
+    matter_id VARCHAR(48) NOT NULL,
+    short_code VARCHAR(8) NOT NULL UNIQUE,
+    invited_name VARCHAR(128),
+    status VARCHAR(16) NOT NULL DEFAULT 'active',
+    max_uses INTEGER NOT NULL DEFAULT 1,
+    used_count INTEGER NOT NULL DEFAULT 0,
+    expires_at DATETIME NOT NULL,
+    created_by INTEGER NOT NULL,
+    created_at DATETIME NOT NULL,
+    revoked_at DATETIME,
+    revoked_by INTEGER,
+    FOREIGN KEY(matter_id) REFERENCES matters (id),
+    FOREIGN KEY(created_by) REFERENCES users (id),
+    FOREIGN KEY(revoked_by) REFERENCES users (id),
+    UNIQUE(matter_id, short_code)
+)
+"""
+
+_INVITATION_LINKS_INDEXES = (
+    "CREATE INDEX ix_invitation_links_matter_id ON invitation_links (matter_id)",
+    "CREATE INDEX ix_invitation_links_short_code ON invitation_links (short_code)",
+)
+
+_NEW_INVITATION_CONSUMPTIONS_DDL = """
+CREATE TABLE invitation_consumptions (
+    id VARCHAR(48) NOT NULL PRIMARY KEY,
+    invitation_id VARCHAR(48) NOT NULL,
+    user_id INTEGER NOT NULL,
+    ip_address VARCHAR(64),
+    user_agent VARCHAR(255),
+    consumed_at DATETIME NOT NULL,
+    FOREIGN KEY(invitation_id) REFERENCES invitation_links (id),
+    FOREIGN KEY(user_id) REFERENCES users (id)
+)
+"""
+
+_INVITATION_CONSUMPTIONS_INDEXES = (
+    "CREATE INDEX ix_invitation_consumptions_invitation_id ON invitation_consumptions"
+    " (invitation_id)",
+    "CREATE INDEX ix_invitation_consumptions_user_id ON invitation_consumptions (user_id)",
+)
+
+_NEW_BATCH_PROCESSING_QUEUE_DDL = """
+CREATE TABLE batch_processing_queue (
+    id VARCHAR(48) NOT NULL PRIMARY KEY,
+    matter_id VARCHAR(48) NOT NULL,
+    round_number INTEGER NOT NULL,
+    stance_id VARCHAR(48) NOT NULL UNIQUE,
+    status VARCHAR(16) NOT NULL DEFAULT 'pending',
+    batch_id VARCHAR(48),
+    scheduled_at DATETIME NOT NULL,
+    processed_at DATETIME,
+    error_message TEXT,
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    created_at DATETIME NOT NULL,
+    FOREIGN KEY(matter_id) REFERENCES matters (id),
+    FOREIGN KEY(stance_id) REFERENCES stances (stance_id)
+)
+"""
+
+_BATCH_PROCESSING_QUEUE_INDEXES = (
+    "CREATE INDEX ix_batch_processing_queue_matter_id ON batch_processing_queue (matter_id)",
+    "CREATE INDEX ix_batch_processing_queue_batch_id ON batch_processing_queue (batch_id)",
+)
+
+
+def upgrade_add_matter_collaboration_mode(conn: sqlite3.Connection) -> None:
+    """为 matters 表添加协作模式字段（mode, auto_start）。
+    
+    mode: 'meeting'（实时）或 'project'（异步批处理），默认 'project'
+    auto_start: 所有参与者加入后是否自动启动，默认 FALSE
+    """
+    # 检查 matters 表是否存在
+    if not _table_exists(conn, "matters"):
+        return
+    
+    conn.execute("BEGIN")
+    try:
+        # 检查列是否已存在
+        cursor = conn.execute("PRAGMA table_info(matters)")
+        columns = {row[1] for row in cursor.fetchall()}
+        
+        if "mode" not in columns:
+            conn.execute("ALTER TABLE matters ADD COLUMN mode VARCHAR(32) DEFAULT 'project'")
+        
+        if "auto_start" not in columns:
+            conn.execute("ALTER TABLE matters ADD COLUMN auto_start BOOLEAN NOT NULL DEFAULT 0")
+        
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+
+
+def downgrade_add_matter_collaboration_mode(conn: sqlite3.Connection) -> None:
+    """SQLite 不支持 DROP COLUMN，需要重建表。
+    
+    实践中这个回滚很少使用，因为 mode/auto_start 是可选字段，
+    不影响现有功能。如果需要回滚，建议手动处理。
+    """
+    # SQLite 不支持 ALTER TABLE DROP COLUMN
+    # 如果真需要回滚，需要重建整个 matters 表
+    pass
+
+
+def upgrade_add_invitation_links(conn: sqlite3.Connection) -> None:
+    """创建邀请链接表和消费记录表。幂等：表已存在直接返回。"""
+    conn.execute("BEGIN")
+    try:
+        if not _table_exists(conn, "invitation_links"):
+            conn.execute(_NEW_INVITATION_LINKS_DDL)
+            for index_sql in _INVITATION_LINKS_INDEXES:
+                conn.execute(index_sql)
+        
+        if not _table_exists(conn, "invitation_consumptions"):
+            conn.execute(_NEW_INVITATION_CONSUMPTIONS_DDL)
+            for index_sql in _INVITATION_CONSUMPTIONS_INDEXES:
+                conn.execute(index_sql)
+        
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+
+
+def downgrade_add_invitation_links(conn: sqlite3.Connection) -> None:
+    """删除邀请链接相关表。"""
+    conn.execute("BEGIN")
+    try:
+        conn.execute("DROP TABLE IF EXISTS invitation_consumptions")
+        conn.execute("DROP TABLE IF EXISTS invitation_links")
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+
+
+def upgrade_add_batch_processing_queue(conn: sqlite3.Connection) -> None:
+    """创建批处理队列表。幂等：表已存在直接返回。"""
+    if _table_exists(conn, "batch_processing_queue"):
+        return
+    
+    conn.execute("BEGIN")
+    try:
+        conn.execute(_NEW_BATCH_PROCESSING_QUEUE_DDL)
+        for index_sql in _BATCH_PROCESSING_QUEUE_INDEXES:
+            conn.execute(index_sql)
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+
+
+def downgrade_add_batch_processing_queue(conn: sqlite3.Connection) -> None:
+    """删除批处理队列表。"""
+    conn.execute("DROP TABLE IF EXISTS batch_processing_queue")
+
+
+def upgrade_allow_unlimited_invitation_uses(conn: sqlite3.Connection) -> None:
+    """允许邀请链接的 max_uses 为 NULL（表示无限制使用）。
+    
+    SQLite 的 ALTER TABLE 不支持修改列的 NULL 约束，
+    因此需要重建 invitation_links 表。
+    """
+    if not _table_exists(conn, "invitation_links"):
+        return
+    
+    # 必须在事务外禁用外键检查
+    conn.execute("PRAGMA foreign_keys=OFF")
+    conn.execute("BEGIN")
+    try:
+        # 1. 创建新表（max_uses 可为 NULL）
+        conn.execute("""
+            CREATE TABLE invitation_links_new (
+                id VARCHAR(48) PRIMARY KEY,
+                matter_id VARCHAR(48) NOT NULL,
+                short_code VARCHAR(8) UNIQUE NOT NULL,
+                invited_name VARCHAR(128),
+                status VARCHAR(16) DEFAULT 'active' NOT NULL,
+                max_uses INTEGER,
+                used_count INTEGER DEFAULT 0 NOT NULL,
+                expires_at TIMESTAMP NOT NULL,
+                created_by INTEGER NOT NULL,
+                created_at TIMESTAMP NOT NULL,
+                revoked_at TIMESTAMP,
+                revoked_by INTEGER,
+                FOREIGN KEY(matter_id) REFERENCES matters (id),
+                FOREIGN KEY(created_by) REFERENCES users (id),
+                FOREIGN KEY(revoked_by) REFERENCES users (id),
+                CONSTRAINT uq_matter_short_code UNIQUE (matter_id, short_code)
+            )
+        """)
+        
+        # 2. 复制数据
+        conn.execute("""
+            INSERT INTO invitation_links_new
+            SELECT * FROM invitation_links
+        """)
+        
+        # 3. 删除旧表
+        conn.execute("DROP TABLE invitation_links")
+        
+        # 4. 重命名新表
+        conn.execute("ALTER TABLE invitation_links_new RENAME TO invitation_links")
+        
+        # 5. 重建索引
+        conn.execute(
+            "CREATE UNIQUE INDEX ix_invitation_links_short_code"
+            " ON invitation_links (short_code)"
+        )
+        conn.execute("CREATE INDEX ix_invitation_links_matter_id ON invitation_links (matter_id)")
+        conn.execute("CREATE INDEX ix_invitation_links_status ON invitation_links (status)")
+        
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    finally:
+        # 重新启用外键检查
+        conn.execute("PRAGMA foreign_keys=ON")
+
+
+def downgrade_allow_unlimited_invitation_uses(conn: sqlite3.Connection) -> None:
+    """回滚：将 max_uses 改回 NOT NULL（所有 NULL 值设为 1）。"""
+    if not _table_exists(conn, "invitation_links"):
+        return
+    
+    # 必须在事务外禁用外键检查
+    conn.execute("PRAGMA foreign_keys=OFF")
+    conn.execute("BEGIN")
+    try:
+        # 1. 创建旧表（max_uses 不可为 NULL）
+        conn.execute("""
+            CREATE TABLE invitation_links_old (
+                id VARCHAR(48) PRIMARY KEY,
+                matter_id VARCHAR(48) NOT NULL,
+                short_code VARCHAR(8) UNIQUE NOT NULL,
+                invited_name VARCHAR(128),
+                status VARCHAR(16) DEFAULT 'active' NOT NULL,
+                max_uses INTEGER DEFAULT 1 NOT NULL,
+                used_count INTEGER DEFAULT 0 NOT NULL,
+                expires_at TIMESTAMP NOT NULL,
+                created_by INTEGER NOT NULL,
+                created_at TIMESTAMP NOT NULL,
+                revoked_at TIMESTAMP,
+                revoked_by INTEGER,
+                FOREIGN KEY(matter_id) REFERENCES matters (id),
+                FOREIGN KEY(created_by) REFERENCES users (id),
+                FOREIGN KEY(revoked_by) REFERENCES users (id),
+                CONSTRAINT uq_matter_short_code UNIQUE (matter_id, short_code)
+            )
+        """)
+        
+        # 2. 复制数据（将 NULL 转为 1）
+        conn.execute("""
+            INSERT INTO invitation_links_old
+            SELECT 
+                id, matter_id, short_code, invited_name, status,
+                COALESCE(max_uses, 1) as max_uses,
+                used_count, expires_at, created_by, created_at,
+                revoked_at, revoked_by
+            FROM invitation_links
+        """)
+        
+        # 3. 删除新表
+        conn.execute("DROP TABLE invitation_links")
+        
+        # 4. 重命名旧表
+        conn.execute("ALTER TABLE invitation_links_old RENAME TO invitation_links")
+        
+        # 5. 重建索引
+        conn.execute(
+            "CREATE UNIQUE INDEX ix_invitation_links_short_code"
+            " ON invitation_links (short_code)"
+        )
+        conn.execute("CREATE INDEX ix_invitation_links_matter_id ON invitation_links (matter_id)")
+        conn.execute("CREATE INDEX ix_invitation_links_status ON invitation_links (status)")
+        
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    finally:
+        # 重新启用外键检查
+        conn.execute("PRAGMA foreign_keys=ON")
+
+
+def upgrade_add_meeting_tables(conn: sqlite3.Connection) -> None:
+    """添加会议模式表（voice-copilot 实时协作）。
+    
+    新增三个表：
+    - meetings: 会议实例
+    - meeting_stances: 会议立场（本地 LLM 整理后的文本）
+    - meeting_convergences: 收敛结果（云端 LLM 生成的摘要）
+    """
+    if _table_exists(conn, "meetings"):
+        return
+    
+    conn.execute("BEGIN")
+    try:
+        # 1. 会议表
+        conn.execute("""
+            CREATE TABLE meetings (
+                id VARCHAR(48) PRIMARY KEY,
+                matter_id VARCHAR(48) NOT NULL,
+                round_number INTEGER DEFAULT 1 NOT NULL,
+                status VARCHAR(16) DEFAULT 'active' NOT NULL,
+                timeout_minutes INTEGER DEFAULT 3 NOT NULL,
+                created_at TIMESTAMP NOT NULL,
+                started_at TIMESTAMP,
+                completed_at TIMESTAMP,
+                FOREIGN KEY(matter_id) REFERENCES matters (id)
+            )
+        """)
+        conn.execute("CREATE INDEX ix_meetings_matter_id ON meetings (matter_id)")
+        
+        # 2. 会议立场表
+        conn.execute("""
+            CREATE TABLE meeting_stances (
+                id VARCHAR(48) PRIMARY KEY,
+                meeting_id VARCHAR(48) NOT NULL,
+                user_id INTEGER NOT NULL,
+                round_number INTEGER NOT NULL,
+                text TEXT NOT NULL,
+                submitted_at TIMESTAMP NOT NULL,
+                FOREIGN KEY(meeting_id) REFERENCES meetings (id),
+                FOREIGN KEY(user_id) REFERENCES users (id),
+                CONSTRAINT uq_meeting_stance_per_round 
+                    UNIQUE (meeting_id, round_number, user_id)
+            )
+        """)
+        conn.execute("CREATE INDEX ix_meeting_stances_meeting_id ON meeting_stances (meeting_id)")
+        conn.execute("CREATE INDEX ix_meeting_stances_user_id ON meeting_stances (user_id)")
+        
+        # 3. 会议收敛结果表
+        conn.execute("""
+            CREATE TABLE meeting_convergences (
+                id VARCHAR(48) PRIMARY KEY,
+                meeting_id VARCHAR(48) NOT NULL,
+                round_number INTEGER NOT NULL,
+                consensus JSON NOT NULL,
+                divergences JSON NOT NULL,
+                follow_ups JSON NOT NULL,
+                generated_at TIMESTAMP NOT NULL,
+                FOREIGN KEY(meeting_id) REFERENCES meetings (id),
+                CONSTRAINT uq_meeting_convergence_per_round 
+                    UNIQUE (meeting_id, round_number)
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX ix_meeting_convergences_meeting_id"
+            " ON meeting_convergences (meeting_id)"
+        )
+        
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+
+
+def downgrade_add_meeting_tables(conn: sqlite3.Connection) -> None:
+    """回滚：删除会议模式表。"""
+    if not _table_exists(conn, "meetings"):
+        return
+    
+    conn.execute("BEGIN")
+    try:
+        conn.execute("DROP TABLE IF EXISTS meeting_convergences")
+        conn.execute("DROP TABLE IF EXISTS meeting_stances")
+        conn.execute("DROP TABLE IF EXISTS meetings")
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+
+
+# --------------------------------------------------------------------------
+# v17：留言板协作 —— 新增 matter_messages，matter_participants 增两列
+# 背景：协作形态从「一轮一轮下发任务」改为「留言板」。参与人不再等平台派题，
+# 随时留言、互相可见，因此需要一张纯留言表；邀请注册要采集「姓名 / 负责什么」，
+# 这两个是事项内的角色信息，挂在 matter_participants 而不是 users。
+# 存量轮次数据不动（Round/Task 等表保留），新形态不读取它们。
+# --------------------------------------------------------------------------
+
+_BOARD_PARTICIPANT_COLUMNS = {
+    "display_name": "VARCHAR(100)",
+    "responsibility": "TEXT",
+}
+
+_MATTER_MESSAGES_DDL = """
+CREATE TABLE IF NOT EXISTS matter_messages (
+    id VARCHAR(48) NOT NULL,
+    matter_id VARCHAR(48) NOT NULL,
+    user_id INTEGER NOT NULL,
+    content TEXT NOT NULL,
+    kind VARCHAR(16) NOT NULL DEFAULT 'message',
+    acting_as VARCHAR(32) NOT NULL DEFAULT 'human',
+    created_at DATETIME NOT NULL,
+    PRIMARY KEY (id),
+    FOREIGN KEY(matter_id) REFERENCES matters (id),
+    FOREIGN KEY(user_id) REFERENCES users (id)
+)
+"""
+
+
+def upgrade_add_board_tables(conn: sqlite3.Connection) -> None:
+    """建留言表 + 参与人自我介绍两列；可重入。"""
+    conn.execute("BEGIN")
+    try:
+        if _table_exists(conn, "matter_participants"):
+            _add_columns(conn, "matter_participants", _BOARD_PARTICIPANT_COLUMNS)
+        if not _table_exists(conn, "matter_messages"):
+            conn.execute(_MATTER_MESSAGES_DDL)
+            conn.execute(
+                "CREATE INDEX ix_matter_messages_matter_id ON matter_messages (matter_id)"
+            )
+            conn.execute(
+                "CREATE INDEX ix_matter_messages_user_id ON matter_messages (user_id)"
+            )
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+
+
+def downgrade_add_board_tables(conn: sqlite3.Connection) -> None:
+    """回滚：删留言表与参与人两列（留言内容随表丢弃）。"""
+    conn.execute("BEGIN")
+    try:
+        conn.execute("DROP TABLE IF EXISTS matter_messages")
+        if _table_exists(conn, "matter_participants"):
+            _drop_columns(conn, "matter_participants",
+                          tuple(_BOARD_PARTICIPANT_COLUMNS))
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+
+
+# --------------------------------------------------------------------------
+# v18：留言板三件事（2026-10-05 甲方要求）
+#   1) 上传前必须本人同意 → human_approved_at 留痕
+#   2) 可以传 md 文件 → attachment_name / attachment_md（正文存库，云端可读）
+#   3) 云端提问 → 本地处理 → 传回回答 → asked_to_user_id /
+#      reply_to_message_id / question_status
+# SQLite 的 ADD COLUMN 不能带外键，所以这三列在迁移库里没有约束；
+# 新库走 create_all 时由 ORM 定义带上外键。可重入。
+# --------------------------------------------------------------------------
+
+_BOARD_V18_COLUMNS = {
+    "human_approved_at": "DATETIME",
+    "attachment_name": "VARCHAR(255)",
+    "attachment_md": "TEXT",
+    "asked_to_user_id": "INTEGER",
+    "reply_to_message_id": "VARCHAR(48)",
+    "question_status": "VARCHAR(16)",
+}
+
+
+def upgrade_add_board_message_extras(conn: sqlite3.Connection) -> None:
+    """matter_messages 增 6 列：同意留痕 / md 附件 / 定向提问。"""
+    if not _table_exists(conn, "matter_messages"):
+        return
+    conn.execute("BEGIN")
+    try:
+        _add_columns(conn, "matter_messages", _BOARD_V18_COLUMNS)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS ix_matter_messages_asked_to"
+            " ON matter_messages (asked_to_user_id)"
+        )
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+
+
+def downgrade_add_board_message_extras(conn: sqlite3.Connection) -> None:
+    """回滚：删掉这 6 列（附件正文随列丢弃）。"""
+    if not _table_exists(conn, "matter_messages"):
+        return
+    conn.execute("BEGIN")
+    try:
+        # 先删依赖这些列的索引，否则 DROP COLUMN 会被索引挡住
+        conn.execute("DROP INDEX IF EXISTS ix_matter_messages_asked_to")
+        _drop_columns(conn, "matter_messages", tuple(_BOARD_V18_COLUMNS))
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+
+
+# --------------------------------------------------------------------------
+# v19：留言板增量滚动总结（2026-10-05 甲方要求）
+# 「云端 AI 实时总结，每次有新信息进来就结合之前的总结给当前任务一个大概判断，
+#   保证速度、不占太多上下文」—— 落成一张每板一行的表：
+#   covered_messages 是增量游标，更新时只喂「上次总结 + 新增留言」。
+# --------------------------------------------------------------------------
+
+_BOARD_SUMMARIES_DDL = """
+CREATE TABLE IF NOT EXISTS board_summaries (
+    matter_id VARCHAR(48) NOT NULL,
+    summary TEXT NOT NULL DEFAULT '',
+    judgement TEXT NOT NULL DEFAULT '',
+    key_points JSON NOT NULL DEFAULT '[]',
+    open_questions JSON NOT NULL DEFAULT '[]',
+    covered_messages INTEGER NOT NULL DEFAULT 0,
+    generation_status VARCHAR(16) NOT NULL DEFAULT 'idle',
+    error TEXT,
+    updated_at DATETIME NOT NULL,
+    PRIMARY KEY (matter_id),
+    FOREIGN KEY(matter_id) REFERENCES matters (id)
+)
+"""
+
+
+def upgrade_add_board_summaries(conn: sqlite3.Connection) -> None:
+    """建 board_summaries（一板一行）；可重入。"""
+    conn.execute("BEGIN")
+    try:
+        if not _table_exists(conn, "board_summaries"):
+            conn.execute(_BOARD_SUMMARIES_DDL)
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+
+
+def downgrade_add_board_summaries(conn: sqlite3.Connection) -> None:
+    conn.execute("BEGIN")
+    try:
+        conn.execute("DROP TABLE IF EXISTS board_summaries")
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+
+
+# --------------------------------------------------------------------------
+# v20：总结文档 + 重读开关 + 留言板读索引（2026-10-05 甲方要求）
+#
+#   1. 「每轮大模型总结完云端信息，都写一个总结文档」→ board_summary_documents
+#      （只追加、不覆盖，version 递增）；
+#   2. 「下一次总结只读最新的留言板（除非有人提了需求）」→ 增量游标沿用
+#      board_summaries.covered_messages；有人提需求时置 reread_requested，
+#      下一轮从第一条重新读，理由与提出人留痕；
+#   3. 留言板容量放到 1000 条 → 给 (matter_id, created_at, id) 建复合索引，
+#      读回「最近 N 条」不再走临时排序。
+# --------------------------------------------------------------------------
+
+_BOARD_DOCUMENTS_DDL = """
+CREATE TABLE IF NOT EXISTS board_summary_documents (
+    id VARCHAR(48) NOT NULL,
+    matter_id VARCHAR(48) NOT NULL,
+    version INTEGER NOT NULL,
+    covered_from INTEGER NOT NULL DEFAULT 0,
+    covered_to INTEGER NOT NULL DEFAULT 0,
+    delta_messages INTEGER NOT NULL DEFAULT 0,
+    summary TEXT NOT NULL DEFAULT '',
+    judgement TEXT NOT NULL DEFAULT '',
+    key_points JSON NOT NULL DEFAULT '[]',
+    open_questions JSON NOT NULL DEFAULT '[]',
+    content_md TEXT NOT NULL DEFAULT '',
+    trigger VARCHAR(16) NOT NULL DEFAULT 'auto',
+    created_at DATETIME NOT NULL,
+    PRIMARY KEY (id),
+    UNIQUE (matter_id, version),
+    FOREIGN KEY(matter_id) REFERENCES matters (id)
+)
+"""
+
+_BOARD_V20_COLUMNS = {
+    "document_version": "INTEGER NOT NULL DEFAULT 0",
+    "reread_requested": "BOOLEAN NOT NULL DEFAULT 0",
+    "reread_requested_at": "DATETIME",
+    "reread_requested_by": "INTEGER",
+    "reread_reason": "TEXT",
+}
+
+
+def upgrade_add_board_summary_documents(conn: sqlite3.Connection) -> None:
+    """建总结文档表 + 总结表加 5 列 + 留言板读索引；可重入。"""
+    conn.execute("BEGIN")
+    try:
+        if not _table_exists(conn, "board_summary_documents"):
+            conn.execute(_BOARD_DOCUMENTS_DDL)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS ix_board_summary_documents_matter"
+            " ON board_summary_documents (matter_id)"
+        )
+        if _table_exists(conn, "board_summaries"):
+            _add_columns(conn, "board_summaries", _BOARD_V20_COLUMNS)
+        if _table_exists(conn, "matter_messages"):
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS ix_matter_messages_board"
+                " ON matter_messages (matter_id, created_at, id)"
+            )
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+
+
+def downgrade_add_board_summary_documents(conn: sqlite3.Connection) -> None:
+    """回滚：删索引/文档表，并把 board_summaries 的 5 列删掉。"""
+    conn.execute("BEGIN")
+    try:
+        conn.execute("DROP INDEX IF EXISTS ix_matter_messages_board")
+        conn.execute("DROP INDEX IF EXISTS ix_board_summary_documents_matter")
+        conn.execute("DROP TABLE IF EXISTS board_summary_documents")
+        if _table_exists(conn, "board_summaries"):
+            _drop_columns(conn, "board_summaries", tuple(_BOARD_V20_COLUMNS))
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise

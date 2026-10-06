@@ -64,3 +64,36 @@ def test_token_events_audited(db_session):
     # audit detail must not contain the token hash or plaintext
     row = db_session.scalars(select(AuditEvent)).first()
     assert "token_hash" not in (row.detail or {})
+
+
+def test_last_used_at_is_throttled(db_session):
+    """``last_used_at`` 有 60 秒写回窗口（读请求不为此多写一次库）。
+
+    这是「写入提速」的一项：每个带令牌的请求都会走 resolve_user_and_token，
+    每次都写就是每个读请求都多一次写事务。
+    """
+    from datetime import timedelta
+
+    user = make_user(db_session, "alice")
+    token, plaintext = token_svc.issue_token(db_session, user=user, name="a1")
+    db_session.commit()
+
+    token_svc.find_user_by_token(db_session, plaintext)
+    db_session.commit()
+    db_session.refresh(token)
+    first = token.last_used_at
+    assert first is not None
+
+    # 60 秒内再调用：不重写
+    token_svc.find_user_by_token(db_session, plaintext)
+    db_session.commit()
+    db_session.refresh(token)
+    assert token.last_used_at == first
+
+    # 超过窗口：写回新时间
+    token.last_used_at = first - timedelta(seconds=120)
+    db_session.commit()
+    token_svc.find_user_by_token(db_session, plaintext)
+    db_session.commit()
+    db_session.refresh(token)
+    assert token.last_used_at > first - timedelta(seconds=119)

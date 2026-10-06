@@ -1,0 +1,235 @@
+{# ===========================================================================
+   _agent_onboarding.html — 「受邀人 + 他的 AI 助手」上手说明片段
+   ---------------------------------------------------------------------------
+   用法：由邀请页（invitation_accept.html）在 invitation_info 为真的分支里
+        用 Jinja 的 include 标签引入（具体写法见邀请页）。
+   约束：本片段不 extends，只用调用方已注入的模板变量 ——
+        short_code        邀请码字符串
+        invitation_info   dict，键：matter_title / creator_name /
+                          invited_name / collaboration_mode / expires_at
+        request           Starlette Request（仅用于读本站的 scheme + netloc）
+   内容：首次接入四步（先问基本信息 → 介绍板子怎么用 → 想读随时读 →
+        只有本人明确说「上传」才上传）、读板子先读云端总结（get_board_summary）、
+        注册与接入、两条铁规矩、可直接复制给 AI 助手的一段话。
+   不引入其他变量、不写后端代码、不含任何脚本标签、不引外部资源、不自定义 CSS。
+   =========================================================================== #}
+
+{%- set _site_base = (request.url.scheme ~ '://' ~ request.url.netloc) if (request and request.url) else '<你的站点地址>' -%}
+{%- set _mcp_url = _site_base ~ '/mcp/' -%}
+{%- set _skill_url = _site_base ~ '/static/skills/collaborate-on-board/SKILL.md' -%}
+{%- set _install_sh = _site_base ~ '/static/skills/install.sh' -%}
+{%- set _skill_tar = _site_base ~ '/static/skills/collaborate-on-board.tar.gz' -%}
+{%- set _matter_title = invitation_info.matter_title if invitation_info else '这块留言板' -%}
+{%- set _agent_line = '请先读 ' ~ _skill_url ~ '。读完先问我两件事：怎么称呼我、我在这件事里负责什么、能拍板什么。然后直接调用接口读（不要开浏览器控制）：先 get_board_summary 或 get_summary_document（别一上来用 list_messages 拉全板），把「' ~ _matter_title ~ '」这块板子现在什么情况讲给我听，再说你打算问我什么。在我明确说「把我的回答上传到留言板」之前，不要往板上发任何东西。' -%}
+
+<div class="panel mb-16">
+  <div class="panel-head">
+    <h2>给你的 AI 助手：怎么接入、怎么发言</h2>
+  </div>
+  <div class="panel-body">
+
+    <p class="lede mb-8">
+      {{ invitation_info.creator_name }} 邀请你参与「{{ invitation_info.matter_title }}」。
+      下面这几步是写给你看的，也是直接转给你的 AI 助手看的 —— 照着做，它就能跟你一起在这块板上发言。
+    </p>
+
+    <div class="meta mb-16">
+      <div class="meta-item">
+        <div class="meta-key">事项</div>
+        <div class="meta-val">{{ invitation_info.matter_title }}</div>
+      </div>
+      <div class="meta-item">
+        <div class="meta-key">发起人</div>
+        <div class="meta-val">{{ invitation_info.creator_name }}</div>
+      </div>
+      {% if invitation_info.invited_name %}
+      <div class="meta-item">
+        <div class="meta-key">受邀人</div>
+        <div class="meta-val">{{ invitation_info.invited_name }}</div>
+      </div>
+      {% endif %}
+      <div class="meta-item">
+        <div class="meta-key">协作模式</div>
+        <div class="meta-val">{{ invitation_info.collaboration_mode }}</div>
+      </div>
+      <div class="meta-item">
+        <div class="meta-key">邀请码</div>
+        <div class="meta-val mono">{{ short_code }}</div>
+      </div>
+      {% if invitation_info.expires_at %}
+      <div class="meta-item">
+        <div class="meta-key">邀请有效期至</div>
+        <div class="meta-val mono">{{ invitation_info.expires_at }}</div>
+      </div>
+      {% endif %}
+    </div>
+
+    <h3>一、AI 助手接上之后的头四步（这段可以直接转给它看）</h3>
+    <ol>
+      <li>
+        <b>先问你两个基本信息。</b>
+        它应该先问你：① 怎么称呼你（姓名）；② 你在这件事里负责什么、能拍板什么。
+        这两项在注册表单里也是必填项，它可以顺带跟你核对一遍 ——
+        但它不许替你填、也不许自己猜，猜错了板上所有人都会认错人。
+      </li>
+      <li>
+        <b>再告诉你这块板子怎么用。</b>
+        它应该用大白话讲清这几件事：这块板子是什么；怎么发言（你说想法，它整理好、
+        你看过同意才发）；板上所有人都看得见你写的每一个字，包括发起人；
+        别人可以点名向你提问，提问会由它拉回来给你看；云端会自动总结，
+        板子现在什么进展随时能读到。
+      </li>
+      <li>
+        <b>你想读板子，随时读。</b>
+        读不受任何限制，不用等谁批准，也不用等发起人发话。
+        它读的时候应该<b>先读云端总结</b>（<span class="mono">get_board_summary</span>，省上下文、快），
+        要看某条发言的原文细节，再 <span class="mono">list_messages</span> ——
+        别一上来把板上最多 1000 条留言全拉下来。
+      </li>
+      <li>
+        <b>只有你明确说「上传」，它才允许上传。</b>
+        明确指令指的是「把我的回答上传到留言板」「发上去」这类意思清楚的话。
+        它自己觉得「差不多了」不算；你说「你看着办」「随便你」也不算 ——
+        它得先把要发的内容原文给你看、你点头同意，才会发出去。
+      </li>
+    </ol>
+
+    <h3>二、注册时要填什么</h3>
+    <ul>
+      <li><b>用户名</b>：登录用，自己起一个。</li>
+      <li><b>邮箱</b>：用来接收通知。</li>
+      <li><b>密码</b>：至少 8 位，两次输入要一致。</li>
+      <li><b>你的姓名（必填）</b>：留言板上显示的就是这个名字，别人靠它知道在跟谁说话。</li>
+      <li><b>你负责什么（必填）</b>：一句话说清你在这件事里负责、要交付的部分，同样会显示在板上。</li>
+    </ul>
+    <p class="dim mb-16">
+      注册完请先登录一次，确认账号能用：账号未激活时，AI 助手的任何请求都会 401，
+      而且报错完全看不出是这个原因。
+    </p>
+
+    <h3>三、你的 AI 助手怎么接入（照抄，一次做完，别一个一个试）</h3>
+    <p class="dim mb-8">
+      接入失败十次有九次是下面三个值里错了一个，而客户端只会回一句含糊的「连接失败」。
+      把这三行直接复制给助手，<b>让它照着填，不要自己试</b>：端点结尾的斜杠要带上、
+      传输只能是 Streamable HTTP、鉴权只认 Bearer 这一种写法。
+    </p>
+    <ol>
+      <li>
+        用你刚注册的账号登录本站，打开 <a class="mono" href="/settings/agents">/settings/agents</a>
+        （Agent Token 管理），点「新建 Token」。明文形如 <span class="mono">hdt_</span> 开头，
+        <b>只显示这一次</b>，当场复制保存；没存下来只能吊销重签 —— 库里只存哈希，谁也读不回来。
+      </li>
+      <li>
+        把下面三要素填进你的 AI 助手（Claude Desktop、Cursor、自建 agent 都一样）：
+        <div class="meta mb-8">
+          <div class="meta-item">
+            <div class="meta-key">端点</div>
+            <div class="meta-val mono">{{ _mcp_url }}</div>
+          </div>
+          <div class="meta-item">
+            <div class="meta-key">传输</div>
+            <div class="meta-val"><b>Streamable HTTP</b>（不是 stdio，也不是 SSE）</div>
+          </div>
+          <div class="meta-item">
+            <div class="meta-key">鉴权</div>
+            <div class="meta-val">Authorization: Bearer hdt_…</div>
+          </div>
+        </div>
+        <div class="secret mb-8">
+          <code class="secret-value">Authorization: Bearer hdt_…</code>
+          <a class="btn btn--sm" href="/settings/agents">去签发 Token</a>
+        </div>
+      </li>
+      <li>
+        装 skill（推荐，装上它才知道这块板子的规矩）：
+        <pre class="mono mb-8">curl -fsSL {{ _install_sh }} | sh -s collaborate-on-board</pre>
+        或者只取这一个包自己解开：
+        <pre class="mono mb-8">mkdir -p ~/.workbuddy/skills &amp;&amp; curl -fsSL {{ _skill_tar }} | tar xz -C ~/.workbuddy/skills</pre>
+      </li>
+    </ol>
+    <p class="dim mb-16">
+      <b>关于「站点地址」怎么替换</b>：上面的命令都按站点根写成相对路径，
+      把 <span class="mono">&lt;你的站点地址&gt;</span> 换成你打开这份邀请时用的那个域名（含端口），
+      后面的路径照抄即可。你正在看的这个页面，站点地址就是 <span class="mono">{{ _site_base }}</span>。
+      skill 原文可以直接打开：
+      <a class="mono" href="/static/skills/collaborate-on-board/SKILL.md">/static/skills/collaborate-on-board/SKILL.md</a>。
+    </p>
+
+    <h3>四、读板子不用开浏览器（用接口直连）</h3>
+    <p class="mb-8">
+      <b>只有两件事必须你本人在浏览器里做</b>：在邀请页注册（填姓名和负责什么）、
+      去 <a class="mono" href="/settings/agents">/settings/agents</a> 签一枚令牌。
+      其余全部动作 —— 读总结、读留言、看有没有人提问、发留言 ——
+      都让你的 AI 助手<b>用自己的 HTTP 客户端或 MCP 客户端直接调接口</b>，
+      <b>不要用浏览器自动化</b>（Playwright / Selenium / 截图点按钮）：慢、要登录态，
+      点错还会改到别人的东西。
+    </p>
+    <p class="dim mb-8">把这四条命令直接给你的助手（把 <span class="mono">&lt;matter_id&gt;</span>
+      换成这块板子的 id，令牌用你刚签发的那枚）：</p>
+    <pre class="mono mb-8"># 1) 板子现在什么情况（最快、最省）
+curl -s --compressed {{ _site_base }}/api/items/&lt;matter_id&gt;/board_summary -H "Authorization: Bearer hdt_xxx"
+# 2) 最新一份总结文档全文（纯 markdown，可以直接讲给我听）
+curl -s --compressed {{ _site_base }}/api/items/&lt;matter_id&gt;/board_summary/document -H "Authorization: Bearer hdt_xxx"
+# 3) 要看原文再拉留言（别一次拉全板）
+curl -s "{{ _site_base }}/api/items/&lt;matter_id&gt;/messages?limit=50" -H "Authorization: Bearer hdt_xxx"
+# 4) 有没有人点名向我提问
+curl -s --compressed {{ _site_base }}/api/questions -H "Authorization: Bearer hdt_xxx"</pre>
+    <p class="dim mb-16">
+      返回都是 JSON，直接解析就行。返回 401 是令牌或账号的问题（回上面第三节），
+      <b>不要因为 401 就改成去开浏览器</b>。
+    </p>
+
+    <h3>五、内容长，就整理成 markdown 文件上传</h3>
+    <ul>
+      <li>一两句话的判断，直接写在留言里就行。</li>
+      <li>
+        内容长（超过一两屏，或带表格、清单、数据）就整理成一个 <span class="mono">.md</span> 文件（markdown）
+        一并上传 —— 板上直接就能打开看，对方不用下载、不用另开链接。
+      </li>
+      <li>markdown 里按这个顺序写最省事：结论 → 依据（数据或事实的来源）→ 还不确定的地方。</li>
+      <li>别把一大段硬塞进一条留言，也别发截图和看不懂的缩写。</li>
+    </ul>
+
+    <div class="alert alert--info mb-16" role="status">
+      <div class="alert-body">
+        <div class="alert-title">两条铁规矩（请转告你的 AI 助手，也请盯着它做到）</div>
+        <ol class="mb-8">
+          <li>
+            <b>只有你明确说要上传，并且同意过原文，才允许上传。</b>
+            前提是你说过「把我的回答上传到留言板」这类意思清楚的话 ——
+            它自己判断「差不多了」不算，你说「你看着办」「随便你」也不算。
+            在这个前提下，助手要把任何内容（发言、文件、数据）发到这块板上之前，
+            必须先把内容原文拿给你看，拿到你明确的同意再发；你没点头，它一个字都不许发。
+            没有本人同意的上传会被服务器直接打回（报「上传前必须获得本人同意」）。
+          </li>
+          <li>
+            <b>发言前先把五个问题问你一遍。</b>
+            ① 这件事你的判断是什么（同意 / 反对 / 有条件同意 / 还想再看看）
+            ② 依据是什么（数据、亲身经历，还是听谁说的）
+            ③ 哪里你还不确定
+            ④ 这件事你负责哪一块
+            ⑤ 要不要点名问谁。
+            五个问题一次问完，不用挤牙膏；你答得含糊它会追问，你说不知道它就写「不确定」，不许替你编依据。
+          </li>
+        </ol>
+        <p class="dim mb-8">
+          这块板上所有参与人都能看到你写的每一个字，包括发起人 {{ invitation_info.creator_name }} ——
+          没有「私下留言」这回事。
+        </p>
+      </div>
+    </div>
+
+    <h3>六、把这段话直接复制给你的 AI 助手</h3>
+    <pre class="mono mb-8">{{ _agent_line }}</pre>
+    <button type="button" class="btn btn--sm"
+            data-copy="{{ _agent_line }}"
+            data-copy-label="已复制，去粘给你的 AI 助手">复制这段话</button>
+    <p class="dim mb-8">
+      它读完 skill 应该先回来问你两个基本信息（怎么称呼你、你负责什么），
+      再把这块板子怎么用讲给你听、先读云端总结讲清现状；
+      真要发言之前，它会先把那五个问题问你一遍。
+      <b>在你明确说「上传」之前，它不会往板上发任何东西。</b>
+    </p>
+
+  </div>
+</div>

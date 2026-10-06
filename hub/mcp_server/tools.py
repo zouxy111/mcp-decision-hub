@@ -48,7 +48,8 @@ def _rate_limit_error(retry_after: int) -> ToolError:
 
 def register_tools(mcp: FastMCP, session_factory, settings: Settings,
                    drive_queue=None, resume_queue=None,
-                   limiter: RateLimiter | None = None) -> None:
+                   limiter: RateLimiter | None = None,
+                   board_queue=None) -> None:
     from hub.api import pipeline
     from hub.mcp_server import methods
 
@@ -128,8 +129,13 @@ def register_tools(mcp: FastMCP, session_factory, settings: Settings,
         options: list[str] | None = None,
         overall_deadline: str | None = None,
     ) -> dict:
-        """Declare a new item (MCP 不可用时的 REST 对应：POST /items 语义)。
-        Caller becomes the initiator; 2-5 participants required (FR-05)."""
+        """Declare a new item (= a message board). Caller becomes the initiator.
+
+        The board is open immediately: no rounds, no tasks. participant_ids may
+        be empty — the usual flow is to create the board, then hand out an
+        invite link so people join themselves. Use post_message /
+        list_messages to collaborate on it.
+        REST 对应：POST /api/items。"""
         return _call(
             session_factory, methods.mcp_declare_item,
             settings=settings, user_id=_current_user_id(),
@@ -291,4 +297,153 @@ def register_tools(mcp: FastMCP, session_factory, settings: Settings,
                 "question": question,
                 "round_number": round_number,
             },
+        )
+
+    # ------------------------------------------------------------------
+    # 留言板（2026-10-04 形态改造）
+    #
+    # 协作形态从「一轮一轮派题」改成留言板之后，agent 只需要这两个动作：
+    # 读回板上所有发言（互相可见），把自己的判断发上去。没有 task_id、
+    # 没有 round_number、没有截止时间 —— 所以这两把工具也不接受这些参数。
+    # ------------------------------------------------------------------
+
+    @mcp.tool
+    def list_messages(matter_id: str, limit: int | None = None) -> dict:
+        """Read the item's message board (oldest first) plus participant cards.
+
+        Each message carries its author's self-reported name and responsibility,
+        so you know who is speaking and what they own. Returns 404 when you are
+        not a member of the item. REST 对应：GET /api/items/{id}/messages。"""
+        return _call(
+            session_factory, methods.mcp_list_messages,
+            settings=settings, user_id=_current_user_id(),
+            matter_id=matter_id, limit=limit,
+        )
+
+    @mcp.tool
+    def post_message(
+        matter_id: str,
+        content: str,
+        human_approved: bool,
+        kind: str = "message",
+        acting_as: str = "human",
+        attachment_name: str | None = None,
+        attachment_md: str | None = None,
+        reply_to_message_id: str | None = None,
+        ask_user_id: int | None = None,
+    ) -> dict:
+        """Post a message / question / answer to the item's board.
+
+        **Ask the human FIRST.** ``human_approved`` is required: only pass True
+        after you have shown the exact text to your user and they said yes.
+        Passing False is rejected (422) — never upload on your own judgement.
+        Then ask them the five questions (their call, the evidence, what is
+        still unclear, what they own, who to ask) before writing anything.
+
+        Write in plain language, no jargon. Long content: put it in
+        ``attachment_md`` with ``attachment_name`` ending in .md.
+
+        kind="question" needs ask_user_id (the participant you ask).
+        Answering someone: pass reply_to_message_id=<their question's id>.
+        kind="decision" only for the item's initiator.
+        REST 对应：POST /api/items/{id}/messages。"""
+        result = _call(
+            session_factory, methods.mcp_post_message,
+            settings=settings, user_id=_current_user_id(),
+            matter_id=matter_id,
+            payload={"content": content, "kind": kind, "acting_as": acting_as,
+                     "human_approved": human_approved,
+                     "attachment_name": attachment_name,
+                     "attachment_md": attachment_md,
+                     "reply_to_message_id": reply_to_message_id,
+                     "ask_user_id": ask_user_id},
+        )
+        # 有新留言 → 让后台把这块板的滚动总结增量更新一次
+        if board_queue is not None:
+            board_queue.put_nowait(matter_id)
+        return result
+
+    @mcp.tool
+    def get_board_summary(matter_id: str) -> dict:
+        """Read the board's rolling summary — do this BEFORE list_messages.
+
+        The cloud keeps a live summary of every board (updated after each new
+        message). Read it first: it is small, so it saves context and is fast.
+        It gives you: summary (what has been said so far), judgement (a rough
+        read on the current task), key_points, open_questions, plus
+        message_count / covered_messages / status.
+
+        status="stale" means new messages exist that are not summarised yet —
+        use this version anyway, or list_messages for the tail.
+        Only pull list_messages when you need the exact wording of something.
+        document_version / document_count tell you how many summary documents
+        exist; read one in full with get_summary_document.
+        REST 对应：GET /api/items/{id}/board_summary。"""
+        return _call(
+            session_factory, methods.mcp_get_board_summary,
+            settings=settings, user_id=_current_user_id(),
+            matter_id=matter_id,
+        )
+
+    @mcp.tool
+    def list_summary_documents(matter_id: str, limit: int | None = None) -> dict:
+        """List the summary documents the cloud has written for this board.
+
+        Every time the cloud finishes a summary round it files one markdown
+        document (newest first here, without the body — small on purpose).
+        Use this to see how the picture changed over time; read one in full
+        with get_summary_document.
+        REST 对应：GET /api/items/{id}/board_summary/documents。"""
+        return _call(
+            session_factory, methods.mcp_list_summary_documents,
+            settings=settings, user_id=_current_user_id(),
+            matter_id=matter_id, limit=limit,
+        )
+
+    @mcp.tool
+    def get_summary_document(matter_id: str, version: int | None = None) -> dict:
+        """Read one summary document in full (markdown), newest by default.
+
+        The document is self-contained: what has been said, the cloud's rough
+        judgement, what is settled, what is still open, and the messages added
+        in that round. Good for showing your human "where this stands" without
+        pulling the whole board. Pass version=N for an older one.
+        REST 对应：GET /api/items/{id}/board_summary/documents[/{version}]。"""
+        return _call(
+            session_factory, methods.mcp_get_summary_document,
+            settings=settings, user_id=_current_user_id(),
+            matter_id=matter_id, version=version,
+        )
+
+    @mcp.tool
+    def request_board_reread(matter_id: str, reason: str | None = None) -> dict:
+        """Ask the cloud to RE-READ THE WHOLE BOARD next round (not the delta).
+
+        Normally the cloud only reads the messages added since the last
+        summary — cheap and fast. Use this only when someone says the summary
+        is wrong or the situation changed: the next round rebuilds it from the
+        first message and files a new document. Pass reason= why.
+        REST 对应：POST /api/items/{id}/board_summary/reread。"""
+        result = _call(
+            session_factory, methods.mcp_request_board_reread,
+            settings=settings, user_id=_current_user_id(),
+            matter_id=matter_id, reason=reason,
+        )
+        if board_queue is not None:
+            board_queue.put_nowait(matter_id)
+        return result
+
+    @mcp.tool
+    def list_pending_questions(matter_id: str | None = None) -> dict:
+        """Pull the questions the cloud has asked YOU (still unanswered).
+
+        This is the pull end of "cloud asks → you handle it locally → upload
+        the answer": fetch these, ask your human the five questions, get their
+        approval, then upload the reply with
+        post_message(reply_to_message_id=<question id>).
+        REST 对应：GET /api/questions。"""
+        return _call(
+            session_factory, methods.mcp_list_pending_questions,
+            settings=settings, user_id=_current_user_id(),
+            matter_id=matter_id,
         )
