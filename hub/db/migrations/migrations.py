@@ -1319,3 +1319,79 @@ def downgrade_add_todos(conn: sqlite3.Connection) -> None:
     except Exception:
         conn.execute("ROLLBACK")
         raise
+
+
+_TASK_CARDS_DDL = """
+CREATE TABLE IF NOT EXISTS task_cards (
+    id VARCHAR(48) NOT NULL,
+    matter_id VARCHAR(48) NOT NULL,
+    title VARCHAR(255) NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    acceptance_criteria TEXT NOT NULL DEFAULT '[]',
+    status VARCHAR(16) NOT NULL DEFAULT 'draft',
+    publisher_id INTEGER NOT NULL,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    published_at DATETIME,
+    PRIMARY KEY (id),
+    FOREIGN KEY(matter_id) REFERENCES matters (id)
+)
+"""
+
+_TASK_CARDS_INDEXES = (
+    ("ix_task_cards_matter", " ON task_cards (matter_id)"),
+    ("ix_task_cards_matter_status", " ON task_cards (matter_id, status)"),
+)
+
+_TASK_DELIVERIES_DDL = """
+CREATE TABLE IF NOT EXISTS task_deliveries (
+    id VARCHAR(48) NOT NULL,
+    card_id VARCHAR(48) NOT NULL,
+    matter_id VARCHAR(48) NOT NULL,
+    submitter_id INTEGER NOT NULL,
+    summary TEXT NOT NULL,
+    self_check TEXT NOT NULL DEFAULT '[]',
+    ai_review TEXT,
+    review_status VARCHAR(16),
+    status VARCHAR(16) NOT NULL DEFAULT 'submitted',
+    reviewer_note TEXT,
+    created_at DATETIME NOT NULL,
+    decided_at DATETIME,
+    PRIMARY KEY (id),
+    FOREIGN KEY(card_id) REFERENCES task_cards (id),
+    FOREIGN KEY(matter_id) REFERENCES matters (id)
+)
+"""
+
+_TASK_DELIVERIES_INDEXES = (
+    ("ix_task_deliveries_card", " ON task_deliveries (card_id)"),
+    ("ix_task_deliveries_matter", " ON task_deliveries (matter_id)"),
+)
+
+
+def upgrade_add_task_cards(conn: sqlite3.Connection) -> None:
+    """建 task_cards + task_deliveries 表及索引；可重入。"""
+    conn.execute("BEGIN")
+    try:
+        conn.execute(_TASK_CARDS_DDL)
+        for name, suffix in _TASK_CARDS_INDEXES:
+            conn.execute(f"CREATE INDEX IF NOT EXISTS {name}{suffix}")
+        conn.execute(_TASK_DELIVERIES_DDL)
+        for name, suffix in _TASK_DELIVERIES_INDEXES:
+            conn.execute(f"CREATE INDEX IF NOT EXISTS {name}{suffix}")
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+
+
+def downgrade_add_task_cards(conn: sqlite3.Connection) -> None:
+    """回滚：删两张表（索引随表一起消失）。"""
+    conn.execute("BEGIN")
+    try:
+        conn.execute("DROP TABLE IF EXISTS task_deliveries")
+        conn.execute("DROP TABLE IF EXISTS task_cards")
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise

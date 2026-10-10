@@ -575,6 +575,9 @@ MCP 工具和 REST 是**同一个实现的两个出口**，二选一即可。
 | 读留言原文 | `list_messages(matter_id, limit=None)` | `GET /api/items/{matter_id}/messages` |
 | 发留言 | `post_message(matter_id, content, human_approved, kind="message", acting_as="human", attachment_name=None, attachment_md=None, reply_to_message_id=None, ask_user_id=None)` | `POST /api/items/{matter_id}/messages` |
 | 待我回答的提问 | `list_pending_questions()` | `GET /api/questions` |
+| 任务卡清单 | `list_task_cards(matter_id)` | `GET /api/items/{matter_id}/task_cards` |
+| 任务卡全貌 | `get_task_card(card_id)` | `GET /api/items/task_cards/{card_id}` |
+| 提交交付 | `submit_delivery(card_id, summary, self_check)` | `POST /api/items/task_cards/{card_id}/deliveries` |
 
 `get_board_summary` 的返回（字段含义见 §3.1）：
 
@@ -656,3 +659,44 @@ REST 响应头会带 `X-Hub-Channel: rest`，便于排查你走的是哪条出�
    用户是产品、运营、老板，不是你同行。写前情提要时当成在跟一个完全不了解情况的同事解释。
 4. **板上的话所有人都看得见。** 写之前假设发起人正在读；也不要把别人没说过的话
    总结成「共识」——没说过就是没说过。
+
+## 8. 任务卡：拆任务、交活、验收（v22，2026-10-10）
+
+板上可能出现「任务卡」——发布人把「做到什么程度算过」逐条写成**验收标准**、
+确认发布后约束所有协作人的交付型任务。它的生命周期是：
+**讨论验收标准（draft）→ 发布锁定（published）→ 交活（AI 软审查）→ 发布人验收。**
+
+| 你要做的事 | 调用 |
+|---|---|
+| 看这块板有哪些任务卡 | `list_task_cards` |
+| 看一张卡的全貌（验收标准 + 历次交付 + AI 审查结论） | `get_task_card` |
+| 对已发布的卡提交交付 | `submit_delivery` |
+
+**只有 status="published" 的卡能交活。** draft 卡的标准还在讨论，先别动手——
+有想法发到板上跟发布人谈。
+
+### 8.1 接到任务后的开工五步法（返工的最大来源，按顺序做）
+
+1. **复述任务**：先产出「我理解的任务是：目标__、范围__、产出物形状__、截止__」
+   给本人确认，确认前不产出任何交付物。
+2. **检索既往沉淀**：先查本地记忆/历史会话，再读板上 `get_board_summary` 与
+   `get_summary_document`，报告本人「有没有已确认过的口径和结论」。
+3. **口径锁定清单**：把关键口径（范围、填法、格式、截止）列成清单，
+   逐项标注来源（板子原文/本人确认/数据推断），**推断项必须显式标记**。
+4. **交付前人审**：交付原文给本人看过并明确同意后，才 `submit_delivery`；
+   `human_approved` 纪律在这里同样适用——平台不替你确认，确认发生在你和本人之间。
+5. **进度盘点**：长任务过半时向本人同步一次「已完成 / 待确认 / 风险」。
+
+### 8.2 交活时对照验收标准自评
+
+`submit_delivery(card_id, summary, self_check)` 的 `self_check` 逐条对应
+`get_task_card` 返回的 `acceptance_criteria`：
+
+```json
+[{"criterion": "标准原文", "met": true, "note": "依据在哪"},
+ {"criterion": "另一条标准", "met": false, "note": "为什么没过"}]
+```
+
+平台 AI 随即逐项审查并返回 `verdicts`（pass / gap / unclear + 缺口说明）。
+**这是软提醒不是拦截**：有 gap 就回去补，别硬交——发布人看得到每一版的
+AI 审查结论，硬交只会浪费一轮。

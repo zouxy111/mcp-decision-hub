@@ -60,7 +60,8 @@ def test_root_respects_must_change_password(client, db_session):
 def test_dashboard_requires_login(client):
     resp = client.get("/dashboard", follow_redirects=False)
     assert resp.status_code == 303
-    assert resp.headers["location"] == "/login"
+    # 2026-10-10：未登录跳转带 next，登录成功后回原来想去的页面
+    assert resp.headers["location"] == "/login?next=%2Fdashboard"
 
 
 def test_must_change_password_forces_redirect(client, db_session):
@@ -135,4 +136,25 @@ def test_logout_clears_session(client, db_session):
     _login(client, "alice", "right-pw-1")
     client.post("/logout", follow_redirects=False)
     resp = client.get("/dashboard", follow_redirects=False)
-    assert resp.headers["location"] == "/login"
+    assert resp.headers["location"].startswith("/login")
+
+
+def test_登录成功后回跳到next目标(client, db_session):
+    make_user(db_session, "alice", password="right-pw-1")
+    db_session.commit()
+    resp = client.post("/login", data={"username": "alice",
+                                       "password": "right-pw-1",
+                                       "next": "/settings/agents"},
+                       follow_redirects=False)
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/settings/agents"
+
+
+def test_next_外跳被忽略(client, db_session):
+    make_user(db_session, "alice", password="right-pw-1")
+    db_session.commit()
+    resp = client.post("/login", data={"username": "alice",
+                                       "password": "right-pw-1",
+                                       "next": "//evil.example.com/x"},
+                       follow_redirects=False)
+    assert resp.headers["location"] == "/dashboard"

@@ -440,3 +440,69 @@ def request_board_reread(
     db.commit()
     request.app.state.board_queue.put_nowait(matter_id)
     return result
+
+
+# ---------------------------------------------------------------------------
+# 任务卡（v22，2026-10-10）：与 MCP 工具 list_task_cards / get_task_card /
+# submit_delivery 同一实现（D3 单一事实源）。建卡/发布/验收是发布人的
+# 网页动作（Cookie 通道，见 routes_task_cards）。
+# ---------------------------------------------------------------------------
+
+
+@router.get("/api/items/{matter_id}/task_cards")
+def list_task_cards(
+    matter_id: str,
+    response: Response,
+    user: User = Depends(require_bearer),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    """这块板上的任务卡列表。与 MCP ``list_task_cards`` 同一实现。"""
+    response.headers[CHANNEL_HEADER] = CHANNEL
+    result = methods.mcp_list_task_cards(
+        db, settings, user_id=user.id, matter_id=matter_id)
+    db.commit()
+    return result
+
+
+@router.get("/api/items/task_cards/{card_id}")
+def get_task_card(
+    card_id: str,
+    response: Response,
+    user: User = Depends(require_bearer),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    """任务卡全貌：验收标准 + 历次交付 + AI 审查。与 MCP 同一实现。"""
+    response.headers[CHANNEL_HEADER] = CHANNEL
+    result = methods.mcp_get_task_card(
+        db, settings, user_id=user.id, card_id=card_id)
+    db.commit()
+    return result
+
+
+@router.post("/api/items/task_cards/{card_id}/deliveries", status_code=201)
+def submit_delivery(
+    card_id: str,
+    response: Response,
+    request: Request,
+    payload: dict = Body(...),
+    user: User = Depends(require_bearer_unlimited),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    """对 published 卡提交交付，AI 软审查结果随响应返回。
+
+    payload: ``{"summary": "交付说明", "self_check": [{"criterion":..,
+    "met": true/false, "note": ".."}]}``。与 MCP ``submit_delivery`` 同一实现。
+    """
+    response.headers[CHANNEL_HEADER] = CHANNEL
+    body = dict(payload) if isinstance(payload, dict) else {}
+    result = methods.mcp_submit_delivery(
+        db, settings, user_id=user.id, card_id=card_id,
+        summary=str(body.get("summary") or ""),
+        self_check=body.get("self_check"),
+        llm=request.app.state.llm,
+    )
+    db.commit()
+    return result

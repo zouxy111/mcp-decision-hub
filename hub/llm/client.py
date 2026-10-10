@@ -120,6 +120,26 @@ def _validate_schema(schema_name: str, data) -> None:
                 raise LLMSchemaError(f"{key} 必须是非空字符串")
         _require_str_list(data, "key_points")
         _require_str_list(data, "open_questions")
+    elif schema_name == "meeting_convergence":
+        # 会议立场收敛：三块都是字符串数组，至少一块非空（不生成空收敛）。
+        for key in ("consensus", "divergences", "follow_ups"):
+            _require_str_list(data, key)
+        if not any(data[key] for key in ("consensus", "divergences", "follow_ups")):
+            raise LLMSchemaError("收敛三块不得全部为空")
+    elif schema_name == "task_delivery_review":
+        # 任务卡交付审查（v22）：verdicts 逐项对照验收标准，verdict 三值。
+        verdicts = data.get("verdicts")
+        if not isinstance(verdicts, list) or not verdicts:
+            raise LLMSchemaError("verdicts 必须是非空数组")
+        for item in verdicts:
+            if not isinstance(item, dict):
+                raise LLMSchemaError("verdicts 元素必须是对象")
+            if not str(item.get("criterion") or "").strip():
+                raise LLMSchemaError("verdicts.criterion 必须非空")
+            if item.get("verdict") not in ("pass", "gap", "unclear"):
+                raise LLMSchemaError("verdicts.verdict 只能是 pass/gap/unclear")
+        if data.get("overall") not in ("pass", "gaps"):
+            raise LLMSchemaError("overall 只能是 pass/gaps")
     else:
         raise LLMSchemaError(f"未知 schema: {schema_name}")
 

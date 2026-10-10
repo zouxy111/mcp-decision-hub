@@ -28,9 +28,11 @@ class Settings:
     llm_model: str = "deepseek-flash"
     llm_request_timeout_seconds: int = 120
     timeout_scan_interval_seconds: int = 60
-    rate_limit_token_per_minute: int = 60
-    rate_limit_submit_per_minute: int = 10
-    rate_limit_account_per_minute: int = 120
+    # Agent 通道（MCP + REST bearer）配额：2026-10-08 owner 裁定**取消**，
+    # 默认 0 = 不限；机制保留，env 调成 >0 即可恢复。登录限流不受影响。
+    rate_limit_token_per_minute: int = 0
+    rate_limit_submit_per_minute: int = 0
+    rate_limit_account_per_minute: int = 0
     rate_limit_login_username_per_minute: int = 5
     rate_limit_login_ip_per_minute: int = 20
     poll_seconds_idle: int = 300

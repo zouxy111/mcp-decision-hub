@@ -217,6 +217,12 @@ MIGRATIONS: tuple[Migration, ...] = (
         _steps.upgrade_add_todos,
         _steps.downgrade_add_todos,
     ),
+    Migration(
+        22,
+        "add_task_cards",
+        _steps.upgrade_add_task_cards,
+        _steps.downgrade_add_task_cards,
+    ),
 )
 
 _VERSION_TABLE = "schema_migrations"

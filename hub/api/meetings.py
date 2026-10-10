@@ -11,6 +11,7 @@ Token 节省策略：
 - 只传本地 LLM 整理后的文本，不传原始转写和检索结果
 - 云端 LLM 只输出精简 JSON（共识/分歧/追问，每项最多3条）
 """
+import asyncio
 from datetime import timedelta
 
 from fastapi import APIRouter, Depends, Request
@@ -176,16 +177,9 @@ async def _check_and_converge(
     if not stances:
         return None
     
-    # 获取参与人总数
+    # 获取参与人总数（与 _expected_count 同一口径：按人去重）
     matter = session.get(Matter, meeting.matter_id)
-    participants_count = session.execute(
-        select(func.count(MatterParticipant.user_id))
-        .where(MatterParticipant.matter_id == meeting.matter_id)
-    ).scalar()
-    
-    # 如果发起人也参与作答，需要计入
-    if matter.initiator_participates:
-        participants_count += 1
+    participants_count = _expected_count(session, matter)
     
     # 已提交的用户数
     submitted_users = {s.user_id for s in stances}
@@ -251,25 +245,21 @@ async def _do_convergence(
 4. 直接返回 JSON，不要额外说明
 """
     
-    # 调用 LLM
+    # 调用 LLM（2026-10-08 修复：此前调了不存在的 llm.generate，收敛永远
+    # 落进 except 分支，线上只有「收敛失败」占位。统一走 complete_json，
+    # 同步阻塞接口用 asyncio.to_thread 隔出事件循环）
+    system_prompt = (
+        "你是会议主持人。分析本轮发言，返回 JSON："
+        '{"consensus": ["共识点（所有人都同意）"], '
+        '"divergences": ["分歧点（观点不一致）"], '
+        '"follow_ups": ["追问（推进讨论的问题）"]}。'
+        "每项最多 3 条，精简表达，只提取关键内容，追问要具体可回答。"
+    )
     try:
-        response = await llm.generate(prompt, max_tokens=500)
-        
-        # 解析 JSON
-        import json
-        import re
-        
-        # 尝试从响应中提取 JSON
-        json_match = re.search(r'\{.*\}', response, re.DOTALL)
-        if json_match:
-            summary = json.loads(json_match.group(0))
-        else:
-            # 解析失败，使用默认结构
-            summary = {
-                "consensus": ["（LLM 输出解析失败）"],
-                "divergences": [],
-                "follow_ups": []
-            }
+        summary = await asyncio.to_thread(
+            llm.complete_json, system_prompt, prompt,
+            schema_name="meeting_convergence",
+        )
     except Exception as e:
         # LLM 调用失败
         summary = {
@@ -492,17 +482,21 @@ def _participant_usernames(session: Session, matter_id: str) -> list[str]:
 
 
 def _expected_count(session: Session, matter: Matter) -> int:
-    """本轮应收到的立场数：参与人数 + 发起人（若他也作答）。
+    """本轮应收到的立场数：参与人 ∪ 发起人（若他作答且不在参与人里）。
 
     与 :func:`_check_and_converge` 的收敛判定保持同一套口径。
+    按 user_id 去重：留言板形态（2026-10-04 起）把发起人**同时**写进
+    matter_participants 和 initiator_participates=True，旧口径
+    「行数 +1」会双算发起人，全员提交也够不到收敛线、只能等超时。
     """
-    count = session.execute(
-        select(func.count(MatterParticipant.user_id))
+    participant_ids = set(session.execute(
+        select(MatterParticipant.user_id)
         .where(MatterParticipant.matter_id == matter.id)
-    ).scalar() or 0
-    if matter.initiator_participates:
-        count += 1
-    return count
+    ).scalars().all())
+    expected = len(participant_ids)
+    if matter.initiator_participates and matter.initiator_id not in participant_ids:
+        expected += 1
+    return expected
 
 
 @router.get("", response_model=list[MeetingBrief])

@@ -1631,3 +1631,119 @@ def mcp_update_todo(
     return _todo_view(todo,
                       matter_title=matter.title if matter else None,
                       assignee_name=names.get(todo.assignee_id))
+
+
+# ---------------------------------------------------------------------------
+# 任务卡（v22，2026-10-10）。方法本体在 hub.api.task_cards（服务层），
+# 这里只做形状转换 —— 与既有 mcp_* 方法同一纪律：methods 不重复业务判断。
+# ---------------------------------------------------------------------------
+
+
+def _card_view(session: Session, card) -> dict:
+    from hub.api import task_cards as cards_svc
+
+    names = _resolve_names(session, [card.publisher_id])
+    deliveries = cards_svc.list_deliveries(session, card_id=card.id,
+                                           user_id=card.publisher_id)
+    return {
+        "card_id": card.id,
+        "matter_id": card.matter_id,
+        "title": card.title,
+        "description": card.description,
+        "acceptance_criteria": cards_svc.cards.parse_criteria(
+            card.acceptance_criteria),
+        "status": card.status,
+        "publisher": names.get(card.publisher_id),
+        "published_at": iso_z(card.published_at) if card.published_at else None,
+        "deliveries": [_delivery_view(d) for d in deliveries],
+    }
+
+
+def _delivery_view(delivery) -> dict:
+    from hub.api import task_cards as cards_svc
+
+    return {
+        "delivery_id": delivery.id,
+        "submitter_id": delivery.submitter_id,
+        "summary": delivery.summary,
+        "self_check": cards_svc.cards.parse_self_check(delivery.self_check),
+        "ai_review": cards_svc.cards.parse_ai_review(delivery.ai_review),
+        "review_status": delivery.review_status,
+        "status": delivery.status,
+        "reviewer_note": delivery.reviewer_note,
+        "created_at": iso_z(delivery.created_at),
+        "decided_at": iso_z(delivery.decided_at) if delivery.decided_at else None,
+    }
+
+
+def mcp_list_task_cards(
+    session: Session,
+    settings: Settings,
+    *,
+    user_id: int,
+    matter_id: str,
+) -> dict:
+    """这块板上的任务卡列表。卡片不含交付明细（省上下文），要明细用
+    get_task_card。非成员 404（不泄露存在性）。"""
+    from hub.api import task_cards as cards_svc
+
+    cards = cards_svc.list_cards(session, matter_id=matter_id, user_id=user_id)
+    names = _resolve_names(session, [c.publisher_id for c in cards])
+    return {
+        "matter_id": matter_id,
+        "cards": [{
+            "card_id": c.id,
+            "title": c.title,
+            "status": c.status,
+            "publisher": names.get(c.publisher_id),
+            "acceptance_criteria": cards_svc.cards.parse_criteria(
+                c.acceptance_criteria),
+        } for c in cards],
+    }
+
+
+def mcp_get_task_card(
+    session: Session,
+    settings: Settings,
+    *,
+    user_id: int,
+    card_id: str,
+) -> dict:
+    from hub.api import task_cards as cards_svc
+
+    card = cards_svc.get_card(session, card_id=card_id, user_id=user_id)
+    view = _card_view(session, card)
+    names = _resolve_names(session,
+                           [d["submitter_id"] for d in view["deliveries"]])
+    for d in view["deliveries"]:
+        d["submitter"] = names.get(d.pop("submitter_id"))
+    return view
+
+
+def mcp_submit_delivery(
+    session: Session,
+    settings: Settings,
+    *,
+    user_id: int,
+    card_id: str,
+    summary: str,
+    self_check: list[dict] | None = None,
+    llm=None,
+) -> dict:
+    """对 published 卡提交交付；AI 软审查结果随响应返回。"""
+    from hub.api import task_cards as cards_svc
+
+    user = _user(session, user_id)
+    delivery = cards_svc.submit_delivery(
+        session, card_id=card_id, user=user,
+        summary=summary, self_check=self_check, llm=llm)
+    view = _delivery_view(delivery)
+    view["submitter"] = _resolve_names(session, [user_id]).get(user_id)
+    return view
+
+
+def _user(session: Session, user_id: int) -> User:
+    user = session.get(User, user_id)
+    if user is None:
+        raise ApiError(401, "AUTH_INVALID_TOKEN", "令牌对应用户不存在")
+    return user

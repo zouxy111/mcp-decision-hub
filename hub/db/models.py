@@ -749,3 +749,84 @@ class Todo(Base):
     created_at: Mapped[datetime] = mapped_column(default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(default=utcnow,
                                                  onupdate=utcnow, nullable=False)
+
+
+class TaskCard(Base):
+    """任务卡（v22，2026-10-10）。
+
+    存在的理由：测试反馈（杨琦，2026-10-08~09）指出协同交付的质量命门在
+    「任务下发→开工→交付验收」这段，而平台此前只管「讨论→收敛」。owner
+    2026-10-10 裁定补这段，且**不强制阻断**：验收标准先跟发布人讨论清楚
+    再发布，发布后约束所有协作人；交付提交时 AI 对照标准指出缺陷
+    （软提醒），由发布人最终验收。
+
+    与既有表的区别：``tasks`` 是轮次问卷任务；``todos`` 是轻量待办；
+    本表是**带验收标准的交付型任务卡**，有独立生命周期
+    （draft 讨论中 → published 已发布 → closed 已关闭）。
+
+    * ``acceptance_criteria`` 存 JSON 字符串数组，发布前（draft）由
+      发布人反复改；**确认发布后不可再改**（改动必须走新卡或关闭重开，
+      否则「当前有效口径」又不可考了 —— 对应反馈第 6 条）。
+    """
+
+    __tablename__ = "task_cards"
+
+    id: Mapped[str] = mapped_column(String(48), primary_key=True,
+                                    default=lambda: new_id("tcard"))
+    matter_id: Mapped[str] = mapped_column(
+        ForeignKey("matters.id"), nullable=False, index=True
+    )
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    # JSON 字符串数组：验收标准逐条
+    acceptance_criteria: Mapped[str] = mapped_column(Text, default="[]",
+                                                     nullable=False)
+    # draft（与发布人讨论验收标准中）| published（已发布，约束协作人）
+    # | closed（关闭，不再接收交付）
+    status: Mapped[str] = mapped_column(String(16), default="draft",
+                                        nullable=False)
+    publisher_id: Mapped[int] = mapped_column(ForeignKey("users.id"),
+                                              nullable=False)
+    created_at: Mapped[datetime] = mapped_column(default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(default=utcnow,
+                                                 onupdate=utcnow, nullable=False)
+    published_at: Mapped[datetime | None] = mapped_column(nullable=True)
+
+
+class TaskDelivery(Base):
+    """任务卡的一次交付（v22，2026-10-10）。
+
+    提交时交付人先**逐项自评**（self_check 存 JSON：
+    ``[{criterion, met, note}]``），平台 AI 随即对照验收标准审查并落
+    ``ai_review``（``{verdicts: [{criterion, verdict, gap}], overall}``），
+    verdict ∈ pass / gap / unclear。**软门禁**：AI 只指出缺陷，不阻断；
+    发布人最终 accept / reject（reviewer_note 记理由）。
+
+    ``matter_id`` 冗余存储，成员校验与列表查询不必 join task_cards。
+    """
+
+    __tablename__ = "task_deliveries"
+
+    id: Mapped[str] = mapped_column(String(48), primary_key=True,
+                                    default=lambda: new_id("tdlv"))
+    card_id: Mapped[str] = mapped_column(
+        ForeignKey("task_cards.id"), nullable=False, index=True
+    )
+    matter_id: Mapped[str] = mapped_column(
+        ForeignKey("matters.id"), nullable=False, index=True
+    )
+    submitter_id: Mapped[int] = mapped_column(ForeignKey("users.id"),
+                                              nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    # JSON [{criterion, met, note}]
+    self_check: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
+    # JSON {verdicts: [{criterion, verdict, gap}], overall}；AI 审查结果
+    ai_review: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # pass（全过）| gaps（有缺口）| failed（AI 审查本身失败）
+    review_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # submitted（待验收）| accepted | rejected
+    status: Mapped[str] = mapped_column(String(16), default="submitted",
+                                        nullable=False)
+    reviewer_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(default=utcnow, nullable=False)
+    decided_at: Mapped[datetime | None] = mapped_column(nullable=True)

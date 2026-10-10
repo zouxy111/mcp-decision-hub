@@ -55,6 +55,13 @@ TODO_CREATED = "todo_created"
 TODO_UPDATED = "todo_updated"
 # AI 抽取出的待办落了库（等人工确认）。detail 带 todo_id 与来源消息。
 TODO_EXTRACTED = "todo_extracted"
+# 任务卡事件（v22，2026-10-10）。验收标准从讨论到发布、交付、验收全留痕。
+TASK_CARD_CREATED = "task_card_created"
+TASK_CARD_UPDATED = "task_card_updated"
+TASK_CARD_PUBLISHED = "task_card_published"
+TASK_CARD_CLOSED = "task_card_closed"
+TASK_DELIVERY_SUBMITTED = "task_delivery_submitted"
+TASK_DELIVERY_DECIDED = "task_delivery_decided"
 
 # Max chars of a decision rationale stored in audit detail (design decision 12).
 AUDIT_RATIONALE_MAX = 500

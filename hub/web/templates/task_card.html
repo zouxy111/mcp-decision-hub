@@ -1,0 +1,206 @@
+{% extends "base.html" %}
+{% block title %}{{ card.title }} · 任务卡{% endblock %}
+{% block content %}
+
+<div class="page-head">
+  <div>
+    <a class="back-link" href="/matters/{{ card.matter_id }}">← 回到留言板</a>
+    <h1>{{ card.title }}</h1>
+    <p class="page-sub">
+      状态：
+      {% if card.status == 'draft' %}<span class="tag">讨论中（验收标准未定稿）</span>
+      {% elif card.status == 'published' %}<span class="tag tag--ok">已发布（交付须对照验收标准）</span>
+      {% else %}<span class="tag tag--error">已关闭</span>{% endif %}
+    </p>
+  </div>
+</div>
+
+{% if error %}
+<div class="alert alert--error mb-16" role="alert"><div class="alert-body">{{ error }}</div></div>
+{% endif %}
+
+{# ---------------------------------------------------------- 任务要求 #}
+<div class="panel mb-16">
+  <div class="panel-head"><h2>任务要求</h2></div>
+  <div class="panel-body">
+    {% if card.description %}<p class="pre-wrap mb-0">{{ card.description }}</p>
+    {% else %}<p class="dim mb-0">（未填写）</p>{% endif %}
+  </div>
+</div>
+
+{# ---------------------------------------------------------- 验收标准 #}
+<div class="panel mb-16">
+  <div class="panel-head">
+    <h2>验收标准（{{ criteria | length }} 条）</h2>
+    <span class="spacer"></span>
+    {% if card.status == 'draft' %}<span class="ticker">发布前可反复修改 · 发布后锁定</span>
+    {% elif card.status == 'published' %}<span class="ticker">已锁定 · 变更请关闭后新建</span>{% endif %}
+  </div>
+  <div class="panel-body">
+    {% if criteria %}
+    <ol class="qlist mb-0">
+      {% for c in criteria %}<li><span>{{ c }}</span></li>{% endfor %}
+    </ol>
+    {% else %}
+    <p class="dim mb-0">还没有验收标准。跟发布人把「做到什么程度算过」逐条谈清楚再发布。</p>
+    {% endif %}
+
+    {% if is_publisher and card.status == 'draft' %}
+    <details class="board-attach mt-16">
+      <summary>修改任务卡（仅讨论中可改）</summary>
+      <form method="post" action="/matters/{{ card.matter_id }}/cards/{{ card.id }}/update"
+            class="mt-8">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+        <label class="field mb-8">
+          <span class="field-label">任务标题</span>
+          <input class="input" name="title" value="{{ card.title }}" maxlength="255">
+        </label>
+        <label class="field mb-8">
+          <span class="field-label">任务要求</span>
+          <textarea class="input" name="description" rows="3">{{ card.description }}</textarea>
+        </label>
+        <label class="field mb-8">
+          <span class="field-label">验收标准（一行一条）</span>
+          <textarea class="input" name="criteria_text" rows="5">{{ criteria_lines }}</textarea>
+        </label>
+        <div class="form-actions form-actions--flush">
+          <button type="submit" class="btn" data-busy-label="保存中">保存修改</button>
+        </div>
+      </form>
+    </details>
+    {% endif %}
+
+    {% if is_publisher %}
+    <div class="form-actions form-actions--flush mt-16">
+      {% if card.status == 'draft' %}
+      <form method="post" action="/matters/{{ card.matter_id }}/cards/{{ card.id }}/publish"
+            data-confirm="发布后验收标准锁定，协作人交付须逐条对照。确认讨论清楚了？">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+        <button type="submit" class="btn btn--primary" data-busy-label="发布中">确认发布（锁定验收标准）</button>
+      </form>
+      {% endif %}
+      {% if card.status != 'closed' %}
+      <form method="post" action="/matters/{{ card.matter_id }}/cards/{{ card.id }}/close"
+            data-confirm="关闭后不再接收交付。">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+        <button type="submit" class="btn btn--ghost">关闭任务卡</button>
+      </form>
+      {% endif %}
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+{# ---------------------------------------------------------- 交付 #}
+<div class="panel mb-16">
+  <div class="panel-head">
+    <h2>交付（{{ deliveries | length }} 次）</h2>
+    <span class="spacer"></span>
+    <span class="ticker">AI 审查是软提醒：有缺口请补交，不会被拦</span>
+  </div>
+  <div class="panel-body">
+    {% for d in deliveries %}
+    <div class="board-item mb-16">
+      <div class="board-head">
+        <b>{{ d.delivery.id }}</b>
+        {% if d.delivery.review_status and review_status_label.get(d.delivery.review_status) %}
+        <span class="ticker">{{ review_status_label[d.delivery.review_status] }}</span>
+        {% endif %}
+        <span class="ticker">
+          {% if d.delivery.status == 'submitted' %}待验收
+          {% elif d.delivery.status == 'accepted' %}已验收通过
+          {% else %}已驳回{% endif %}
+        </span>
+        <span class="spacer"></span>
+        <span class="mono dim">{{ d.delivery.created_at }}</span>
+      </div>
+      <div class="board-body mb-8">{{ d.delivery.summary }}</div>
+
+      {% if d.self_check %}
+      <div class="meta-key">交付人自评（逐条对照）</div>
+      <ul class="bullets mb-8">
+        {% for c in d.self_check %}
+        <li>{{ c.criterion }}：
+          {% if c.met is sameas true %}<span class="tag tag--ok">符合</span>
+          {% elif c.met is sameas false %}<span class="tag tag--error">不符合</span>
+          {% else %}<span class="tag">未自评</span>{% endif %}
+          {% if c.note %}（{{ c.note }}）{% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+
+      {% if d.ai_review and d.ai_review.verdicts %}
+      <div class="meta-key">AI 审查（逐条结论）</div>
+      <ul class="bullets mb-8">
+        {% for v in d.ai_review.verdicts %}
+        <li>{{ v.criterion }}：
+          {% if v.verdict == 'pass' %}<span class="tag tag--ok">符合</span>
+          {% elif v.verdict == 'gap' %}<span class="tag tag--error">有缺口</span>
+          {% else %}<span class="tag tag--warn">待澄清</span>{% endif %}
+          {% if v.gap %}—— {{ v.gap }}{% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+
+      {% if d.delivery.reviewer_note %}
+      <p class="dim mb-8">验收意见：{{ d.delivery.reviewer_note }}</p>
+      {% endif %}
+
+      {% if is_publisher and d.delivery.status == 'submitted' %}
+      <div class="form-actions form-actions--flush">
+        <form method="post" action="/deliveries/{{ d.delivery.id }}/decide" class="row"
+              style="gap:8px">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+          <input type="hidden" name="decision" value="accept">
+          <button type="submit" class="btn btn--primary btn--sm" data-busy-label="验收中">验收通过</button>
+        </form>
+        <form method="post" action="/deliveries/{{ d.delivery.id }}/decide" class="row"
+              style="gap:8px">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+          <input type="hidden" name="decision" value="reject">
+          <input class="input input--sm" name="note" placeholder="驳回理由（会留痕）">
+          <button type="submit" class="btn btn--danger btn--sm" data-busy-label="驳回中">驳回</button>
+        </form>
+      </div>
+      {% endif %}
+    </div>
+    {% else %}
+    <p class="dim mb-0">还没有人交付。</p>
+    {% endfor %}
+
+    {# 交活表单 #}
+    {% if card.status == 'published' %}
+    <details class="board-attach" {% if not deliveries %}open{% endif %}>
+      <summary>提交交付</summary>
+      <form method="post" action="/matters/{{ card.matter_id }}/cards/{{ card.id }}/deliveries"
+            class="mt-8">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+        <label class="field mb-8">
+          <span class="field-label">交付说明</span>
+          <textarea class="input" name="summary" rows="4" required
+                    placeholder="做了什么、结论是什么、依据在哪"></textarea>
+        </label>
+        {% if criteria %}
+        <div class="field mb-8">
+          <span class="field-label">逐条对照验收标准自评（提交后 AI 会再审一遍并指出缺口）</span>
+          {% for c in criteria %}
+          <label class="row" style="gap:8px; align-items:baseline; margin:4px 0">
+            <input type="checkbox" name="met_criteria" value="{{ c }}">
+            <span style="flex:1">{{ c }}</span>
+          </label>
+          {% endfor %}
+          <span class="field-hint">勾选 = 自评符合；不勾的按未自评处理，AI 审查会重点核对这些条。</span>
+        </div>
+        {% endif %}
+        <button type="submit" class="btn btn--primary" data-busy-label="提交中">提交交付</button>
+      </form>
+    </details>
+    {% elif card.status == 'draft' %}
+    <p class="dim mb-0">任务卡还在讨论中，发布后才能提交交付。</p>
+    {% endif %}
+  </div>
+</div>
+
+{% endblock %}

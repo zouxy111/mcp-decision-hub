@@ -49,7 +49,7 @@ def _rate_limit_error(retry_after: int) -> ToolError:
 def register_tools(mcp: FastMCP, session_factory, settings: Settings,
                    drive_queue=None, resume_queue=None,
                    limiter: RateLimiter | None = None,
-                   board_queue=None) -> None:
+                   board_queue=None, llm=None) -> None:
     from hub.api import pipeline
     from hub.mcp_server import methods
 
@@ -81,8 +81,9 @@ def register_tools(mcp: FastMCP, session_factory, settings: Settings,
         notes: str | None = None,
     ) -> dict:
         """Submit human-approved output for a task (PRD 9.2/9.3/9.4)."""
-        # Submit-specific rate limit (PRD 9.1): 10/min per token
-        if limiter is not None:
+        # Submit-specific rate limit (PRD 9.1)。2026-10-08 owner 裁定取消
+        # agent 通道配额：默认 0 = 不限；env 调成 >0 即恢复。
+        if limiter is not None and settings.rate_limit_submit_per_minute > 0:
             sub_key = rate_limit_key_submit(_current_token_id())
             ok, retry = limiter.allow(
                 sub_key, limit=settings.rate_limit_submit_per_minute)
@@ -535,4 +536,58 @@ def register_tools(mcp: FastMCP, session_factory, settings: Settings,
             settings=settings, user_id=_current_user_id(),
             todo_id=todo_id, status=status, assignee_id=assignee_id,
             due_at=due_at, title=title,
+        )
+
+    # ------------------------------------------------------------------
+    # 任务卡（v22，2026-10-10）：讨论验收标准 → 发布 → 交付（AI 软审查）→ 验收。
+    # 建卡/发布/验收是发布人的网页动作；agent 侧给「看卡 + 交活」两个半工具。
+    # ------------------------------------------------------------------
+
+    @mcp.tool
+    def list_task_cards(matter_id: str) -> dict:
+        """列出这块板上的任务卡（含状态与验收标准）。
+
+        先看这个再交活：只有 status="published" 的卡接收交付；
+        acceptance_criteria 就是你交活时要逐条对照的标准。
+        REST 对应：GET /api/items/{matter_id}/task_cards。"""
+        return _call(
+            session_factory, methods.mcp_list_task_cards,
+            settings=settings, user_id=_current_user_id(),
+            matter_id=matter_id,
+        )
+
+    @mcp.tool
+    def get_task_card(card_id: str) -> dict:
+        """看一张任务卡的全貌：验收标准 + 历次交付 + AI 审查结论。
+
+        交活前用它确认「当前有效口径」；历史交付里的 ai_review 会指出
+        上一版哪里有缺口，别重蹈覆辙。
+        REST 对应：GET /api/items/task_cards/{card_id}。"""
+        return _call(
+            session_factory, methods.mcp_get_task_card,
+            settings=settings, user_id=_current_user_id(),
+            card_id=card_id,
+        )
+
+    @mcp.tool
+    def submit_delivery(
+        card_id: str,
+        summary: str,
+        self_check: list[dict] | None = None,
+    ) -> dict:
+        """对一张已发布的任务卡提交交付。
+
+        summary：交付说明（做了什么、结论是什么）。
+        self_check：逐条对照验收标准自评，[{"criterion": 标准原文,
+        "met": true/false, "note": "说明"}]；缺条的按未自评处理。
+
+        平台 AI 随即审查并返回 verdicts（pass/gap/unclear 逐条 + overall）——
+        这是软提醒不阻断：有 gap 就回去补，别硬交。
+        上板前必须给本人看过并同意（human_approved 纪律同样适用）。
+        REST 对应：POST /api/items/task_cards/{card_id}/deliveries。"""
+        return _call(
+            session_factory, methods.mcp_submit_delivery,
+            settings=settings, user_id=_current_user_id(),
+            card_id=card_id, summary=summary, self_check=self_check,
+            llm=llm,
         )

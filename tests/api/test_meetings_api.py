@@ -206,6 +206,50 @@ def test_列表_发起人参与作答时计入应提交人数(client, db_session
     assert row["expected_count"] == 1
 
 
+def test_列表_留言板形态发起人不被双算(client, db_session, alice, bob, carol):
+    """留言板形态（2026-10-04 起）：发起人**同时**在 matter_participants 里、
+    initiator_participates=True。旧口径「行数 +1」会把发起人算两次，
+    expected=4 超过实际人数，全员提交也永远凑不齐、只能等超时。
+    """
+    matter = _make_matter(db_session, alice, participants=[alice, bob, carol],
+                          initiator_participates=True)
+    _make_meeting(db_session, matter)
+    _login(client)
+
+    row = client.get("/api/meetings").json()[0]
+
+    assert row["expected_count"] == 3
+
+
+def test_收敛判定_留言板形态全员提交即收敛(db_session, alice, bob, carol,
+                                         make_fake_llm):
+    """_check_and_converge 与 _expected_count 同一口径：全员提交立即可收敛，
+    不必等超时。顺带钉住收敛走 complete_json（RuntimeLlm 唯一接口）。"""
+    import asyncio
+
+    from hub.api.meetings import _check_and_converge
+    from hub.db.models import MeetingStance
+
+    matter = _make_matter(db_session, alice, participants=[alice, bob, carol],
+                          initiator_participates=True)
+    meeting = _make_meeting(db_session, matter)
+    for u in (alice, bob, carol):
+        db_session.add(MeetingStance(id=f"mst-{u.id}", meeting_id=meeting.id,
+                                     user_id=u.id,
+                                     round_number=meeting.round_number,
+                                     text="我同意"))
+    db_session.flush()
+
+    llm = make_fake_llm([
+        {"consensus": ["都同意"], "divergences": [], "follow_ups": []},
+    ])
+    convergence = asyncio.run(_check_and_converge(db_session, meeting, llm))
+
+    assert convergence is not None
+    assert convergence.consensus == ["都同意"]
+    assert llm.calls[0]["schema_name"] == "meeting_convergence"
+
+
 # --------------------------------------------------------------------------
 # GET /api/meetings/{id}（新增：详情）
 # --------------------------------------------------------------------------

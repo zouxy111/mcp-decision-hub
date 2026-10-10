@@ -58,9 +58,10 @@ def test_settings_m4_fields_defaults():
         admin_initial_password=None,
     )
     assert settings.timeout_scan_interval_seconds == 60
-    assert settings.rate_limit_token_per_minute == 60
-    assert settings.rate_limit_submit_per_minute == 10
-    assert settings.rate_limit_account_per_minute == 120
+    # 2026-10-08 owner 裁定取消 agent 通道配额：三项限流默认 0（关闭）
+    assert settings.rate_limit_token_per_minute == 0
+    assert settings.rate_limit_submit_per_minute == 0
+    assert settings.rate_limit_account_per_minute == 0
     assert settings.poll_seconds_idle == 300
     assert settings.poll_seconds_active == 30
 
@@ -110,8 +111,9 @@ def test_load_settings_unset_m4_env_falls_back_to_defaults(monkeypatch, tmp_path
     assert settings.task_timeout_seconds == 72 * 3600
     assert settings.max_rounds == 10
     assert settings.timeout_scan_interval_seconds == 60
-    assert settings.rate_limit_token_per_minute == 60
-    assert settings.rate_limit_submit_per_minute == 10
-    assert settings.rate_limit_account_per_minute == 120
+    # 2026-10-08 owner 裁定取消 agent 通道配额：三项限流默认 0（关闭）
+    assert settings.rate_limit_token_per_minute == 0
+    assert settings.rate_limit_submit_per_minute == 0
+    assert settings.rate_limit_account_per_minute == 0
     assert settings.poll_seconds_idle == 300
     assert settings.poll_seconds_active == 30

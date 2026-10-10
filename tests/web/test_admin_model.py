@@ -66,7 +66,8 @@ def test_非管理员被拒(client, db_session):
 def test_未登录被弹回登录页(client, db_session):
     resp = client.get("/admin/model", follow_redirects=False)
     assert resp.status_code == 303
-    assert resp.headers["location"] == "/login"
+    # 未登录跳转带 next 回跳参数（2026-10-10）
+    assert resp.headers["location"].startswith("/login")
 
 
 def test_导航入口只对管理员出现(client, db_session, admin):

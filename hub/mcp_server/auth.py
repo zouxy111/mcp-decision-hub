@@ -4,6 +4,9 @@ Fail closed with 401 for auth; fail closed with 429 for rate limits.
 PRD 9.1: token/account dual-counting with Retry-After header. The
 submit-specific limit is enforced at the tool layer (hub/mcp_server/tools.py)
 to avoid ASGI body-buffering complexity — same error code, different transport.
+
+2026-10-08 owner 裁定取消 agent 通道配额：三项限额默认 0（关闭），本中间件
+默认只做认证；限额机制保留，env 调成 >0 即恢复。
 """
 
 from starlette.requests import Request
@@ -64,24 +67,28 @@ class BearerAuthMiddleware:
         scope.setdefault("state", {})["token_id"] = token_id
 
         # --- rate limiting (PRD 9.1): token + account dimensions ---
+        # 2026-10-08 owner 裁定取消 agent 通道配额：限额 <=0 的维度直接跳过
+        # （默认三项全 0 = 不限）；env 调成 >0 即恢复。
         if self.limiter is not None and self.settings is not None:
             settings = self.settings
             # Token-wide limit
-            tok_key = rate_limit_key_token(token_id)
-            ok, retry = self.limiter.allow(
-                tok_key, limit=settings.rate_limit_token_per_minute)
-            if not ok:
-                metrics.rate_limited("mcp_token")
-                resp = _retry_after_response(retry)
-                await resp(scope, receive, send)
-                return
+            if settings.rate_limit_token_per_minute > 0:
+                tok_key = rate_limit_key_token(token_id)
+                ok, retry = self.limiter.allow(
+                    tok_key, limit=settings.rate_limit_token_per_minute)
+                if not ok:
+                    metrics.rate_limited("mcp_token")
+                    resp = _retry_after_response(retry)
+                    await resp(scope, receive, send)
+                    return
             # Account-wide limit (multi-token total)
-            acct_key = rate_limit_key_account(user.id)
-            ok, retry = self.limiter.allow(
-                acct_key, limit=settings.rate_limit_account_per_minute)
-            if not ok:
-                metrics.rate_limited("mcp_account")
-                resp = _retry_after_response(retry)
-                await resp(scope, receive, send)
-                return
+            if settings.rate_limit_account_per_minute > 0:
+                acct_key = rate_limit_key_account(user.id)
+                ok, retry = self.limiter.allow(
+                    acct_key, limit=settings.rate_limit_account_per_minute)
+                if not ok:
+                    metrics.rate_limited("mcp_account")
+                    resp = _retry_after_response(retry)
+                    await resp(scope, receive, send)
+                    return
         await self.app(scope, receive, send)

@@ -23,6 +23,7 @@ from hub.api.pipeline import (
     BLOCKED_REASON_ROUND_LIMIT,
 )
 from hub.api.resolutions import draft_resolution_from_blocked, get_latest_resolution
+from hub.api import task_cards as task_cards_svc
 from hub.config import Settings
 from hub.db.models import Matter, MatterParticipant, Output, Round, RoundSummary, Task, User
 from hub.domain import board as board_svc
@@ -255,6 +256,12 @@ def _build_detail(db: Session, matter: Matter, user: User, settings: Settings,
             if matter.mode == "board" else []
         ),
         "round_views": round_views,
+        # 任务卡（v22）：「讨论验收标准 → 发布 → 交付(AI 软审查) → 验收」。
+        # 只在留言板上出现；列表给入口，动作全在卡片页。
+        "task_cards": (
+            task_cards_svc.list_cards(db, matter_id=matter.id, user_id=user.id)
+            if matter.mode == "board" else []
+        ),
         "llm_provider": settings.llm_provider_name,
         "rounds_used": rounds_used,
         "auto_limit": auto_limit,

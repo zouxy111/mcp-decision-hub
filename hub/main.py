@@ -29,6 +29,7 @@ from hub.web import (
     routes_decision,
     routes_invitation,
     routes_matters,
+    routes_task_cards,
     routes_todos,
 )
 
@@ -80,7 +81,7 @@ def create_app(settings: Settings | None = None, *, llm=None) -> FastAPI:
     if create_mcp_asgi is not None:
         mcp_asgi, mcp_inner_lifespan = create_mcp_asgi(
             session_factory, settings, drive_queue, resume_queue=resume_queue,
-            limiter=limiter, board_queue=board_queue,
+            limiter=limiter, board_queue=board_queue, llm=llm,
         )
 
     @asynccontextmanager
@@ -172,6 +173,7 @@ def create_app(settings: Settings | None = None, *, llm=None) -> FastAPI:
     app.include_router(routes_invitation.pages_router)
     app.include_router(routes_todos.router)  # 待办事项（Cookie 通道）
     app.include_router(routes_todos.pages_router)  # 待办页面 /matters/{id}/todos
+    app.include_router(routes_task_cards.router)  # 任务卡（v22，网页通道）
     app.include_router(meetings.router)  # 会议模式 API
     # 前端静态资源同源托管：模板只需 /static/console.css 与 /static/console.js，
     # 不再依赖 unpkg 等外部 CDN（此前 htmx 走公网，网络不通即静默失效）。

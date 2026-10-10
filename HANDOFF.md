@@ -93,6 +93,22 @@ HTTPS_PROXY=socks5h://127.0.0.1:1080 gh api repos/zouxy111/mcp-decision-hub
   （`list_todos` / `get_project_status` / `create_todo` / `update_todo`）+ JSON 接口 +
   网页页 `/matters/{id}/todos`。目的是让 agent 能直接回答「项目到哪了」。
   统计口径统一收在 `hub/domain/todos.py`（**新增功能前先看它**）。
+- **会议模式修复**（2026-10-08）：收敛判定按人去重（此前留言板形态双算发起人，
+  全员提交也不收敛）；会议 LLM 收敛改走 `complete_json`（此前调了不存在的
+  `llm.generate`，线上收敛永远是「收敛失败」占位）。
+- **Agent 通道配额取消**（2026-10-08 owner 裁定）：MCP/REST 的 token、account、
+  submit 三项限流默认 0 = 不限；机制保留，env `RATE_LIMIT_*_PER_MINUTE` 调成 >0
+  即恢复。**登录限流保留**（5/20 每分钟），与本次裁定无关。
+- **任务卡（v22，2026-10-10）**：补「任务下发→开工→交付验收」质量链路
+  （owner 裁定，源自杨琦测试反馈）。验收标准先讨论后发布（发布即锁定）；
+  交付时 AI 对照标准软审查（指出缺口不阻断，schema `task_delivery_review`）；
+  发布人验收 accept/reject。三个 agent 通道工具：`list_task_cards` /
+  `get_task_card` / `submit_delivery`；网页 `/matters/{id}/cards/{cid}`。
+  统计/状态机在 `hub/domain/task_cards.py`，服务在 `hub/api/task_cards.py`。
+- **测试反馈小修**（2026-10-10，杨琦 14 条中已落地）：Token 交付安全引导 +
+  丢失提示（/settings/agents）、登录后回跳原页（`next` 参数，外跳白名单拦截）、
+  附件前端预检（UTF-8 + 扩展名）。SKILL 包新增 §8 任务卡与「开工五步法」
+  （复述任务→检索沉淀→口径锁定→人审→进度盘点）。
 
 ### 注意：两张 tasks 表不是一回事
 

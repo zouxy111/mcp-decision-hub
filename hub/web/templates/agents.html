@@ -22,6 +22,15 @@
       <button type="button" class="btn btn--sm"
               data-copy="{{ new_plaintext }}" data-copy-label="Token 已复制">复制</button>
     </div>
+    <p class="field-hint mt-8">
+      <b>怎么安全交给你的 Agent</b>：不要粘贴进聊天窗口或发给任何人——它会留在
+      聊天记录里，平台侧的哈希存储就形同虚设。建议写进本机
+      <span class="mono">~/.config/</span> 下权限 600 的配置文件，或用环境变量、
+      本机密钥管理器。Agent 侧按「连接三要素」填：端点
+      <span class="mono">&lt;站点&gt;/mcp/</span>（结尾斜杠带上）、传输
+      Streamable HTTP、鉴权头 <span class="mono">Authorization: Bearer hdt_…</span>。
+      忘了怎么接，读板上给的 SKILL.md。
+    </p>
   </div>
 </div>
 {% endif %}
@@ -58,6 +67,10 @@
   {% if not tokens %}
     {{ empty_state("暂无 Token", "签发第一个 Token 后，Agent 才能通过 MCP 通道提交产出。") }}
   {% else %}
+  <p class="field-hint mb-8">
+    Token 忘了存、找不回来了？直接吊销后重新签发一个即可——吊销不影响账号本身，
+    只是让旧 Token 立即失效。
+  </p>
   <div class="table-wrap">
     <table class="table table--cards table--list">
       <thead>

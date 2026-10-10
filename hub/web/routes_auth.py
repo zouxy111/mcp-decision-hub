@@ -35,8 +35,18 @@ LLM_NOTICE = (
 )
 
 
+def _safe_next(target: str | None) -> str | None:
+    """回跳目标白名单：只信站内相对路径（"/x"），拒绝 "//host" 等外跳。"""
+    if not target:
+        return None
+    target = target.strip()
+    if not target.startswith("/") or target.startswith("//"):
+        return None
+    return target
+
+
 def _render_login(request: Request, settings: Settings, *, error=None,
-                  invite_error=None, status_code=200) -> HTMLResponse:
+                  invite_error=None, status_code=200, next=None) -> HTMLResponse:
     return templates.TemplateResponse(
         request,
         "login.html",
@@ -44,6 +54,7 @@ def _render_login(request: Request, settings: Settings, *, error=None,
             "error": error,
             "invite_error": invite_error,
             "llm_notice": LLM_NOTICE.format(provider=settings.llm_provider_name),
+            "next": _safe_next(next),
         },
         status_code=status_code,
     )
@@ -98,7 +109,9 @@ def index(user: User | None = Depends(get_optional_user)):
 
 @router.get("/login", response_class=HTMLResponse)
 def login_page(request: Request, settings: Settings = Depends(get_settings)):
-    return _render_login(request, settings)
+    # next：会话过期后回来登录，成功后回到原页面（测试反馈 2026-10-10 第 10 条）
+    return _render_login(request, settings,
+                         next=request.query_params.get("next"))
 
 
 @router.post("/login", response_class=HTMLResponse)
@@ -106,6 +119,7 @@ def login_submit(
     request: Request,
     username: str = Form(...),
     password: str = Form(...),
+    next: str = Form(""),
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
     limiter=Depends(get_limiter),
@@ -117,16 +131,19 @@ def login_submit(
         db.commit()
         return _render_login(
             request, settings, status_code=429,
-            error=f"尝试过于频繁，请 {retry} 秒后重试")
+            error=f"尝试过于频繁，请 {retry} 秒后重试", next=next)
     user = accounts.authenticate(db, username, password)
     if user is None:
         _login_rate_record(request, settings, limiter, username)
         audit.record_audit(db, audit.LOGIN_FAILED, detail={"username": username})
         db.commit()
-        return _render_login(request, settings, error="用户名或密码错误")
+        return _render_login(request, settings, error="用户名或密码错误",
+                             next=next)
     audit.record_audit(db, audit.LOGIN_SUCCESS, actor_user_id=user.id)
     db.commit()
-    target = "/change-password" if user.must_change_password else "/dashboard"
+    # 强制改密优先；否则回跳到登录前想去的站内页面（外跳被 _safe_next 拒掉）
+    target = ("/change-password" if user.must_change_password
+              else (_safe_next(next) or "/dashboard"))
     response = RedirectResponse(target, status_code=303)
     set_session_cookie(response, request, user.id)
     return response

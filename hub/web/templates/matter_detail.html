@@ -248,7 +248,8 @@
     </div>
     {% else %}
     <form method="post" action="/matters/{{ matter.id }}/messages"
-          enctype="multipart/form-data" class="mb-16">
+          enctype="multipart/form-data" class="mb-16"
+          data-attachment-check>
       <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
       <label class="field">
         <span class="field-label">说点什么</span>
@@ -262,7 +263,7 @@
       <label class="field">
         <span class="field-label">附一份 markdown 文件</span>
         <input class="input" type="file" name="attachment" accept=".md,.markdown,.txt">
-        <span class="field-hint">
+        <span class="field-hint" data-attachment-hint>
           内容长（比如一整份分析）就写成 .md 传上来，板上直接能看。只收 UTF-8 的 .md / .txt。
         </span>
       </label>
@@ -375,6 +376,60 @@ curl -s --compressed /api/questions -H "Authorization: Bearer hdt_xxx"</pre>
   </div>
 </div>
 
+{% if is_board %}
+<div class="panel mb-16" id="task-cards">
+  <div class="panel-head">
+    <h2>任务卡</h2>
+    <span class="spacer"></span>
+    <span class="ticker">验收标准先讨论清楚再发布 · AI 软审查交付</span>
+  </div>
+  <div class="panel-body">
+    <p class="dim mb-8">
+      拆任务给协作人时，把「做到什么程度算过」逐条写成验收标准。先讨论、确认发布后锁定；
+      协作人交活时平台 AI 会对照标准指出缺口（提醒，不阻断），最终由你验收。
+    </p>
+    {% if task_cards %}
+    <ul class="board-list mb-16">
+      {% for c in task_cards %}
+      <li class="board-item">
+        <div class="board-head">
+          <b>{{ c.title }}</b>
+          <span class="ticker">
+            {% if c.status == 'draft' %}讨论中{% elif c.status == 'published' %}已发布{% else %}已关闭{% endif %}
+          </span>
+          <span class="spacer"></span>
+          <a class="btn btn--sm" href="/matters/{{ matter.id }}/cards/{{ c.id }}">打开任务卡</a>
+        </div>
+      </li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+    <details class="board-attach" {% if not task_cards %}open{% endif %}>
+      <summary>拆一张新任务卡</summary>
+      <form method="post" action="/matters/{{ matter.id }}/cards" class="mt-8">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+        <label class="field mb-8">
+          <span class="field-label">任务标题</span>
+          <input class="input" name="title" required maxlength="255"
+                 placeholder="例：完成问卷初稿">
+        </label>
+        <label class="field mb-8">
+          <span class="field-label">任务要求（选填）</span>
+          <textarea class="input" name="description" rows="3"
+                    placeholder="目标、范围、产出物形状——给协作人看的背景"></textarea>
+        </label>
+        <label class="field mb-8">
+          <span class="field-label">验收标准（一行一条，可发布前反复改）</span>
+          <textarea class="input" name="criteria_text" rows="4"
+                    placeholder="例：覆盖全部 21 项判断&#10;例：每项判断注明数据来源（数据/访谈/推断）"></textarea>
+        </label>
+        <button type="submit" class="btn" data-busy-label="创建中">创建任务卡（先讨论）</button>
+      </form>
+    </details>
+  </div>
+</div>
+{% endif %}
+
 <div class="panel mb-16">
   <div class="panel-head">
     <h2>参与人</h2>
@@ -402,8 +457,7 @@ curl -s --compressed /api/questions -H "Authorization: Bearer hdt_xxx"</pre>
 </div>
 
 <style>
-.board-list { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-12); }
-.board-item {
+.board-list { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-12); }.board-item {
   border: 1px solid var(--surface-3);
   border-left: 3px solid var(--surface-3);
   border-radius: var(--radius-md);
@@ -429,6 +483,39 @@ curl -s --compressed /api/questions -H "Authorization: Bearer hdt_xxx"</pre>
   max-height: 420px; overflow: auto; font-size: var(--text-sm);
 }
 </style>
+<script>
+// 附件预检（测试反馈 2026-10-10 第 11 条）：只收 UTF-8 的 .md/.markdown/.txt，
+// 不满足就在字段提示里明说，别等提交后才报「编码不对」。
+(function () {
+  var form = document.querySelector("form[data-attachment-check]");
+  if (!form) return;
+  var input = form.querySelector("input[type=file][name=attachment]");
+  var hint = form.querySelector("[data-attachment-hint]");
+  if (!input || !hint) return;
+  var baseHint = hint.innerHTML;
+  input.addEventListener("change", function () {
+    var f = input.files && input.files[0];
+    if (!f) { hint.innerHTML = baseHint; return; }
+    if (!/\.(md|markdown|txt)$/i.test(f.name)) {
+      hint.innerHTML = "这个文件类型不收——请转成 .md / .txt 再传。";
+      input.value = "";
+      return;
+    }
+    var reader = new FileReader();
+    reader.onload = function () {
+      try {
+        new TextDecoder("utf-8", { fatal: true }).decode(reader.result);
+        hint.innerHTML = "已就绪：" + f.name + "（" + f.size + " 字节）";
+      } catch (e) {
+        hint.innerHTML = "这个文件不是 UTF-8 编码（从 Excel/Word 直接存的常见）——"
+          + "请用文本编辑器另存为 UTF-8 后再传。";
+        input.value = "";
+      }
+    };
+    reader.readAsArrayBuffer(f);
+  });
+})();
+</script>
 {% endif %}
 
 {# ----------------------------------------------------------- 下一步操作 #}

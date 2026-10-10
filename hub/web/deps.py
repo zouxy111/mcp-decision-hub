@@ -94,7 +94,11 @@ def get_current_user(request: Request, db: Session = Depends(get_db)) -> User:
             uid = None
     user = db.get(User, uid) if uid is not None else None
     if user is None or not user.is_active:
-        raise HTTPException(status_code=303, headers={"Location": "/login"})
+        # 记住想去哪，登录成功后跳回来（外跳防护在登录侧的 _safe_next）
+        from urllib.parse import quote
+        back = quote(request.url.path, safe="")
+        raise HTTPException(status_code=303,
+                            headers={"Location": f"/login?next={back}"})
     if user.must_change_password and request.url.path != "/change-password":
         raise HTTPException(status_code=303, headers={"Location": "/change-password"})
     # 供模板层（base.html 顶栏）读取当前身份；纯增量写入，不改变任何控制流
@@ -150,7 +154,11 @@ def _enforce_rate_limit(request: Request, *, key: str, limit: int,
     与 MCP 入口（``mcp_server/auth.py``）共用 ``app.state.limiter`` 实例与
     同一套 key（``token:{id}`` / ``account:{uid}``），所以两个通道的计数
     互相可见——**换通道绕不过配额**。
+
+    ``limit <= 0`` 表示该维度关闭（2026-10-08 起 agent 通道默认全关）。
     """
+    if limit <= 0:
+        return
     limiter = getattr(request.app.state, "limiter", None)
     if limiter is None:            # 未装配限流器的 app（部分单测）直接放行
         return
@@ -207,8 +215,10 @@ def require_bearer(request: Request, db: Session = Depends(get_db)) -> User:
     """JSON API 依赖：Bearer 认证 + PRD 9.1 配额（token/account 两层）。
 
     2026-09-18 补齐：此前这两层限流只写在 MCP 入口中间件里，REST 通道
-    （本依赖 + routes_api/routes_agent_rest）一处未接。提交端点还会驱动
-    轮次进而触发 LLM 调用，无配额 = 无上限刷账单。
+    （本依赖 + routes_api/routes_agent_rest）一处未接。
+
+    2026-10-08 owner 裁定取消 agent 通道配额：三项限额默认 0（关闭），
+    本依赖默认只剩认证；要恢复限额用 env 调成 >0 即可，无需改代码。
 
     顺序：认证在前、配额在后。无效令牌永远 401，不会因为反复试错变 429
     （否则可用 401/429 的差异探测令牌是否存在）。
