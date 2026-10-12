@@ -38,23 +38,44 @@
       <summary><b>有 AI 助手？全程不用填表</b>——把下面这段原样发给它，注册、入板、接令牌它都代劳</summary>
       <pre class="board-attach-body">我受邀参与一个协作（邀请码：{{ short_code }}）。请执行：
 1. 读取 {{ site_base }}/api/invitations/validate/{{ short_code }}，用返回里的 agent_brief 作为接入说明
-2. 严格按说明带我完成接入：先问我要用户名、密码、怎么称呼、负责什么，然后由你代劳调接口完成注册和接令牌
+2. 严格按说明带我完成接入：{% if invitation_info.account_exists %}这条链接绑定了我的账号（{{ invitation_info.invited_username }}），你只需问我要密码{% else %}先问我要用户名、密码、怎么称呼、负责什么{% endif %}，然后由你代劳调接口完成接入
 3. 全程不需要我打开网页填表；你想看看板子长什么样时再开浏览器</pre>
       <p class="dim mt-8 mb-0">没有 Agent 或想自己填？用下面的表单，效果一样。</p>
     </details>
     {% endif %}
 
+    {% if invitation_info.account_exists %}
+    {# 链接绑定的人已有账号：只要密码，登录即入板（2026-10-12） #}
+    <form method="post" action="/invite/{{ short_code }}/login_join" class="invite-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+      <h2 class="form-section-title">欢迎回来{{ invitation_info.invited_name }}（{{ invitation_info.invited_username }}）</h2>
+      <label class="field">
+        <span class="field-label">密码<span class="req">*</span></span>
+        <input class="input" name="password" type="password" required
+               autocomplete="current-password" autofocus
+               placeholder="你的账号密码">
+        <span class="field-hint">验证通过即自动加入「{{ invitation_info.matter_title }}」</span>
+      </label>
+      <input type="hidden" name="username" value="{{ invitation_info.invited_username }}">
+      <div class="form-actions">
+        <button type="submit" class="btn btn--primary btn--lg" data-busy-label="加入中">
+          登录并加入协作
+        </button>
+      </div>
+    </form>
+    {% else %}
     <form method="post" action="/invite/{{ short_code }}/accept" class="invite-form">
       <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
-      
+
       <h2 class="form-section-title">创建您的账号</h2>
-      
+
       <label class="field">
         <span class="field-label">用户名<span class="req">*</span></span>
         <input class="input" name="username" required maxlength="100"
                autocomplete="username" spellcheck="false"
+               {% if invitation_info.invited_username %}value="{{ invitation_info.invited_username }}"{% endif %}
                placeholder="请输入用户名">
-        <span class="field-hint">用于登录系统</span>
+        <span class="field-hint">用于登录系统{% if invitation_info.invited_username %}（邀请链接给你预填了，可以改）{% endif %}</span>
       </label>
 
       <label class="field">
@@ -117,6 +138,7 @@
         </button>
       </div>
     </form>
+    {% endif %}{# account_exists 分支结束 #}
 
     <p class="dim mt-16 mb-16">
       注册完之后，把下面这段直接发给你的 AI 助手 ——

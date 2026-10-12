@@ -3,7 +3,7 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -13,7 +13,8 @@ from hub.api.tokens import issue_token
 from hub.db.models import InvitationLink, Matter, User
 from hub.domain import invitation_links
 from hub.domain.agent_brief import build_agent_brief
-from hub.web.deps import get_current_user, get_db, register_csrf_globals, require_bearer
+from hub.web.deps import (get_current_user, get_db, register_csrf_globals,
+                          require_bearer, require_csrf)
 
 # 2026-10-07：补``/api`` 前缀。此前 6 个 JSON 端点用的是裸路径
 # （``/create``、``/validate/{code}``、``/{id}/revoke``），与站点其他路由
@@ -30,17 +31,27 @@ register_csrf_globals(templates)
 
 
 class CreateInvitationRequest(BaseModel):
-    """创建邀请链接的请求。"""
+    """创建邀请链接的请求。
+
+    2026-10-12 owner 裁定：链接默认**永久**（expires_in_days 留空即不设时限，
+    访问管理靠吊销）；按人绑定 invited_username（选填）后，落地页与 Agent
+    都能走「有账号输密码 / 没账号注册」的分支。
+    """
 
     matter_id: str = Field(..., description="事项 ID")
-    expires_in_days: int = Field(
-        default=3, ge=1, le=365, description="有效期（天数）"
+    expires_in_days: int | None = Field(
+        default=None, ge=1, le=3650,
+        description="有效期（天数）；None = 永久",
     )
     max_uses: int | None = Field(
         default=1, ge=1, description="最大使用次数（None 表示无限制）"
     )
     invited_name: str | None = Field(
         default=None, max_length=100, description="受邀人姓名（可选）"
+    )
+    invited_username: str | None = Field(
+        default=None, max_length=64,
+        description="受邀用户名（可选，绑定到人）",
     )
 
 
@@ -52,7 +63,7 @@ class InvitationLinkResponse(BaseModel):
     short_code: str
     full_url: str
     created_by: int
-    expires_at: str
+    expires_at: str | None
     max_uses: int | None
     used_count: int
     status: str
@@ -63,6 +74,7 @@ class InvitationLinkResponse(BaseModel):
     is_active: bool
     created_at: str
     invited_name: str | None = None
+    invited_username: str | None = None
 
 
 class ValidateInvitationResponse(BaseModel):
@@ -77,6 +89,10 @@ class ValidateInvitationResponse(BaseModel):
     matter_id: str | None = None
     matter_title: str | None = None
     invited_name: str | None = None
+    invited_username: str | None = None
+    # 绑定到人时的账号状态：True=已注册（只问密码即可入板）、
+    # False=未注册（走注册）、None=未绑定
+    account_exists: bool | None = None
     expires_at: str | None = None
     agent_brief: str | None = None
     error: str | None = None
@@ -172,6 +188,7 @@ def create_invitation(
         expires_in_days=request.expires_in_days,
         max_uses=request.max_uses,
         invited_name=request.invited_name,
+        invited_username=request.invited_username,
     )
     db.commit()
 
@@ -181,13 +198,15 @@ def create_invitation(
         short_code=invitation.short_code,
         full_url=f"/invite/{invitation.short_code}",
         created_by=invitation.created_by,
-        expires_at=invitation.expires_at.isoformat(),
+        expires_at=(invitation.expires_at.isoformat()
+                    if invitation.expires_at else None),
         max_uses=invitation.max_uses,
         used_count=invitation.used_count,
         status=invitation.status,
         is_active=invitation.status == "active",
         created_at=invitation.created_at.isoformat(),
         invited_name=invitation.invited_name,
+        invited_username=invitation.invited_username,
     )
 
 
@@ -215,12 +234,16 @@ def validate_invitation_route(
         matter_id=result["matter_id"],
         matter_title=result["matter_title"],
         invited_name=result.get("invited_name"),
+        invited_username=result.get("invited_username"),
+        account_exists=result.get("account_exists"),
         expires_at=result.get("expires_at"),
         agent_brief=build_agent_brief(
             site_base=str(request.base_url).rstrip("/"),
             matter_title=result["matter_title"],
             invite_code=short_code,
             expires_at=result.get("expires_at"),
+            invited_username=result.get("invited_username"),
+            account_exists=result.get("account_exists"),
         ),
     )
 
@@ -371,13 +394,15 @@ def get_matter_invitations_route(
             short_code=inv.short_code,
             full_url=f"/invite/{inv.short_code}",
             created_by=inv.created_by,
-            expires_at=inv.expires_at.isoformat(),
+            expires_at=(inv.expires_at.isoformat()
+                        if inv.expires_at else None),
             max_uses=inv.max_uses,
             used_count=inv.used_count,
             status=inv.status,
             is_active=inv.status == "active",
             created_at=inv.created_at.isoformat(),
             invited_name=inv.invited_name,
+            invited_username=inv.invited_username,
         )
         for inv in invitations
     ]
@@ -444,22 +469,43 @@ def show_invitation_page(
     request: Request,
     db: Annotated[Session, Depends(get_db)],
 ):
-    """显示邀请接受页面（公开访问）。"""
-    # 验证邀请链接
+    """显示邀请接受页面（公开访问）。
+
+    2026-10-12 零页面接入：Agent 直接打开链接（``?for_agent=1`` 或
+    Accept 偏好 text/markdown）时，返回接入说明纯文本而非网页——
+    受邀人把链接转发给自己的 Agent 即可，全程不需要打开页面。
+    """
     validation = invitation_links.validate_invitation_link(db, short_code)
-    
-    invitation_info = None
-    error = None
-    
+
     if validation["valid"]:
+        brief = build_agent_brief(
+            site_base=str(request.base_url).rstrip("/"),
+            matter_title=validation.get("matter_title") or "",
+            invite_code=short_code,
+            expires_at=validation.get("expires_at"),
+            invited_username=validation.get("invited_username"),
+            account_exists=validation.get("account_exists"),
+        )
+        wants_text = (
+            request.query_params.get("for_agent") == "1"
+            or "text/markdown" in request.headers.get("accept", "")
+            or "text/plain" in request.headers.get("accept", "")
+        )
+        if wants_text:
+            return PlainTextResponse(brief, media_type="text/markdown; charset=utf-8")
         invitation_info = {
             "matter_title": validation["matter_title"],
             "creator_name": validation.get("creator_name", "系统管理员"),
             "invited_name": validation.get("invited_name"),
+            "invited_username": validation.get("invited_username"),
+            "account_exists": validation.get("account_exists"),
             "collaboration_mode": validation.get("collaboration_mode", "project"),
             "expires_at": validation.get("expires_at"),
         }
+        error = None
     else:
+        brief = None
+        invitation_info = None
         error = validation.get("error", "邀请链接无效")
     
     return templates.TemplateResponse(
@@ -470,14 +516,7 @@ def show_invitation_page(
             "invitation_info": invitation_info,
             "error": error,
             "site_base": str(request.base_url).rstrip("/"),
-            "agent_brief": (
-                build_agent_brief(
-                    site_base=str(request.base_url).rstrip("/"),
-                    matter_title=(invitation_info or {}).get("matter_title") or "",
-                    invite_code=short_code,
-                    expires_at=(invitation_info or {}).get("expires_at"),
-                ) if invitation_info else None
-            ),
+            "agent_brief": brief,
         },
     )
 
@@ -577,3 +616,159 @@ async def accept_invitation(
     
     # 如果出错，重新显示表单
     return _invite_error(request, db, short_code, error)
+
+
+@pages_router.post("/invite/{short_code}/login_join")
+async def login_join_invitation(
+    short_code: str,
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+    username: Annotated[str, Form()],
+    password: Annotated[str, Form()],
+):
+    """链接绑定的人已有账号：输密码 → 登录 + 入板，一步进板（2026-10-12）。
+
+    公开端点（同 /accept）：能力凭证是邀请码本身。登录失败计数走与
+    /login 相同的 username+IP 滑窗限流。
+    """
+    from hub.api import accounts
+    from hub.web.deps import get_limiter, set_session_cookie
+
+    settings = request.app.state.settings
+    limiter = getattr(request.app.state, "limiter", None)
+    if limiter is not None:
+        from hub.domain.rate_limit import (rate_limit_key_login_ip,
+                                           rate_limit_key_login_username)
+        for key, limit in (
+            (rate_limit_key_login_username(username),
+             settings.rate_limit_login_username_per_minute),
+            (rate_limit_key_login_ip(request.client.host if request.client else ""),
+             settings.rate_limit_login_ip_per_minute),
+        ):
+            ok, retry = limiter.check(key, limit=limit)
+            if not ok:
+                return _invite_error(
+                    request, db, short_code,
+                    f"尝试过于频繁，请 {retry} 秒后重试")
+
+    user = accounts.authenticate(db, username=username, password=password)
+    if user is None:
+        from hub.domain.rate_limit import (rate_limit_key_login_ip,
+                                           rate_limit_key_login_username)
+        if limiter is not None:
+            limiter.allow(rate_limit_key_login_username(username),
+                          limit=settings.rate_limit_login_username_per_minute)
+            limiter.allow(rate_limit_key_login_ip(
+                request.client.host if request.client else ""),
+                limit=settings.rate_limit_login_ip_per_minute)
+        return _invite_error(request, db, short_code, "密码不对，请重试")
+
+    try:
+        invitation = invitation_links.join_matter_via_link(
+            db=db,
+            short_code=short_code,
+            user=user,
+            ip_address=request.client.host if request.client else None,
+            user_agent=request.headers.get("user-agent"),
+        )
+        db.commit()
+    except invitation_links.InvitationNotFoundError:
+        return _invite_error(request, db, short_code, "邀请链接不存在")
+    except invitation_links.InvitationExpiredError:
+        return _invite_error(request, db, short_code, "邀请链接已过期")
+    except invitation_links.InvitationExhaustedError:
+        return _invite_error(request, db, short_code, "邀请链接已达到使用上限")
+    except invitation_links.InvitationRevokedError:
+        return _invite_error(request, db, short_code, "邀请链接已被撤销")
+
+    response = RedirectResponse(f"/matters/{invitation.matter_id}",
+                                status_code=303)
+    set_session_cookie(response, request, user.id)
+    return response
+
+
+# ==================== 发起人邀请管理页（2026-10-12） ====================
+# 链接 = （项目 × 人） 的访问阀门：一人一条专属链接、默认永不过期，
+# 发起人在这里创建、查询、吊销；「移除参与人」在事项详情页参与人面板。
+
+
+def _invitations_page_context(db: Session, matter: Matter) -> dict:
+    invitations = invitation_links.get_matter_invitations(
+        db, matter.id, include_revoked=True)
+    return {
+        "matter": matter,
+        "invitations": invitations,
+        "error": None,
+    }
+
+
+@pages_router.get("/matters/{matter_id}/invitations", response_class=HTMLResponse)
+def matter_invitations_page(
+    matter_id: str,
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, Depends(get_current_user)],
+):
+    """发起人查看/管理本事项的全部邀请链接。"""
+    matter = db.get(Matter, matter_id)
+    if not matter:
+        raise HTTPException(status_code=404, detail="事项不存在")
+    if matter.initiator_id != user.id:
+        raise HTTPException(status_code=403, detail="仅发起人可管理邀请链接")
+    return templates.TemplateResponse(
+        request, "matter_invitations.html", _invitations_page_context(db, matter))
+
+
+@pages_router.post("/matters/{matter_id}/invitations")
+def matter_invitations_create(
+    matter_id: str,
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, Depends(get_current_user)],
+    invited_name: Annotated[str, Form()] = "",
+    invited_username: Annotated[str, Form()] = "",
+    expires_in_days: Annotated[str, Form()] = "",
+    max_uses: Annotated[str, Form()] = "1",
+):
+    """创建邀请链接：有效天数留空 = 永久（owner 2026-10-12 裁定）。"""
+    matter = db.get(Matter, matter_id)
+    if not matter:
+        raise HTTPException(status_code=404, detail="事项不存在")
+    if matter.initiator_id != user.id:
+        raise HTTPException(status_code=403, detail="仅发起人可管理邀请链接")
+    days = int(expires_in_days) if expires_in_days.strip() else None
+    uses = int(max_uses) if max_uses.strip() else None
+    invitation_links.create_invitation_link(
+        db=db,
+        matter_id=matter_id,
+        created_by=user.id,
+        invited_name=invited_name.strip() or None,
+        invited_username=invited_username.strip() or None,
+        expires_in_days=days,
+        max_uses=uses,
+    )
+    db.commit()
+    return RedirectResponse(f"/matters/{matter_id}/invitations",
+                            status_code=303)
+
+
+@pages_router.post("/matters/{matter_id}/invitations/{invitation_id}/revoke")
+def matter_invitations_revoke(
+    matter_id: str,
+    invitation_id: str,
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, Depends(require_csrf)],
+):
+    """吊销链接：挡新加入；已在板上的去事项详情页「移除参与人」。"""
+    matter = db.get(Matter, matter_id)
+    if not matter:
+        raise HTTPException(status_code=404, detail="事项不存在")
+    if matter.initiator_id != user.id:
+        raise HTTPException(status_code=403, detail="仅发起人可管理邀请链接")
+    result = invitation_links.revoke_invitation_link(db, invitation_id)
+    db.commit()
+    if not result.get("success"):
+        raise HTTPException(status_code=404, detail=result.get("error"))
+    return RedirectResponse(f"/matters/{matter_id}/invitations",
+                            status_code=303)

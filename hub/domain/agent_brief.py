@@ -49,39 +49,11 @@ _TEMPLATE = """# 你受邀参与一块留言板 —— 接入说明（给 AI 助
 
 猜错了板上所有人都认错人——这四项必须是本人亲口说的。
 
-## 第二步：注册并拿令牌（一条请求全办完）
+## 第二步：{flow_title}
 
-全新账号（本人没在这个平台注册过）：
+{flow_steps}
 
-```bash
-curl -s -X POST {site}/api/invitations/consume/{code} \\
-  -H "Content-Type: application/json" \\
-  -d '{{
-    "username": "<用户名>", "password": "<密码>",
-    "display_name": "<称呼>", "responsibility": "<负责什么>"
-  }}'
-```
-
-成功返回里**直接带着 access_token**（hdt_ 开头）——建号、入板、签发一步完成，
-不用再登录换令牌。
-
-如果返回 `"error": "用户名 … 已存在"`——说明本人注册过，走第三步。
-
-## 第三步：已有账号——代登录后入板
-
-```bash
-# 1) 拿本人说的用户名密码换令牌
-curl -s -X POST {site}/api/auth/token \\
-  -H "Content-Type: application/json" \\
-  -d '{{"username": "<用户名>", "password": "<密码>"}}'
-# 2) 携令牌消费邀请码（入板；给了称呼/负责内容就顺手更新名片）
-curl -s -X POST {site}/api/invitations/join/{code} \\
-  -H "Authorization: Bearer <上一步的 access_token>" \\
-  -H "Content-Type: application/json" \\
-  -d '{{"display_name": "<称呼>", "responsibility": "<负责什么>"}}'
-```
-
-## 第四步：接入自检（照抄，一次做完，不要一个一个试）
+## 第三步：接入自检（照抄，一次做完，不要一个一个试）
 
 接入失败十次有九次是下面三个值里错了一个，而客户端只回一句含糊的「连接失败」。
 **照抄，别猜。**
@@ -145,7 +117,7 @@ curl -s --compressed {site}/api/questions -H "Authorization: Bearer hdt_xxx"
 如果返回 401，是令牌或账号的问题（回第四步第 1、2 点），
 **不要**因此改成去开浏览器。
 
-## 第五步：读板子（随时读，先读云端总结）
+## 第四步：读板子（随时读，先读云端总结）
 
 **读不受任何限制，也不用等谁批准。** 本人说「看看板上现在什么情况」，
 你就随时去读，读多少遍都行，不用问任何人同不同意。
@@ -178,7 +150,7 @@ curl -s --compressed {site}/api/questions -H "Authorization: Bearer hdt_xxx"
 - **要看某条发言的原文、要引用原话时**，再 `list_messages(matter_id="mat_…")` 读原文。
   给本人看、以及上传的内容，都必须来自原文，不能拿总结当板上有人说过的话。
 
-## 第六步：发言、传文件 —— 只有本人明确说「上传」才上传
+## 第五步：发言、传文件 —— 只有本人明确说「上传」才上传
 
 **上传的开关只有一个：本人明确说出「把我的回答上传到留言板」这类意思清楚的话**
 （「发上去」「贴到板上」「传上去」都算）。
@@ -203,7 +175,7 @@ curl -s --compressed {site}/api/questions -H "Authorization: Bearer hdt_xxx"
 ## 两条铁规矩（不可违反）
 
 1. **上传到云端之前，必须先问过本人，拿到本人的同意之后才能上传**
-   （而且前提是本人明确说过要上传，见第六步）。
+   （而且前提是本人明确说过要上传，见第五步）。
    任何内容（发言、文件、数据）在发到板上之前，先把要发的东西复述给本人看，
    拿到明确的同意再发；本人没点头，一个字都不要发。
    「你看着办」「大概行」不算同意；附件全文也要给他看。
@@ -220,8 +192,8 @@ curl -s --compressed {site}/api/questions -H "Authorization: Bearer hdt_xxx"
 ## 现在先做这一件事
 
 1. 先读这份 skill：{skill_url}
-2. 读完**先问本人那两件事**（怎么称呼他、他在这件事里负责什么、能拍板什么）。
-3. 然后按第五步先读总结 `get_board_summary(matter_id="mat_…")`，
+2. 读完**先按第一步问本人那四件事**（用户名、密码、怎么称呼、负责什么）。
+3. 然后按第四步先读总结 `get_board_summary(matter_id="mat_…")`，
    把「{matter}」这块板子现在有什么、以及你打算问他什么，讲给本人听。
 4. 在本人明确说「上传」之前，不要往板上发任何东西。
 """
@@ -244,9 +216,66 @@ def _format_expiry(expires_at: object) -> str:
 
 
 def build_agent_brief(*, site_base: str, matter_title: str, invite_code: str,
-                      expires_at: str | None = None) -> str:
-    """返回给受邀人 agent 的接入说明（markdown 文本，中文）。"""
+                      expires_at: str | None = None,
+                      invited_username: str | None = None,
+                      account_exists: bool | None = None) -> str:
+    """返回给受邀人 agent 的接入说明（markdown 文本，中文）。
+
+    ``account_exists`` 决定第二步的形态（2026-10-12，链接绑定到人）：
+    True = 本人已有账号，只问密码走登录入板；False = 还没注册，走四问注册；
+    None = 链接未绑定人，保持「先试注册、用户名被占再转登录」的通用流程。
+    """
     site = _normalize_site_base(site_base)
+    if account_exists is True:
+        flow_title = "本人已有账号——只要密码，登录入板"
+        flow_steps = f"""这条链接绑定的账号是 **{invited_username}**（已注册）。
+第一步里只要到了密码就够了，然后依次：
+
+```bash
+# 1) 用户名密码换令牌（用户名固定是 {invited_username}）
+curl -s -X POST {site}/api/auth/token \\
+  -H "Content-Type: application/json" \\
+  -d '{{"username": "{invited_username}", "password": "<密码>"}}'
+# 2) 携令牌入板（称呼/负责内容给了就顺手写名片，不给就用注册时留的）
+curl -s -X POST {site}/api/invitations/join/{invite_code} \\
+  -H "Authorization: Bearer <上一步的 access_token>" \\
+  -H "Content-Type: application/json" \\
+  -d '{{"display_name": "<称呼>", "responsibility": "<负责什么>"}}'
+```
+
+返回 success 即入板完成，响应里没有新令牌时沿用第一步那枚。"""
+    elif account_exists is False:
+        flow_title = f"本人还没注册——四问之后代劳注册（用户名预填 {invited_username}）"
+        flow_steps = f"""这条链接给 **{invited_username}** 预留了位置（还没注册）。
+第一步四件事问完后，一条请求建号、入板、拿令牌：
+
+```bash
+curl -s -X POST {site}/api/invitations/consume/{invite_code} \\
+  -H "Content-Type: application/json" \\
+  -d '{{
+    "username": "{invited_username}", "password": "<密码>",
+    "display_name": "<称呼>", "responsibility": "<负责什么>"
+  }}'
+```
+
+成功返回里**直接带着 access_token**（hdt_ 开头）。本人想换个用户名也行，
+把 username 换成他起的——只要还没被别人占用。"""
+    else:
+        flow_title = "注册并拿令牌（一条请求全办完）"
+        flow_steps = f"""本人没注册过就走这条（已注册会自动报「用户名已存在」，转登录分支）：
+
+```bash
+curl -s -X POST {site}/api/invitations/consume/{invite_code} \\
+  -H "Content-Type: application/json" \\
+  -d '{{
+    "username": "<用户名>", "password": "<密码>",
+    "display_name": "<称呼>", "responsibility": "<负责什么>"
+  }}'
+```
+
+成功返回里直接带着 access_token。若返回 `"error": "用户名 … 已存在"`——
+本人注册过：用账号密码调 `POST {site}/api/auth/token` 换令牌，
+再 `POST {site}/api/invitations/join/{invite_code}`（Bearer）入板。"""
     return _TEMPLATE.format(
         site=site,
         matter=(matter_title or "").strip() or "未命名事项",
@@ -256,4 +285,6 @@ def build_agent_brief(*, site_base: str, matter_title: str, invite_code: str,
         install_sh=site + _INSTALL_SH_REL_PATH,
         skill_tar=site + _SKILL_TAR_REL_PATH,
         skills_dir=_SKILLS_DIR,
+        flow_title=flow_title,
+        flow_steps=flow_steps,
     )

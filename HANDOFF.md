@@ -115,6 +115,15 @@ HTTPS_PROXY=socks5h://127.0.0.1:1080 gh api repos/zouxy111/mcp-decision-hub
   自动生成占位）；`POST /api/invitations/join/{code}`（Bearer）已有账号
   消费新邀请码入板。agent_brief 重写为代劳协议；邀请落地页顶部加
   「发给 Agent」免填表通道。账号规则不变（有密码、哈希存储、明文一次）。
+- **链接即访问管理**（2026-10-12，v23）：链接 = 项目 × 人 的二维绑定，
+  **默认永不过期**（expires_at 可空，留空=永久，管理靠吊销）；可选绑定
+  invited_username——落地页据此分支（有账号=密码框登录即入板
+  `/invite/{code}/login_join`，没账号=注册表单预填），Agent 打开
+  `/invite/{code}?for_agent=1` 直接拿按人定制的接入说明文本（零页面）。
+  validate 返回 account_exists。发起人网页管理页 `/matters/{id}/invitations`
+  （建/查/吊销），MCP 工具 create_invitation / list_invitations /
+  revoke_invitation（发起人限定）；参与人面板可「移除参与人」
+  （审计 participant_removed，历史留言保留）。
 
 ### 注意：两张 tasks 表不是一回事
 

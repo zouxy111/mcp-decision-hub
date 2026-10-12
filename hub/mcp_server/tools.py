@@ -591,3 +591,47 @@ def register_tools(mcp: FastMCP, session_factory, settings: Settings,
             card_id=card_id, summary=summary, self_check=self_check,
             llm=llm,
         )
+
+    # ------------------------------------------------------------------
+    # 邀请链接管理（2026-10-12）：发起人对自己的 Agent 说「邀请谁」，
+    # Agent 建链接、查状态、吊销。仅发起人可用（方法与网页同一校验）。
+    # ------------------------------------------------------------------
+
+    @mcp.tool
+    def create_invitation(
+        matter_id: str,
+        invited_name: str | None = None,
+        invited_username: str | None = None,
+        expires_in_days: int | None = None,
+        max_uses: int | None = 1,
+    ) -> dict:
+        """给某个人生成一条本板的专属邀请链接（默认永久、1 次）。
+
+        拿到响应里的 full_url 发给对方即可；填了 invited_username 后，
+        对方 Agent 会拿到按人定制的接入说明（有账号只问密码）。
+        REST 对应：POST /api/invitations/create（Cookie 通道）。"""
+        return _call(
+            session_factory, methods.mcp_create_invitation,
+            settings=settings, user_id=_current_user_id(),
+            matter_id=matter_id, invited_name=invited_name,
+            invited_username=invited_username,
+            expires_in_days=expires_in_days, max_uses=max_uses,
+        )
+
+    @mcp.tool
+    def list_invitations(matter_id: str) -> dict:
+        """列出本板全部邀请链接（含已吊销/已用完）——「谁手里还有链接」对账用。"""
+        return _call(
+            session_factory, methods.mcp_list_invitations,
+            settings=settings, user_id=_current_user_id(),
+            matter_id=matter_id,
+        )
+
+    @mcp.tool
+    def revoke_invitation(invitation_id: str) -> dict:
+        """吊销一条邀请链接（挡新加入）。已在板上的去网页参与人面板移除。"""
+        return _call(
+            session_factory, methods.mcp_revoke_invitation,
+            settings=settings, user_id=_current_user_id(),
+            invitation_id=invitation_id,
+        )

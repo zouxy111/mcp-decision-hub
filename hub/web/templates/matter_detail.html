@@ -434,24 +434,39 @@ curl -s --compressed /api/questions -H "Authorization: Bearer hdt_xxx"</pre>
   <div class="panel-head">
     <h2>参与人</h2>
     <span class="spacer"></span>
+    {% if is_initiator and matter.mode == "board" %}
+    <a class="btn btn--sm btn--ghost" href="/matters/{{ matter.id }}/invitations">邀请链接管理</a>
+    {% endif %}
     <span class="ticker">受邀注册时自报的姓名与负责内容</span>
   </div>
   <div class="panel-body">
     {% if board_participants %}
     <table class="table">
-      <thead><tr><th>姓名</th><th>负责什么</th><th>账号</th></tr></thead>
+      <thead><tr><th>姓名</th><th>负责什么</th><th>账号</th>{% if is_initiator %}<th></th>{% endif %}</tr></thead>
       <tbody>
         {% for p in board_participants %}
         <tr>
           <td>{{ p.display_name or "（未填写）" }}</td>
           <td>{{ p.responsibility or "（未填写）" }}</td>
           <td class="mono dim">{{ p.username }}</td>
+          {% if is_initiator %}
+          <td>
+            {% if p.user_id != matter.initiator_id %}
+            <form method="post" action="/matters/{{ matter.id }}/participants/{{ p.user_id }}/remove"
+                  data-confirm="移除后 {{ p.display_name or p.username }} 将失去本板访问权（历史留言保留）。确定？"
+                  data-confirm-danger="1" data-confirm-title="移除参与人">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+              <button type="submit" class="btn btn--sm btn--danger">移除</button>
+            </form>
+            {% endif %}
+          </td>
+          {% endif %}
         </tr>
         {% endfor %}
       </tbody>
     </table>
     {% else %}
-    <p class="dim mb-0">还没有参与人。到事项页发一条邀请链接，别人注册后就出现在这里。</p>
+    <p class="dim mb-0">还没有参与人。{% if is_initiator %}到右上角「邀请链接管理」发一条专属链接，别人注册后就出现在这里。{% endif %}</p>
     {% endif %}
   </div>
 </div>

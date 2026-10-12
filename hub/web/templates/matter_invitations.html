@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% block title %}{{ matter.title }} · 邀请链接管理{% endblock %}
+{% block content %}
+
+<div class="page-head">
+  <div>
+    <a class="back-link" href="/matters/{{ matter.id }}">← 回到「{{ matter.title }}」</a>
+    <h1>邀请链接管理</h1>
+    <p class="page-sub">
+      链接 = 项目 × 人的访问阀门：一人一条专属链接，默认永不过期；
+      吊销挡新加入，移除已进的人去留言板「参与人」面板。
+    </p>
+  </div>
+</div>
+
+{# ---------------------------------------------------------- 新建 #}
+<div class="panel mb-16">
+  <div class="panel-head"><h2>给一个人发链接</h2></div>
+  <div class="panel-body">
+    <form method="post" action="/matters/{{ matter.id }}/invitations">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+      <div class="field-row">
+        <label class="field">
+          <span class="field-label">受邀人姓名（选填）</span>
+          <input class="input" name="invited_name" placeholder="例：杨琦">
+        </label>
+        <label class="field">
+          <span class="field-label">受邀用户名（选填，绑定到人）</span>
+          <input class="input" name="invited_username" placeholder="例：yangqi">
+          <span class="field-hint">填了之后：他打开链接只需输密码（已有账号）或注册表单预填（新账号）；Agent 也会拿到定制接入说明</span>
+        </label>
+      </div>
+      <div class="field-row">
+        <label class="field">
+          <span class="field-label">有效天数（留空 = 永久）</span>
+          <input class="input" name="expires_in_days" placeholder="留空即永不过期">
+        </label>
+        <label class="field">
+          <span class="field-label">可用次数（留空 = 不限）</span>
+          <input class="input" name="max_uses" value="1">
+        </label>
+      </div>
+      <div class="form-actions form-actions--flush">
+        <button type="submit" class="btn btn--primary" data-busy-label="创建中">生成链接</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+{# ---------------------------------------------------------- 列表 #}
+<div class="panel">
+  <div class="panel-head">
+    <h2>已有链接（{{ invitations | length }} 条）</h2>
+    <span class="spacer"></span>
+    <span class="ticker">按人命名 · 吊销即失效</span>
+  </div>
+  <div class="panel-body">
+    {% if not invitations %}
+    <p class="dim mb-0">还没有链接。给上面给要拉的人各建一条，把链接发给他就行。</p>
+    {% else %}
+    <div class="table-wrap">
+      <table class="table table--cards">
+        <thead>
+          <tr><th>受邀人</th><th>绑定用户名</th><th>状态</th><th>已用/上限</th><th>有效期</th><th>链接</th><th></th></tr>
+        </thead>
+        <tbody>
+          {% for inv in invitations %}
+          <tr>
+            <td data-label="受邀人"><strong>{{ inv.invited_name or "（未命名）" }}</strong></td>
+            <td data-label="绑定用户名" class="mono dim">{{ inv.invited_username or "-" }}</td>
+            <td data-label="状态">
+              {% if inv.status == 'active' %}<span class="tag tag--ok">可用</span>
+              {% elif inv.status == 'consumed' %}<span class="tag">已用完</span>
+              {% elif inv.status == 'revoked' %}<span class="tag tag--error">已吊销</span>
+              {% else %}<span class="tag tag--warn">已过期</span>{% endif %}
+            </td>
+            <td data-label="已用/上限" class="mono">{{ inv.used_count }}/{{ inv.max_uses or "∞" }}</td>
+            <td data-label="有效期" class="mono">{% if inv.expires_at %}{{ inv.expires_at[:10] }}{% else %}永久{% endif %}</td>
+            <td data-label="链接">
+              {% if inv.status == 'active' %}
+              <span class="mono">/invite/{{ inv.short_code }}</span>
+              <button type="button" class="btn btn--sm" data-copy="{{ request.base_url | string | trim }}/invite/{{ inv.short_code }}" data-copy-label="已复制">复制</button>
+              {% else %}<span class="dim">-</span>{% endif %}
+            </td>
+            <td data-label="操作">
+              {% if inv.status == 'active' %}
+              <form method="post" action="/matters/{{ matter.id }}/invitations/{{ inv.id }}/revoke"
+                    data-confirm="吊销后这条链接立即失效（已入板的人不受影响，去参与人面板移除）。"
+                    data-confirm-danger="1" data-confirm-title="吊销链接">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+                <button type="submit" class="btn btn--sm btn--danger">吊销</button>
+              </form>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+{% endblock %}

@@ -210,7 +210,7 @@ def test_HTTP_创建邀请_未登录被拦截(client, matter_of_test_user):
 
 
 def test_HTTP_创建邀请_有效期超范围返回422(client, test_user, matter_of_test_user):
-    resp = _create_invitation(client, matter_of_test_user.id, expires_in_days=999)
+    resp = _create_invitation(client, matter_of_test_user.id, expires_in_days=9999)
 
     assert resp.status_code == 422
 

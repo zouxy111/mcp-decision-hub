@@ -62,6 +62,9 @@ TASK_CARD_PUBLISHED = "task_card_published"
 TASK_CARD_CLOSED = "task_card_closed"
 TASK_DELIVERY_SUBMITTED = "task_delivery_submitted"
 TASK_DELIVERY_DECIDED = "task_delivery_decided"
+# 移除参与人（2026-10-12）：链接吊销只挡新加入，已入板的由发起人显式移除。
+# 历史留言保留可查（含署名），被移除者失去访问权（成员校验 404）。
+PARTICIPANT_REMOVED = "participant_removed"
 
 # Max chars of a decision rationale stored in audit detail (design decision 12).
 AUDIT_RATIONALE_MAX = 500

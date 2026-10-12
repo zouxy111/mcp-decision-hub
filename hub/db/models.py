@@ -505,8 +505,13 @@ class InvitationLink(Base):
     max_uses: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # 可重复使用次数（通常为1），None 表示无限制
     used_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    expires_at: Mapped[datetime] = mapped_column(nullable=False)
-    # 有效期（默认3天）
+    expires_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    # 有效期；None = 永久（2026-10-12 owner 裁定：邀请链接不设时限，
+    # 访问管理靠吊销而非过期）
+    # 受邀用户名（可选，2026-10-12）：链接绑定到人——有账号的打开链接
+    # 只需输密码即可入板，没账号的走注册；validate 接口据此返回
+    # account_exists，Agent 拿到链接就能走对的接入路径。
+    invited_username: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_by: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(default=utcnow, nullable=False)
     revoked_at: Mapped[datetime | None] = mapped_column(nullable=True)

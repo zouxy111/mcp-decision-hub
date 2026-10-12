@@ -76,9 +76,8 @@ def test_create_invitation_link(db_session: Session, test_matter: Matter, test_u
     assert invitation.used_count == 0
     assert len(invitation.short_code) == 6
     
-    # 检查有效期（默认3天）
-    expected_expires = utcnow() + timedelta(days=3)
-    assert abs((invitation.expires_at - expected_expires).total_seconds()) < 5
+    # 检查有效期：2026-10-12 owner 裁定默认永久（None），不设时限
+    assert invitation.expires_at is None
 
 
 def test_create_invitation_link_custom_expiry(

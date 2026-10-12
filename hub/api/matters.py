@@ -258,6 +258,34 @@ def is_participant(session: Session, *, matter_id: str, user_id: int) -> bool:
     ) is not None
 
 
+def remove_participant(
+    session: Session, *, matter_id: str, actor: User, target_user_id: int
+) -> None:
+    """移除参与人（2026-10-12）：链接吊销只挡新加入，已入板的走这里。
+
+    仅发起人可操作；不能移除发起人自己（要退出就取消事项）。
+    历史留言保留可查（署名仍在），被移除者随后失去成员访问权（404）。
+    """
+    matter = session.get(Matter, matter_id)
+    if matter is None:
+        raise ApiError(404, "RESOURCE_NOT_FOUND", "事项不存在")
+    if matter.initiator_id != actor.id:
+        audit.record_audit(session, audit.FORBIDDEN_DENIED,
+                           actor_user_id=actor.id, matter_id=matter_id,
+                           detail={"action": "remove_participant"})
+        raise ApiError(403, "FORBIDDEN_SCOPE", "仅发起人可移除参与人")
+    if target_user_id == matter.initiator_id:
+        raise ApiError(422, "VALIDATION_FAILED", "不能移除发起人本人")
+    row = session.get(MatterParticipant, (matter_id, target_user_id))
+    if row is None:
+        raise ApiError(404, "RESOURCE_NOT_FOUND", "该用户不是本事项参与人")
+    session.delete(row)
+    audit.record_audit(session, audit.PARTICIPANT_REMOVED,
+                       actor_user_id=actor.id, matter_id=matter_id,
+                       detail={"removed_user_id": target_user_id})
+    session.flush()
+
+
 def get_matter_for_user(session: Session, *, matter_id: str, user: User) -> Matter | None:
     """Initiator OR participant may see the matter (PRD 3.0). Others get None."""
     matter = session.get(Matter, matter_id)

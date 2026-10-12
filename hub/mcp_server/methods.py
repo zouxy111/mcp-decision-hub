@@ -23,6 +23,7 @@ from hub.api.passwords import sha256_hex
 from hub.config import Settings
 from hub.db.models import (
     IdempotencyRecord,
+    InvitationLink,
     Matter,
     MatterParticipant,
     Output,
@@ -1747,3 +1748,115 @@ def _user(session: Session, user_id: int) -> User:
     if user is None:
         raise ApiError(401, "AUTH_INVALID_TOKEN", "令牌对应用户不存在")
     return user
+
+
+# ---------------------------------------------------------------------------
+# 邀请链接管理（2026-10-12）：发起人对自己的 Agent 说「邀请谁」，Agent
+# 建链接、查状态、吊销 —— 全程不用碰网页。权限与网页同一口径：仅发起人。
+# ---------------------------------------------------------------------------
+
+
+def _require_matter_initiator(session: Session, *, user_id: int,
+                              matter_id: str, action: str) -> Matter:
+    user = session.get(User, user_id)
+    if user is None:
+        raise ApiError(401, "AUTH_INVALID_TOKEN", "令牌对应用户不存在")
+    matter = session.get(Matter, matter_id)
+    if matter is None:
+        raise ApiError(404, "RESOURCE_NOT_FOUND", "事项不存在")
+    if matter.initiator_id != user.id:
+        audit.record_audit(session, audit.FORBIDDEN_DENIED,
+                           actor_user_id=user.id, matter_id=matter_id,
+                           detail={"action": action})
+        raise ApiError(403, "FORBIDDEN_SCOPE", "仅发起人可管理邀请链接")
+    return matter
+
+
+def _invitation_view(inv) -> dict:
+    return {
+        "invitation_id": inv.id,
+        "short_code": inv.short_code,
+        "full_url": f"/invite/{inv.short_code}",
+        "invited_name": inv.invited_name,
+        "invited_username": inv.invited_username,
+        "status": inv.status,
+        "used_count": inv.used_count,
+        "max_uses": inv.max_uses,
+        "expires_at": iso_z(inv.expires_at) if inv.expires_at else None,
+        "created_at": iso_z(inv.created_at),
+    }
+
+
+def mcp_create_invitation(
+    session: Session,
+    settings: Settings,
+    *,
+    user_id: int,
+    matter_id: str,
+    invited_name: str | None = None,
+    invited_username: str | None = None,
+    expires_in_days: int | None = None,
+    max_uses: int | None = 1,
+) -> dict:
+    """给某个人生成一条本板的专属邀请链接（默认永久、1 次）。"""
+    from hub.domain import invitation_links
+
+    matter = _require_matter_initiator(session, user_id=user_id,
+                                       matter_id=matter_id,
+                                       action="create_invitation")
+    inv = invitation_links.create_invitation_link(
+        db=session, matter_id=matter.id, created_by=user_id,
+        invited_name=invited_name, invited_username=invited_username,
+        expires_in_days=expires_in_days, max_uses=max_uses)
+    session.flush()
+    audit.record_audit(session, audit.INVITE_CREATED, actor_user_id=user_id,
+                       matter_id=matter_id,
+                       detail={"invitation_id": inv.id,
+                               "invited_name": inv.invited_name,
+                               "invited_username": inv.invited_username})
+    return _invitation_view(inv)
+
+
+def mcp_list_invitations(
+    session: Session,
+    settings: Settings,
+    *,
+    user_id: int,
+    matter_id: str,
+) -> dict:
+    """列出本板全部邀请链接（含已吊销/已用完），发起人用来对账。"""
+    from hub.domain import invitation_links
+
+    matter = _require_matter_initiator(session, user_id=user_id,
+                                       matter_id=matter_id,
+                                       action="list_invitations")
+    rows = invitation_links.get_matter_invitations(
+        session, matter.id, include_revoked=True)
+    return {"matter_id": matter.id, "matter_title": matter.title,
+            "invitations": [_invitation_view(r) for r in rows]}
+
+
+def mcp_revoke_invitation(
+    session: Session,
+    settings: Settings,
+    *,
+    user_id: int,
+    invitation_id: str,
+) -> dict:
+    """吊销一条邀请链接：挡新加入。已入板的人走「移除参与人」。"""
+    from hub.domain import invitation_links
+
+    inv = session.get(InvitationLink, invitation_id)
+    if inv is None:
+        raise ApiError(404, "RESOURCE_NOT_FOUND", "邀请链接不存在")
+    _require_matter_initiator(session, user_id=user_id,
+                              matter_id=inv.matter_id,
+                              action="revoke_invitation")
+    result = invitation_links.revoke_invitation_link(session, invitation_id)
+    if not result.get("success"):
+        raise ApiError(404, "RESOURCE_NOT_FOUND",
+                       result.get("error", "吊销失败"))
+    audit.record_audit(session, audit.INVITE_REVOKED, actor_user_id=user_id,
+                       matter_id=inv.matter_id,
+                       detail={"invitation_id": invitation_id})
+    return {"success": True, "invitation_id": invitation_id}

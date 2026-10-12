@@ -98,22 +98,26 @@ def create_invitation_link(
     matter_id: str,
     created_by: int,
     invited_name: str | None = None,
-    expires_in_days: int = DEFAULT_EXPIRY_DAYS,
+    expires_in_days: int | None = None,
     max_uses: int | None = 1,
+    invited_username: str | None = None,
 ) -> InvitationLink:
     """创建邀请链接。
-    
+
     Args:
         db: 数据库会话
         matter_id: 事项 ID
         created_by: 创建者用户 ID
-        invited_name: 可选的受邀人姓名
-        expires_in_days: 有效期天数
+        invited_name: 可选的受邀人姓名（展示用）
+        expires_in_days: 有效期天数；**None = 永久**（2026-10-12 owner
+            裁定：邀请链接不设时限，访问管理靠吊销而非过期）
         max_uses: 最大使用次数，None 表示无限制
-        
+        invited_username: 可选的受邀用户名（绑定到人——落地页据此只让
+            输密码或预填注册，Agent 据此走对路径）
+
     Returns:
         创建的邀请链接对象
-        
+
     Raises:
         ShortCodeCollisionError: 多次尝试后仍然生成重复的短链码
     """
@@ -121,30 +125,32 @@ def create_invitation_link(
     matter = db.get(Matter, matter_id)
     if not matter:
         raise ValueError(f"Matter {matter_id} 不存在")
-    
+
     # 生成唯一的短链码（带碰撞检测）
     for attempt in range(MAX_GENERATION_ATTEMPTS):
         short_code = generate_short_code()
-        
+
         # 检查是否已存在
         existing = db.execute(
             select(InvitationLink).where(InvitationLink.short_code == short_code)
         ).scalar_one_or_none()
-        
+
         if not existing:
             break
     else:
         raise ShortCodeCollisionError(
             f"生成短链码失败：{MAX_GENERATION_ATTEMPTS} 次尝试后仍然碰撞"
         )
-    
-    # 创建链接
-    expires_at = utcnow() + timedelta(days=expires_in_days)
-    
+
+    # 创建链接；expires_in_days=None → expires_at=None 永久
+    expires_at = (utcnow() + timedelta(days=expires_in_days)
+                  if expires_in_days is not None else None)
+
     invitation = InvitationLink(
         matter_id=matter_id,
         short_code=short_code,
         invited_name=invited_name,
+        invited_username=(invited_username or "").strip()[:64] or None,
         status="active",
         max_uses=max_uses,
         used_count=0,
@@ -152,10 +158,10 @@ def create_invitation_link(
         created_by=created_by,
         created_at=utcnow(),
     )
-    
+
     db.add(invitation)
     db.flush()
-    
+
     return invitation
 
 
@@ -189,8 +195,9 @@ def validate_invitation(invitation: InvitationLink) -> None:
     
     if invitation.status == "revoked":
         raise InvitationRevokedError(f"链接 {invitation.short_code} 已被撤销")
-    
-    if invitation.expires_at < now:
+
+    # expires_at 为 None = 永久链接（2026-10-12），不判过期
+    if invitation.expires_at is not None and invitation.expires_at < now:
         raise InvitationExpiredError(
             f"链接 {invitation.short_code} 已过期 "
             f"(expired at {invitation.expires_at.isoformat()})"
@@ -416,6 +423,7 @@ def cleanup_expired_invitations(db: Session) -> int:
     expired = db.execute(
         select(InvitationLink).where(
             InvitationLink.status == "active",
+            InvitationLink.expires_at.is_not(None),
             InvitationLink.expires_at < now,
         )
     ).scalars().all()
@@ -444,16 +452,28 @@ def validate_invitation_link(db: Session, short_code: str) -> dict:
             return {"valid": False, "error": "Invitation not found"}
         
         validate_invitation(invitation)
-        
+
         matter = db.get(Matter, invitation.matter_id)
         creator = db.get(User, invitation.created_by)
-        
+
+        # 绑定到人（2026-10-12）：平台侧直接给出账号是否存在——拿着这条
+        # 链接的人就是受邀人本人，不存在枚举风险；Agent 据此走对路径
+        # （有账号只问密码，没账号走注册四问）。
+        account_exists = None
+        if invitation.invited_username:
+            account_exists = db.scalar(
+                select(User.id).where(User.username == invitation.invited_username)
+            ) is not None
+
         return {
             "valid": True,
             "matter_id": invitation.matter_id,
             "matter_title": matter.title if matter else "Unknown",
             "invited_name": invitation.invited_name,
-            "expires_at": invitation.expires_at.isoformat(),
+            "invited_username": invitation.invited_username,
+            "account_exists": account_exists,
+            "expires_at": (invitation.expires_at.isoformat()
+                           if invitation.expires_at else None),
             "creator_name": creator.username if creator else "系统管理员",
             "collaboration_mode": matter.mode if matter else "project",
         }

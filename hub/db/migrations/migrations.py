@@ -822,10 +822,18 @@ def upgrade_allow_unlimited_invitation_uses(conn: sqlite3.Connection) -> None:
             )
         """)
         
-        # 2. 复制数据
+        # 2. 复制数据（列名显式：v23 后模型多了 invited_username 列，
+        #    测试夹具用当前 metadata 建「存量库」，SELECT * 会列数不匹配）
         conn.execute("""
-            INSERT INTO invitation_links_new
-            SELECT * FROM invitation_links
+            INSERT INTO invitation_links_new (
+                id, matter_id, short_code, invited_name, status,
+                max_uses, used_count, expires_at,
+                created_by, created_at, revoked_at, revoked_by
+            )
+            SELECT id, matter_id, short_code, invited_name, status,
+                   max_uses, used_count, expires_at,
+                   created_by, created_at, revoked_at, revoked_by
+            FROM invitation_links
         """)
         
         # 3. 删除旧表
@@ -1395,3 +1403,131 @@ def downgrade_add_task_cards(conn: sqlite3.Connection) -> None:
     except Exception:
         conn.execute("ROLLBACK")
         raise
+
+
+_INVITATION_LINKS_V23_DDL = """
+CREATE TABLE invitation_links_new (
+    id VARCHAR(48) NOT NULL PRIMARY KEY,
+    matter_id VARCHAR(48) NOT NULL,
+    short_code VARCHAR(8) NOT NULL UNIQUE,
+    invited_name VARCHAR(128),
+    invited_username VARCHAR(64),
+    status VARCHAR(16) NOT NULL DEFAULT 'active',
+    max_uses INTEGER,
+    used_count INTEGER NOT NULL DEFAULT 0,
+    expires_at DATETIME,
+    created_by INTEGER NOT NULL,
+    created_at DATETIME NOT NULL,
+    revoked_at DATETIME,
+    revoked_by INTEGER,
+    FOREIGN KEY(matter_id) REFERENCES matters (id),
+    FOREIGN KEY(created_by) REFERENCES users (id),
+    FOREIGN KEY(revoked_by) REFERENCES users (id),
+    UNIQUE(matter_id, short_code)
+)
+"""
+
+
+def upgrade_invitation_links_v23(conn: sqlite3.Connection) -> None:
+    """v23：邀请链接永不过期（expires_at 可空）+ 按人绑定（invited_username）。
+
+    SQLite 不能改列约束，走「建新表→拷贝→删旧表→改名」重建。
+    expires_at 原有值原样保留；invited_username 新列补 NULL。
+    重建期间必须关外键检查 —— invitation_consumptions 引用本表，
+    开着 foreign_keys 删父表会直接失败（v15 的重建吃过同样的亏）。
+    """
+    conn.execute("PRAGMA foreign_keys=OFF")
+    conn.execute("BEGIN")
+    try:
+        conn.execute(_INVITATION_LINKS_V23_DDL)
+        conn.execute(
+            """
+            INSERT INTO invitation_links_new (
+                id, matter_id, short_code, invited_name, invited_username,
+                status, max_uses, used_count, expires_at,
+                created_by, created_at, revoked_at, revoked_by
+            )
+            SELECT id, matter_id, short_code, invited_name, NULL,
+                   status, max_uses, used_count, expires_at,
+                   created_by, created_at, revoked_at, revoked_by
+            FROM invitation_links
+            """
+        )
+        conn.execute("DROP TABLE invitation_links")
+        conn.execute("ALTER TABLE invitation_links_new RENAME TO invitation_links")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS ix_invitation_links_matter_id "
+            "ON invitation_links (matter_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS ix_invitation_links_short_code "
+            "ON invitation_links (short_code)"
+        )
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    finally:
+        # 重新启用外键检查（与 v15 同一结构：重建期间关掉，完事必须恢复）
+        conn.execute("PRAGMA foreign_keys=ON")
+
+
+def downgrade_invitation_links_v23(conn: sqlite3.Connection) -> None:
+    """回滚：重建回 expires_at NOT NULL 的旧结构（永久链接的 NULL 会被
+    替换成一个远未来时间，保证 NOT NULL 约束）。invited_username 丢弃。
+    同样需要先关外键检查（子表 invitation_consumptions 有引用行）。"""
+    conn.execute("PRAGMA foreign_keys=OFF")
+    conn.execute("BEGIN")
+    try:
+        conn.execute(
+            """
+            CREATE TABLE invitation_links_old (
+                id VARCHAR(48) NOT NULL PRIMARY KEY,
+                matter_id VARCHAR(48) NOT NULL,
+                short_code VARCHAR(8) NOT NULL UNIQUE,
+                invited_name VARCHAR(128),
+                status VARCHAR(16) NOT NULL DEFAULT 'active',
+                max_uses INTEGER,
+                used_count INTEGER NOT NULL DEFAULT 0,
+                expires_at DATETIME NOT NULL,
+                created_by INTEGER NOT NULL,
+                created_at DATETIME NOT NULL,
+                revoked_at DATETIME,
+                revoked_by INTEGER,
+                FOREIGN KEY(matter_id) REFERENCES matters (id),
+                FOREIGN KEY(created_by) REFERENCES users (id),
+                FOREIGN KEY(revoked_by) REFERENCES users (id),
+                UNIQUE(matter_id, short_code)
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO invitation_links_old (
+                id, matter_id, short_code, invited_name,
+                status, max_uses, used_count, expires_at,
+                created_by, created_at, revoked_at, revoked_by
+            )
+            SELECT id, matter_id, short_code, invited_name,
+                   status, max_uses, used_count,
+                   COALESCE(expires_at, '9999-12-31 00:00:00'),
+                   created_by, created_at, revoked_at, revoked_by
+            FROM invitation_links
+            """
+        )
+        conn.execute("DROP TABLE invitation_links")
+        conn.execute("ALTER TABLE invitation_links_old RENAME TO invitation_links")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS ix_invitation_links_matter_id "
+            "ON invitation_links (matter_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS ix_invitation_links_short_code "
+            "ON invitation_links (short_code)"
+        )
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    finally:
+        conn.execute("PRAGMA foreign_keys=ON")

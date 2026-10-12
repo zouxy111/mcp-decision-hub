@@ -590,6 +590,34 @@ def matter_cancel(
     return RedirectResponse(f"/matters/{matter_id}", status_code=303)
 
 
+@router.post("/matters/{matter_id}/participants/{user_id}/remove",
+             response_class=HTMLResponse)
+def matter_remove_participant(
+    request: Request,
+    matter_id: str,
+    user_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_csrf),
+    settings: Settings = Depends(get_settings),
+):
+    """移除参与人（2026-10-12）：链接吊销只挡新加入，存量靠这里。"""
+    try:
+        matter_svc.remove_participant(db, matter_id=matter_id, actor=user,
+                                      target_user_id=user_id)
+        db.commit()
+    except ApiError as e:
+        db.commit()
+        matter = matter_svc.get_matter_for_user(db, matter_id=matter_id, user=user)
+        if matter is None:
+            raise HTTPException(status_code=404, detail="事项不存在或不可见") from e
+        context = _build_detail(db, matter, user, settings)
+        context["current_user_is_admin"] = user.is_admin
+        context["error"] = e.message
+        return templates.TemplateResponse(request, "matter_detail.html", context,
+                                          status_code=e.status_code)
+    return RedirectResponse(f"/matters/{matter_id}", status_code=303)
+
+
 @router.post("/matters/{matter_id}/reassign", response_class=HTMLResponse)
 def matter_reassign(
     request: Request,
