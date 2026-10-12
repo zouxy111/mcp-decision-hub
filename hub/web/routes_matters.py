@@ -31,6 +31,7 @@ from hub.domain.timeutil import utcnow
 from hub.web.deps import (
     get_current_user,
     get_db,
+    get_optional_user,
     get_settings,
     register_csrf_globals,
     require_csrf,
@@ -348,9 +349,23 @@ def matter_detail(
     matter_id: str,
     messages: str | None = None,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User | None = Depends(get_optional_user),
     settings: Settings = Depends(get_settings),
 ):
+    from hub.domain.site_manual import build_site_manual, wants_agent_text
+
+    if wants_agent_text(request):
+        # Agent 拿到板子链接但还没接入：回手册 + 板子定位指引
+        #（不泄露标题：未认证时不区分 matter 存在与否）
+        return PlainTextResponse(
+            build_site_manual(site_base=str(request.base_url).rstrip("/"),
+                              matter_id=matter_id),
+            media_type="text/markdown; charset=utf-8")
+    if user is None:
+        # 与 get_current_user 同一行为：未登录弹回登录页（带 next 回跳）
+        from urllib.parse import quote
+        raise HTTPException(status_code=303, headers={
+            "Location": f"/login?next={quote(request.url.path, safe='')}"})
     matter = matter_svc.get_matter_for_user(db, matter_id=matter_id, user=user)
     if matter is None:
         raise HTTPException(status_code=404, detail="事项不存在或不可见")

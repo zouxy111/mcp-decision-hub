@@ -313,3 +313,44 @@ def test_网页_建卡发布交活验收(db_session, client, board, alice, bob):
     # 卡片页展示验收结论
     page = client.get(f"/matters/{board.id}/cards/{card.id}")
     assert "已验收通过" in page.text
+
+
+# --------------------------------------------------------------------------
+# 任务卡发布侧 MCP 工具（2026-10-12 补）：建卡 / 发布 / 验收
+# --------------------------------------------------------------------------
+
+def test_MCP_建卡发布验收_发布人全流程(db_session, board, alice, bob,
+                                       make_fake_llm):
+    from hub.config import load_settings
+    from hub.mcp_server import methods as m
+
+    settings = load_settings()
+    card = m.mcp_create_task_card(
+        db_session, settings, user_id=alice.id, matter_id=board.id,
+        title="接口建的卡", description="agent 代建",
+        acceptance_criteria=["标准A", "标准B"])
+    assert card["status"] == "draft" and card["acceptance_criteria"] == ["标准A", "标准B"]
+
+    # 发布人是 alice；bob（非发布人）不能发布
+    from hub.api.errors import ApiError
+    with pytest.raises(ApiError) as exc:
+        m.mcp_publish_task_card(db_session, settings, user_id=bob.id,
+                                card_id=card["card_id"])
+    assert exc.value.status_code == 403
+
+    published = m.mcp_publish_task_card(db_session, settings, user_id=alice.id,
+                                        card_id=card["card_id"])
+    assert published["status"] == "published"
+
+    d = m.mcp_submit_delivery(db_session, settings, user_id=bob.id,
+                              card_id=card["card_id"], summary="做完了",
+                              llm=make_fake_llm([{
+                                  "verdicts": [{"criterion": "标准A",
+                                                "verdict": "pass"},
+                                               {"criterion": "标准B",
+                                                "verdict": "pass"}],
+                                  "overall": "pass"}]))
+    decided = m.mcp_decide_delivery(db_session, settings, user_id=alice.id,
+                                    delivery_id=d["delivery_id"], accept=True,
+                                    note="OK")
+    assert decided["status"] == "accepted"

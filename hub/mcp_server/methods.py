@@ -1860,3 +1860,70 @@ def mcp_revoke_invitation(
                        matter_id=inv.matter_id,
                        detail={"invitation_id": invitation_id})
     return {"success": True, "invitation_id": invitation_id}
+
+
+# ---------------------------------------------------------------------------
+# 任务卡发布侧（2026-10-12 补）：建卡/发布/验收走 Agent 通道，
+# 成员不用为发起任务开网页。权限与网页同一服务层。
+# ---------------------------------------------------------------------------
+
+
+def mcp_create_task_card(
+    session: Session,
+    settings: Settings,
+    *,
+    user_id: int,
+    matter_id: str,
+    title: str,
+    description: str = "",
+    acceptance_criteria: list[str] | None = None,
+) -> dict:
+    from hub.api import task_cards as cards_svc
+
+    user = session.get(User, user_id)
+    if user is None:
+        raise ApiError(401, "AUTH_INVALID_TOKEN", "令牌对应用户不存在")
+    card = cards_svc.create_card(
+        session, matter_id=matter_id, publisher=user, title=title,
+        description=description,
+        acceptance_criteria=acceptance_criteria or [])
+    return _card_view(session, card)
+
+
+def mcp_publish_task_card(
+    session: Session,
+    settings: Settings,
+    *,
+    user_id: int,
+    card_id: str,
+) -> dict:
+    from hub.api import task_cards as cards_svc
+
+    user = session.get(User, user_id)
+    if user is None:
+        raise ApiError(401, "AUTH_INVALID_TOKEN", "令牌对应用户不存在")
+    card = cards_svc.publish_card(session, card_id=card_id, actor=user)
+    return _card_view(session, card)
+
+
+def mcp_decide_delivery(
+    session: Session,
+    settings: Settings,
+    *,
+    user_id: int,
+    delivery_id: str,
+    accept: bool,
+    note: str = "",
+) -> dict:
+    from hub.api import task_cards as cards_svc
+
+    user = session.get(User, user_id)
+    if user is None:
+        raise ApiError(401, "AUTH_INVALID_TOKEN", "令牌对应用户不存在")
+    delivery = cards_svc.decide_delivery(
+        session, delivery_id=delivery_id, actor=user,
+        accept=accept, note=note)
+    view = _delivery_view(delivery)
+    view["submitter"] = _resolve_names(session, [delivery.submitter_id]).get(
+        delivery.submitter_id)
+    return view

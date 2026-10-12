@@ -1,7 +1,7 @@
 """Auth pages: login, forced password change, invitation consume, logout."""
 
 from fastapi import APIRouter, Depends, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
@@ -96,11 +96,19 @@ def _login_rate_record(request: Request, settings: Settings, limiter,
 
 
 @router.get("/")
-def index(user: User | None = Depends(get_optional_user)):
+def index(request: Request, user: User | None = Depends(get_optional_user)):
     """站点根路径：按登录态分流，避免已登录用户被送回登录页。
 
     已登录 → 主界面（或强制改密页）；未登录 → 登录页。
+    Agent 请求（?for_agent=1 或 Accept markdown）→ 自描述接入手册文本
+    （2026-10-12：任意站内链接对 Agent 可解析）。
     """
+    from hub.domain.site_manual import build_site_manual, wants_agent_text
+
+    if wants_agent_text(request):
+        return PlainTextResponse(
+            build_site_manual(site_base=str(request.base_url).rstrip("/")),
+            media_type="text/markdown; charset=utf-8")
     if user is None:
         return RedirectResponse("/login", status_code=303)
     target = "/change-password" if user.must_change_password else "/dashboard"

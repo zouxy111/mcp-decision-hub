@@ -635,3 +635,50 @@ def register_tools(mcp: FastMCP, session_factory, settings: Settings,
             settings=settings, user_id=_current_user_id(),
             invitation_id=invitation_id,
         )
+
+    @mcp.tool
+    def create_task_card(
+        matter_id: str,
+        title: str,
+        description: str = "",
+        acceptance_criteria: list[str] | None = None,
+    ) -> dict:
+        """拆一张任务卡（draft，验收标准可继续改）。
+
+        任何成员都能拆活。拆完先用返回里的内容跟本人对一遍，
+        确认后 publish_task_card 锁定发布。验收标准一条一个字符串。
+        REST 对应：POST /matters/{id}/cards（网页通道）。"""
+        return _call(
+            session_factory, methods.mcp_create_task_card,
+            settings=settings, user_id=_current_user_id(),
+            matter_id=matter_id, title=title, description=description,
+            acceptance_criteria=acceptance_criteria,
+        )
+
+    @mcp.tool
+    def publish_task_card(card_id: str) -> dict:
+        """确认发布任务卡（仅发布人）：验收标准从此锁定，协作人可交付。
+
+        发布前必须跟接收方对齐过标准——这是这张卡存在的意义。
+        REST 对应：POST /matters/{id}/cards/{cid}/publish。"""
+        return _call(
+            session_factory, methods.mcp_publish_task_card,
+            settings=settings, user_id=_current_user_id(),
+            card_id=card_id,
+        )
+
+    @mcp.tool
+    def decide_delivery(
+        delivery_id: str,
+        accept: bool,
+        note: str = "",
+    ) -> dict:
+        """验收一次交付（仅发布人）：accept=true 通过；false 驳回并给理由。
+
+        先看交付的 ai_review（软审查结论）再决，别闭眼拍。
+        REST 对应：POST /deliveries/{id}/decide。"""
+        return _call(
+            session_factory, methods.mcp_decide_delivery,
+            settings=settings, user_id=_current_user_id(),
+            delivery_id=delivery_id, accept=accept, note=note,
+        )

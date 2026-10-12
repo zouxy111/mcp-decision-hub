@@ -238,3 +238,32 @@ def test_MCP_非发起人建链接被拒(db_session, owner, board, yangqi):
         m.mcp_create_invitation(db_session, load_settings(), user_id=yangqi.id,
                                 matter_id=board.id, invited_name="x")
     assert exc.value.status_code == 403
+
+
+# --------------------------------------------------------------------------
+# 站点对 Agent 自描述（2026-10-12）
+# --------------------------------------------------------------------------
+
+def test_Agent请求根路径拿接入手册(client):
+    r = client.get("/?for_agent=1")
+    assert r.status_code == 200
+    assert "text/markdown" in r.headers["content-type"]
+    assert "/api/auth/token" in r.text
+    assert "SKILL.md" in r.text
+    assert "/mcp/" in r.text
+
+
+def test_Agent请求板子链接拿手册与定位指引(client, db_session, owner, board):
+    r = client.get(f"/matters/{board.id}?for_agent=1")
+    assert r.status_code == 200
+    assert "text/markdown" in r.headers["content-type"]
+    assert board.id in r.text          # 板子定位指引
+    assert "list_items" in r.text
+    # 未认证不泄露标题
+    assert "整改协作" not in r.text
+
+
+def test_浏览器请求不受影响(client, db_session, owner, board):
+    # 正常 Accept 仍按登录态分流（未登录 → 登录页 303）
+    r = client.get("/", follow_redirects=False)
+    assert r.status_code == 303
