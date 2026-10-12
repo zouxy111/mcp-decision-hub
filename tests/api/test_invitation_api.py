@@ -107,6 +107,8 @@ def test_consume_invitation_link_new_user(db_session, test_user, test_matter):
         username="newuser123",
         email="newuser@example.com",
         password_hash=password_hash,
+        display_name="新用户",
+        responsibility="负责测试",
     )
     
     assert user.username == "newuser123"
@@ -273,8 +275,8 @@ def test_HTTP_消费邀请_注册成功且可登录(client, test_user, matter_of
                              "password": "dave-pw-123"}).status_code == 200
 
 
-def test_HTTP_消费邀请_自我介绍必填(client, test_user, matter_of_test_user):
-    """留言板形态要求先自我介绍，接口与页面同口径。"""
+def test_HTTP_消费邀请_自我介绍两头缺才报错(client, test_user, matter_of_test_user):
+    """名片信息 2026-10-12 起可前置到链接上；两头都没有才拒绝。"""
     code = _create_invitation(client, matter_of_test_user.id).json()["short_code"]
 
     resp = client.post(f"/api/invitations/consume/{code}", json={
@@ -282,7 +284,9 @@ def test_HTTP_消费邀请_自我介绍必填(client, test_user, matter_of_test_
         "password": "dave-pw-123",
     })
 
-    assert resp.status_code == 422
+    assert resp.status_code == 200
+    assert resp.json()["success"] is False
+    assert "名片" in resp.json()["error"]
 
 
 def test_HTTP_消费邀请_用户名重复返回错误(client, test_user, matter_of_test_user):

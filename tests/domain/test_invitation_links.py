@@ -192,6 +192,8 @@ def test_consume_invitation_link_success(
         password_hash="hash456",
         ip_address="127.0.0.1",
         user_agent="TestAgent/1.0",
+        display_name="爱丽丝",
+        responsibility="负责测试",
     )
     db_session.commit()
     
@@ -391,6 +393,8 @@ def test_consume_invitation_link_multiple_uses(
         username="alice",
         email="alice@test.com",
         password_hash="hash1",
+        display_name="爱丽丝",
+        responsibility="负责测试",
     )
     db_session.commit()
     
@@ -404,6 +408,8 @@ def test_consume_invitation_link_multiple_uses(
         username="bob",
         email="bob@test.com",
         password_hash="hash2",
+        display_name="鲍勃",
+        responsibility="负责开发",
     )
     db_session.commit()
     
@@ -417,6 +423,8 @@ def test_consume_invitation_link_multiple_uses(
         username="charlie",
         email="charlie@test.com",
         password_hash="hash3",
+        display_name="查理",
+        responsibility="负责运营",
     )
     db_session.commit()
     

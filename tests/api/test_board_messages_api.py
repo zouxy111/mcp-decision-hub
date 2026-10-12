@@ -284,7 +284,10 @@ def test_consume_endpoint_requires_self_intro(client, db_session):
     resp = client.post(f"/api/invitations/consume/{invitation.short_code}",
                        json={"username": "newbie", "email": "n@example.com",
                              "password": "pw123456"})
-    assert resp.status_code == 422
+    # 2026-10-12 起名片可前置到链接；本链接未登记任何受邀人信息，
+    # 本人也没传 → 拒绝（422 由 pydantic 管，这里是业务层拒绝）
+    assert resp.status_code == 200
+    assert resp.json()["success"] is False
 
     resp = client.post(f"/api/invitations/consume/{invitation.short_code}",
                        json={"username": "newbie", "email": "n@example.com",
@@ -318,7 +321,7 @@ def test_validate_invitation_returns_agent_brief(client, db_session):
     assert brief and len(brief) > 500
     # 关键内容必须都在：怎么接、怎么注册、怎么读（先读总结省上下文）、
     # 上传前必须本人同意、只有本人明确说要上传才上传、长内容走 md。
-    for keyword in ("Streamable HTTP", "/mcp/", "hdt_", "姓名",
+    for keyword in ("Streamable HTTP", "/mcp/", "hdt_", "称呼",
                     "同意", "上传", "markdown", "get_board_summary"):
         assert keyword in brief, keyword
     assert "五个问题" in brief

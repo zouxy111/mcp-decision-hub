@@ -40,14 +40,11 @@ _TEMPLATE = """# 你受邀参与一块留言板 —— 接入说明（给 AI 助
 - 站点地址：{site}
 - 接入 skill：{skill_url}
 
-## 第一步：先问本人四件事（一次问完，别挤牙膏）
+## 第一步：问本人要哪几件，看链接登记了什么（一次问完，别挤牙膏）
 
-1. **起个用户名**——登录用，3~50 个字符。被占了就再让他起一个。
-2. **设个密码**——至少 8 位。**问完就用于注册，不要写进你的长期记忆或笔记**。
-3. **怎么称呼你？**（姓名）——会显示在留言板上，别人靠它知道在跟谁说话。
-4. **你在这件事里负责什么、能拍板什么？**
+{ask_block}
 
-猜错了板上所有人都认错人——这四项必须是本人亲口说的。
+猜错了板上所有人都认错人——问到的必须是本人亲口说的。
 
 ## 第二步：{flow_title}
 
@@ -223,6 +220,7 @@ def _format_expiry(expires_at: object) -> str:
 def build_agent_brief(*, site_base: str, matter_title: str, invite_code: str,
                       expires_at: str | None = None,
                       invited_username: str | None = None,
+                      invited_responsibility: str | None = None,
                       account_exists: bool | None = None) -> str:
     """返回给受邀人 agent 的接入说明（markdown 文本，中文）。
 
@@ -231,6 +229,28 @@ def build_agent_brief(*, site_base: str, matter_title: str, invite_code: str,
     None = 链接未绑定人，保持「先试注册、用户名被占再转登录」的通用流程。
     """
     site = _normalize_site_base(site_base)
+    # 问什么取决于链接登记了什么（owner 2026-10-12：姓名与负责事项前置到
+    # 发起人创建链接的环节，已登记的不许再问——减少一轮沟通）
+    if invited_username and invited_responsibility:
+        ask_block = (
+            "1. **设个密码**——至少 8 位。**问完就用于登录，不要写进你的"
+            "长期记忆或笔记**。\n\n"
+            f"链接已登记：称呼 **{invited_username}**、负责 **{invited_responsibility}**"
+            "——发起人创建链接时填好的，这两项不必再问；入板后顺手把登记内容"
+            "念给本人确认一遍，不对才改。")
+    elif invited_username:
+        ask_block = (
+            "1. **起个用户名以外的部分不用问**——用户名已登记为 "
+            f"**{invited_username}**。\n"
+            "2. **设个密码**——至少 8 位。**问完就用于登录，不要写进你的"
+            "长期记忆或笔记**。\n"
+            "3. **怎么称呼你、负责什么**——链接上没登记，需要本人说。")
+    else:
+        ask_block = (
+            "1. **起个用户名**——登录用，3~50 个字符。被占了就再让他起一个。\n"
+            "2. **设个密码**——至少 8 位。**问完就用于登录，不要写进你的"
+            "长期记忆或笔记**。\n"
+            "3. **怎么称呼你、负责什么**——链接上没登记，需要本人说。")
     if account_exists is True:
         flow_title = "本人已有账号——只要密码，登录入板"
         flow_steps = f"""这条链接绑定的账号是 **{invited_username}**（已注册）。
@@ -252,7 +272,8 @@ curl -s -X POST {site}/api/invitations/join/{invite_code} \\
     elif account_exists is False:
         flow_title = f"本人还没注册——四问之后代劳注册（用户名预填 {invited_username}）"
         flow_steps = f"""这条链接给 **{invited_username}** 预留了位置（还没注册）。
-第一步四件事问完后，一条请求建号、入板、拿令牌：
+第一步问完后，一条请求建号、入板、拿令牌（称呼/负责内容已登记的
+不用传，服务端自动带上；display_name/responsibility 想改才传）：
 
 ```bash
 curl -s -X POST {site}/api/invitations/consume/{invite_code} \\
@@ -292,4 +313,5 @@ curl -s -X POST {site}/api/invitations/consume/{invite_code} \\
         skills_dir=_SKILLS_DIR,
         flow_title=flow_title,
         flow_steps=flow_steps,
+        ask_block=ask_block,
     )

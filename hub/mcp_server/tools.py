@@ -602,6 +602,7 @@ def register_tools(mcp: FastMCP, session_factory, settings: Settings,
         matter_id: str,
         invited_name: str | None = None,
         invited_username: str | None = None,
+        invited_responsibility: str | None = None,
         expires_in_days: int | None = None,
         max_uses: int | None = 1,
     ) -> dict:
@@ -615,6 +616,7 @@ def register_tools(mcp: FastMCP, session_factory, settings: Settings,
             settings=settings, user_id=_current_user_id(),
             matter_id=matter_id, invited_name=invited_name,
             invited_username=invited_username,
+            invited_responsibility=invited_responsibility,
             expires_in_days=expires_in_days, max_uses=max_uses,
         )
 

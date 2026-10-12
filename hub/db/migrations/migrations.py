@@ -1531,3 +1531,79 @@ def downgrade_invitation_links_v23(conn: sqlite3.Connection) -> None:
         raise
     finally:
         conn.execute("PRAGMA foreign_keys=ON")
+
+
+def upgrade_invitation_responsibility_v24(conn: sqlite3.Connection) -> None:
+    """v24：邀请链接加 invited_responsibility 列（发起人创建时填写）。
+
+    姓名与负责事项前置到发起人环节（owner 2026-10-12）：受邀人打开链接
+    设完密码即可直接协作，不再被问「你是谁、你负责什么」。
+    SQLite ADD COLUMN 即可，可重入。
+    """
+    conn.execute("BEGIN")
+    try:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(invitation_links)")}
+        if "invited_responsibility" not in cols:
+            conn.execute(
+                "ALTER TABLE invitation_links "
+                "ADD COLUMN invited_responsibility VARCHAR(256)"
+            )
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+
+
+def downgrade_invitation_responsibility_v24(conn: sqlite3.Connection) -> None:
+    """回滚：SQLite 不支持 DROP COLUMN（3.35+ 才支持），重建表去掉该列。"""
+    conn.execute("PRAGMA foreign_keys=OFF")
+    conn.execute("BEGIN")
+    try:
+        conn.execute("""
+            CREATE TABLE invitation_links_new (
+                id VARCHAR(48) NOT NULL PRIMARY KEY,
+                matter_id VARCHAR(48) NOT NULL,
+                short_code VARCHAR(8) NOT NULL UNIQUE,
+                invited_name VARCHAR(128),
+                invited_username VARCHAR(64),
+                status VARCHAR(16) NOT NULL DEFAULT 'active',
+                max_uses INTEGER,
+                used_count INTEGER NOT NULL DEFAULT 0,
+                expires_at DATETIME,
+                created_by INTEGER NOT NULL,
+                created_at DATETIME NOT NULL,
+                revoked_at DATETIME,
+                revoked_by INTEGER,
+                FOREIGN KEY(matter_id) REFERENCES matters (id),
+                FOREIGN KEY(created_by) REFERENCES users (id),
+                FOREIGN KEY(revoked_by) REFERENCES users (id),
+                UNIQUE(matter_id, short_code)
+            )
+        """)
+        conn.execute("""
+            INSERT INTO invitation_links_new (
+                id, matter_id, short_code, invited_name, invited_username,
+                status, max_uses, used_count, expires_at,
+                created_by, created_at, revoked_at, revoked_by
+            )
+            SELECT id, matter_id, short_code, invited_name, invited_username,
+                   status, max_uses, used_count, expires_at,
+                   created_by, created_at, revoked_at, revoked_by
+            FROM invitation_links
+        """)
+        conn.execute("DROP TABLE invitation_links")
+        conn.execute("ALTER TABLE invitation_links_new RENAME TO invitation_links")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS ix_invitation_links_matter_id "
+            "ON invitation_links (matter_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS ix_invitation_links_short_code "
+            "ON invitation_links (short_code)"
+        )
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    finally:
+        conn.execute("PRAGMA foreign_keys=ON")

@@ -101,6 +101,7 @@ def create_invitation_link(
     expires_in_days: int | None = None,
     max_uses: int | None = 1,
     invited_username: str | None = None,
+    invited_responsibility: str | None = None,
 ) -> InvitationLink:
     """创建邀请链接。
 
@@ -151,6 +152,7 @@ def create_invitation_link(
         short_code=short_code,
         invited_name=invited_name,
         invited_username=(invited_username or "").strip()[:64] or None,
+        invited_responsibility=(invited_responsibility or "").strip()[:256] or None,
         status="active",
         max_uses=max_uses,
         used_count=0,
@@ -223,7 +225,7 @@ def consume_invitation_link(
     responsibility: str | None = None,
 ) -> tuple[User, InvitationLink]:
     """消费邀请链接：自动创建账号并加入事项。
-    
+
     完整流程：
     1. 查询并验证链接
     2. 创建用户账号
@@ -231,7 +233,7 @@ def consume_invitation_link(
     4. 记录消费记录
     5. 更新链接使用计数
     6. 如果达到最大使用次数，标记为 consumed
-    
+
     Args:
         db: 数据库会话
         short_code: 短链码
@@ -240,38 +242,52 @@ def consume_invitation_link(
         password_hash: 密码哈希
         ip_address: 请求 IP（可选）
         user_agent: User-Agent（可选）
-        
+        display_name: 称呼；**缺省回退链接上发起人填的 invited_name**
+        responsibility: 负责事项；**缺省回退 invited_responsibility**
+            （2026-10-12 owner 裁定：两项信息前置到发起人创建链接的环节，
+            受邀人不再被问；仍允许本人当场改）
+
     Returns:
         (创建的用户对象, 邀请链接对象)
-        
+
     Raises:
         InvitationNotFoundError: 链接不存在
         InvitationExpiredError: 链接已过期
         InvitationExhaustedError: 链接已耗尽
         InvitationRevokedError: 链接已撤销
-        ValueError: 用户名或邮箱已存在
+        ValueError: 用户名或邮箱已存在，或称呼/负责事项两头都没有
     """
     # 1. 查询链接
     invitation = get_invitation_by_code(db, short_code)
     if not invitation:
         raise InvitationNotFoundError(f"链接 {short_code} 不存在")
-    
+
     # 2. 验证链接
     validate_invitation(invitation)
-    
+
     # 3. 检查用户名和邮箱是否已存在
     existing_username = db.execute(
         select(User).where(User.username == username)
     ).scalar_one_or_none()
     if existing_username:
         raise ValueError(f"用户名 {username} 已存在")
-    
+
     existing_email = db.execute(
         select(User).where(User.email == email)
     ).scalar_one_or_none()
     if existing_email:
         raise ValueError(f"邮箱 {email} 已存在")
-    
+
+    # 名片回退：本人没给的，用发起人创建链接时登记的（前置环节，owner 10-12）
+    final_display_name = (display_name or "").strip()[:100] \
+        or (invitation.invited_name or "").strip()[:100]
+    final_responsibility = (responsibility or "").strip() \
+        or (invitation.invited_responsibility or "").strip()
+    if not final_display_name or not final_responsibility:
+        raise ValueError(
+            "板上名片不能为空：请填写你的姓名和负责内容"
+            "（或让发起人补全链接上的受邀人信息）")
+
     # 4. 创建用户账号
     user = User(
         username=username,
@@ -282,13 +298,13 @@ def consume_invitation_link(
     )
     db.add(user)
     db.flush()  # 确保 user.id 可用
-    
+
     # 5. 加入事项（名片随注册一起写入：我叫什么 / 我负责什么）
     participant = MatterParticipant(
         matter_id=invitation.matter_id,
         user_id=user.id,
-        display_name=(display_name or "").strip()[:100] or None,
-        responsibility=(responsibility or "").strip() or None,
+        display_name=final_display_name,
+        responsibility=final_responsibility,
     )
     db.add(participant)
     
@@ -471,6 +487,7 @@ def validate_invitation_link(db: Session, short_code: str) -> dict:
             "matter_title": matter.title if matter else "Unknown",
             "invited_name": invitation.invited_name,
             "invited_username": invitation.invited_username,
+            "invited_responsibility": invitation.invited_responsibility,
             "account_exists": account_exists,
             "expires_at": (invitation.expires_at.isoformat()
                            if invitation.expires_at else None),

@@ -512,6 +512,10 @@ class InvitationLink(Base):
     # 只需输密码即可入板，没账号的走注册；validate 接口据此返回
     # account_exists，Agent 拿到链接就能走对的接入路径。
     invited_username: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # 受邀人负责事项（可选，2026-10-12 v24，owner 裁定前置到发起人环节）：
+    # 填了之后受邀人设完密码即带名片入板，不再被问「你负责什么」。
+    invited_responsibility: Mapped[str | None] = mapped_column(String(256),
+                                                               nullable=True)
     created_by: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(default=utcnow, nullable=False)
     revoked_at: Mapped[datetime | None] = mapped_column(nullable=True)

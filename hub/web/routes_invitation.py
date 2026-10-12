@@ -53,6 +53,10 @@ class CreateInvitationRequest(BaseModel):
         default=None, max_length=64,
         description="受邀用户名（可选，绑定到人）",
     )
+    invited_responsibility: str | None = Field(
+        default=None, max_length=256,
+        description="受邀人负责事项（可选，前置填写，受邀人不再被问）",
+    )
 
 
 class InvitationLinkResponse(BaseModel):
@@ -75,6 +79,7 @@ class InvitationLinkResponse(BaseModel):
     created_at: str
     invited_name: str | None = None
     invited_username: str | None = None
+    invited_responsibility: str | None = None
 
 
 class ValidateInvitationResponse(BaseModel):
@@ -93,6 +98,7 @@ class ValidateInvitationResponse(BaseModel):
     # 绑定到人时的账号状态：True=已注册（只问密码即可入板）、
     # False=未注册（走注册）、None=未绑定
     account_exists: bool | None = None
+    invited_responsibility: str | None = None
     expires_at: str | None = None
     agent_brief: str | None = None
     error: str | None = None
@@ -110,14 +116,11 @@ class ConsumeInvitationRequest(BaseModel):
         default=None, pattern=r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$"
     )
     password: str = Field(..., min_length=6)
-    # 留言板形态要求先做个简单自我介绍：叫什么、负责什么（2026-10-04）。
-    # 与 HTML 表单同一口径 —— 两个入口都必填，不做「页面严、接口松」的缺口。
-    display_name: str = Field(
-        ..., min_length=1, max_length=100, description="真实姓名（怎么称呼你）"
-    )
-    responsibility: str = Field(
-        ..., min_length=1, max_length=2000, description="你在本次协作里负责什么"
-    )
+    # 叫什么/负责什么（2026-10-04 原为必填；2026-10-12 起选填——缺省自动
+    # 回退到发起人创建链接时登记的受邀人信息（owner 裁定前置），两头都
+    # 没有才报 422。两个入口同一口径。
+    display_name: str | None = Field(default=None, max_length=100)
+    responsibility: str | None = Field(default=None, max_length=2000)
 
 
 class ConsumeInvitationResponse(BaseModel):
@@ -189,6 +192,7 @@ def create_invitation(
         max_uses=request.max_uses,
         invited_name=request.invited_name,
         invited_username=request.invited_username,
+        invited_responsibility=request.invited_responsibility,
     )
     db.commit()
 
@@ -207,6 +211,7 @@ def create_invitation(
         created_at=invitation.created_at.isoformat(),
         invited_name=invitation.invited_name,
         invited_username=invitation.invited_username,
+        invited_responsibility=invitation.invited_responsibility,
     )
 
 
@@ -235,6 +240,7 @@ def validate_invitation_route(
         matter_title=result["matter_title"],
         invited_name=result.get("invited_name"),
         invited_username=result.get("invited_username"),
+        invited_responsibility=result.get("invited_responsibility"),
         account_exists=result.get("account_exists"),
         expires_at=result.get("expires_at"),
         agent_brief=build_agent_brief(
@@ -243,6 +249,7 @@ def validate_invitation_route(
             invite_code=short_code,
             expires_at=result.get("expires_at"),
             invited_username=result.get("invited_username"),
+            invited_responsibility=result.get("invited_responsibility"),
             account_exists=result.get("account_exists"),
         ),
     )
@@ -403,6 +410,7 @@ def get_matter_invitations_route(
             created_at=inv.created_at.isoformat(),
             invited_name=inv.invited_name,
             invited_username=inv.invited_username,
+            invited_responsibility=inv.invited_responsibility,
         )
         for inv in invitations
     ]
@@ -484,6 +492,7 @@ def show_invitation_page(
             invite_code=short_code,
             expires_at=validation.get("expires_at"),
             invited_username=validation.get("invited_username"),
+            invited_responsibility=validation.get("invited_responsibility"),
             account_exists=validation.get("account_exists"),
         )
         wants_text = (
@@ -498,6 +507,7 @@ def show_invitation_page(
             "creator_name": validation.get("creator_name", "系统管理员"),
             "invited_name": validation.get("invited_name"),
             "invited_username": validation.get("invited_username"),
+            "invited_responsibility": validation.get("invited_responsibility"),
             "account_exists": validation.get("account_exists"),
             "collaboration_mode": validation.get("collaboration_mode", "project"),
             "expires_at": validation.get("expires_at"),
@@ -564,12 +574,8 @@ async def accept_invitation(
     responsibility: Annotated[str | None, Form()] = None,
 ):
     """处理邀请接受表单提交（公开访问）。"""
-    # 先自我介绍、再建账号：留言板形态下「你是谁、你负责什么」是协作前提
-    # （别人得知道在跟谁说话），所以这两项必填。2026-10-04 起。
-    if not (display_name or "").strip() or not (responsibility or "").strip():
-        return _invite_error(
-            request, db, short_code, "请填写你的姓名，以及你在本次协作中负责的内容"
-        )
+    # 姓名/负责事项 2026-10-12 起不再强制本人填写——缺省回退链接上发起人
+    # 登记的值（校验在 domain：两头都没有才报 ValueError）。
 
     # 验证密码匹配
     if password != password_confirm:
@@ -668,6 +674,10 @@ async def login_join_invitation(
             db=db,
             short_code=short_code,
             user=user,
+            display_name=invitation_links.get_invitation_by_code(
+                db, short_code).invited_name,
+            responsibility=invitation_links.get_invitation_by_code(
+                db, short_code).invited_responsibility,
             ip_address=request.client.host if request.client else None,
             user_agent=request.headers.get("user-agent"),
         )
@@ -727,6 +737,7 @@ def matter_invitations_create(
     user: Annotated[User, Depends(get_current_user)],
     invited_name: Annotated[str, Form()] = "",
     invited_username: Annotated[str, Form()] = "",
+    invited_responsibility: Annotated[str, Form()] = "",
     expires_in_days: Annotated[str, Form()] = "",
     max_uses: Annotated[str, Form()] = "1",
 ):
@@ -744,6 +755,7 @@ def matter_invitations_create(
         created_by=user.id,
         invited_name=invited_name.strip() or None,
         invited_username=invited_username.strip() or None,
+        invited_responsibility=invited_responsibility.strip() or None,
         expires_in_days=days,
         max_uses=uses,
     )

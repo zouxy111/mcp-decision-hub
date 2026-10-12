@@ -267,3 +267,77 @@ def test_浏览器请求不受影响(client, db_session, owner, board):
     # 正常 Accept 仍按登录态分流（未登录 → 登录页 303）
     r = client.get("/", follow_redirects=False)
     assert r.status_code == 303
+
+
+# --------------------------------------------------------------------------
+# v24：姓名与负责事项前置到发起人环节（2026-10-12 owner 裁定）
+# --------------------------------------------------------------------------
+
+def test_链接登记负责事项_受邀人只设密码即带名片入板(client, db_session,
+                                                     owner, board):
+    inv = invitation_links.create_invitation_link(
+        db=db_session, matter_id=board.id, created_by=owner.id,
+        invited_name="张三", invited_username="zhangsan",
+        invited_responsibility="负责测试反馈验证")
+    db_session.commit()
+
+    # 受邀人注册：不传 display_name/responsibility，自动回退链接值
+    r = client.post(f"/api/invitations/consume/{inv.short_code}", json={
+        "username": "zhangsan", "password": "zhangsan-pw-123"})
+    assert r.json()["success"] is True
+
+    from sqlalchemy import select as _select
+    from hub.db.models import MatterParticipant, User
+    uid = db_session.scalar(_select(User.id).where(User.username == "zhangsan"))
+    row = db_session.get(MatterParticipant, (board.id, uid))
+    assert row.display_name == "张三"
+    assert row.responsibility == "负责测试反馈验证"
+
+
+def test_链接没登记两头都没填才报错(client, db_session, owner, board):
+    inv = invitation_links.create_invitation_link(
+        db=db_session, matter_id=board.id, created_by=owner.id)
+    db_session.commit()
+    r = client.post(f"/api/invitations/consume/{inv.short_code}", json={
+        "username": "noname", "password": "noname-pw-123"})
+    assert r.json()["success"] is False
+    assert "名片" in r.json()["error"]
+
+
+def test_本人当场改负责事项_以本人为准(client, db_session, owner, board):
+    inv = invitation_links.create_invitation_link(
+        db=db_session, matter_id=board.id, created_by=owner.id,
+        invited_name="张三", invited_responsibility="旧职责")
+    db_session.commit()
+    r = client.post(f"/api/invitations/consume/{inv.short_code}", json={
+        "username": "zhangsan", "password": "zhangsan-pw-123",
+        "display_name": "张三丰", "responsibility": "新职责"})
+    assert r.json()["success"] is True
+    from sqlalchemy import select as _select
+    from hub.db.models import MatterParticipant, User
+    uid = db_session.scalar(_select(User.id).where(User.username == "zhangsan"))
+    row = db_session.get(MatterParticipant, (board.id, uid))
+    assert row.display_name == "张三丰" and row.responsibility == "新职责"
+
+
+def test_落地页_已登记信息显示预填且不必填(client, db_session, owner, board):
+    inv = invitation_links.create_invitation_link(
+        db=db_session, matter_id=board.id, created_by=owner.id,
+        invited_name="张三", invited_username="newzhang",
+        invited_responsibility="负责验证")
+    db_session.commit()
+    page = client.get(f"/invite/{inv.short_code}")
+    assert 'value="张三"' in page.text
+    assert "负责验证" in page.text
+    assert "发起人已代填" in page.text
+
+
+def test_brief_已登记信息只问密码(client, db_session, owner, board, yangqi):
+    inv = invitation_links.create_invitation_link(
+        db=db_session, matter_id=board.id, created_by=owner.id,
+        invited_name="杨琦", invited_username="yangqi",
+        invited_responsibility="负责测试反馈验证")
+    db_session.commit()
+    r = client.get(f"/invite/{inv.short_code}?for_agent=1")
+    assert "只需密码" in r.text or "不必再问" in r.text
+    assert "负责测试反馈验证" in r.text

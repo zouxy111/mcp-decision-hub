@@ -103,17 +103,18 @@
       <h2 class="form-section-title">先简单介绍一下你自己</h2>
 
       <label class="field">
-        <span class="field-label">你的姓名<span class="req">*</span></span>
-        <input class="input" name="display_name" required maxlength="100"
+        <span class="field-label">你的姓名</span>
+        <input class="input" name="display_name" maxlength="100"
+               {% if invitation_info.invited_name %}value="{{ invitation_info.invited_name }}"{% endif %}
                placeholder="怎么称呼你，例如：李明">
-        <span class="field-hint">留言板上会显示这个名字，大家好知道在跟谁说话</span>
+        <span class="field-hint">{% if invitation_info.invited_name %}发起人已代填，可直接用或改{% else %}留言板上会显示这个名字，大家好知道在跟谁说话{% endif %}</span>
       </label>
 
       <label class="field">
-        <span class="field-label">你负责什么<span class="req">*</span></span>
-        <textarea class="input" name="responsibility" rows="3" required
-                  placeholder="例如：技术可行性评估——负责给出落地风险、验证方案和结论建议"></textarea>
-        <span class="field-hint">一句话说清你在这件事里负责/要交付的部分</span>
+        <span class="field-label">你负责什么</span>
+        <textarea class="input" name="responsibility" rows="3"
+                  placeholder="例如：技术可行性评估——负责给出落地风险、验证方案和结论建议">{% if invitation_info.invited_responsibility %}{{ invitation_info.invited_responsibility }}{% endif %}</textarea>
+        <span class="field-hint">{% if invitation_info.invited_responsibility %}发起人已代填，可直接用或改{% else %}一句话说清你在这件事里负责/要交付的部分{% endif %}</span>
       </label>
 
       {% if invitation_info.collaboration_mode == 'meeting' %}

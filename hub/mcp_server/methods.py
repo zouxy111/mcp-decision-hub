@@ -1779,6 +1779,7 @@ def _invitation_view(inv) -> dict:
         "full_url": f"/invite/{inv.short_code}",
         "invited_name": inv.invited_name,
         "invited_username": inv.invited_username,
+        "invited_responsibility": inv.invited_responsibility,
         "status": inv.status,
         "used_count": inv.used_count,
         "max_uses": inv.max_uses,
@@ -1795,8 +1796,9 @@ def mcp_create_invitation(
     matter_id: str,
     invited_name: str | None = None,
     invited_username: str | None = None,
+    invited_responsibility: str | None = None,
     expires_in_days: int | None = None,
-    max_uses: int | None = 1,
+    max_uses: int | None = None,
 ) -> dict:
     """给某个人生成一条本板的专属邀请链接（默认永久、1 次）。"""
     from hub.domain import invitation_links
@@ -1807,6 +1809,7 @@ def mcp_create_invitation(
     inv = invitation_links.create_invitation_link(
         db=session, matter_id=matter.id, created_by=user_id,
         invited_name=invited_name, invited_username=invited_username,
+        invited_responsibility=invited_responsibility,
         expires_in_days=expires_in_days, max_uses=max_uses)
     session.flush()
     audit.record_audit(session, audit.INVITE_CREATED, actor_user_id=user_id,
