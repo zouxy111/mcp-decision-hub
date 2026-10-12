@@ -9,10 +9,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from hub.api.passwords import hash_password
+from hub.api.tokens import issue_token
 from hub.db.models import InvitationLink, Matter, User
 from hub.domain import invitation_links
 from hub.domain.agent_brief import build_agent_brief
-from hub.web.deps import get_current_user, get_db, register_csrf_globals
+from hub.web.deps import get_current_user, get_db, register_csrf_globals, require_bearer
 
 # 2026-10-07：补``/api`` 前缀。此前 6 个 JSON 端点用的是裸路径
 # （``/create``、``/validate/{code}``、``/{id}/revoke``），与站点其他路由
@@ -82,10 +83,16 @@ class ValidateInvitationResponse(BaseModel):
 
 
 class ConsumeInvitationRequest(BaseModel):
-    """使用邀请链接的请求。"""
+    """使用邀请链接的请求。
+
+    2026-10-12：email 改为选填——Agent 代劳接入时往往不知道本人邮箱，
+    缺省自动生成占位邮箱（仅用于满足唯一约束，不发信）。
+    """
 
     username: str = Field(..., min_length=3, max_length=50)
-    email: str = Field(..., pattern=r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
+    email: str | None = Field(
+        default=None, pattern=r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$"
+    )
     password: str = Field(..., min_length=6)
     # 留言板形态要求先做个简单自我介绍：叫什么、负责什么（2026-10-04）。
     # 与 HTML 表单同一口径 —— 两个入口都必填，不做「页面严、接口松」的缺口。
@@ -98,12 +105,36 @@ class ConsumeInvitationRequest(BaseModel):
 
 
 class ConsumeInvitationResponse(BaseModel):
-    """使用邀请链接响应。"""
+    """使用邀请链接响应。
+
+    2026-10-12：成功时直接返回 ``access_token``——Agent 代劳接入的
+    场景下注册完即拿到令牌，省掉「再去登录换令牌」这一跳。
+    明文只在此出现一次，之后只能在 /settings/agents 重签。
+    """
 
     success: bool
     user_id: int | None = None
     username: str | None = None
     matter_id: str | None = None
+    access_token: str | None = None
+    error: str | None = None
+
+
+class JoinInvitationRequest(BaseModel):
+    """已有账号经邀请链接加入事项（Agent 代劳「下次接入」路径）。
+
+    调用前提：已用账号密码换得 Bearer Token（POST /api/auth/token）。
+    名片给了就更新，不给保持原样。
+    """
+
+    display_name: str | None = Field(default=None, max_length=100)
+    responsibility: str | None = Field(default=None, max_length=2000)
+
+
+class JoinInvitationResponse(BaseModel):
+    success: bool
+    matter_id: str | None = None
+    username: str | None = None
     error: str | None = None
 
 
@@ -209,22 +240,27 @@ def consume_invitation_route(
         # 获取 IP 和 User-Agent
         ip_address = req.client.host if req.client else None
         user_agent = req.headers.get("user-agent")
-        
+
         # 哈希密码
         password_hash = hash_password(request.password)
-        
+
+        # Agent 代劳接入通常没有邮箱：自动生成占位邮箱（唯一约束用，不发信）
+        email = request.email or f"{request.username}@onboard.local"
+
         # 消费邀请链接
         user, invitation = invitation_links.consume_invitation_link(
             db=db,
             short_code=short_code,
             username=request.username,
-            email=request.email,
+            email=email,
             password_hash=password_hash,
             ip_address=ip_address,
             user_agent=user_agent,
             display_name=request.display_name,
             responsibility=request.responsibility,
         )
+        # 注册成功即签发 Agent Token（Agent 代劳路径免「再登录一次换令牌」）
+        _, plaintext = issue_token(db, user=user, name="邀请接入")
         db.commit()
 
         return ConsumeInvitationResponse(
@@ -232,6 +268,7 @@ def consume_invitation_route(
             user_id=user.id,
             username=user.username,
             matter_id=invitation.matter_id,
+            access_token=plaintext,
         )
 
     except invitation_links.InvitationNotFoundError:
@@ -254,6 +291,45 @@ def consume_invitation_route(
         return ConsumeInvitationResponse(
             success=False, error=str(e)
         )
+
+
+@router.post("/join/{short_code}", response_model=JoinInvitationResponse)
+def join_invitation_route(
+    short_code: str,
+    request: JoinInvitationRequest,
+    req: Request,
+    user: Annotated[User, Depends(require_bearer)],
+    db: Annotated[Session, Depends(get_db)],
+):
+    """已有账号经邀请链接加入事项（Bearer 认证）。
+
+    Agent 代劳「下次接入」：拿本人账号密码调 /api/auth/token 换 Bearer，
+    再调本端点消费新邀请码入板。不建号、不涉及密码。
+    """
+    try:
+        invitation = invitation_links.join_matter_via_link(
+            db=db,
+            short_code=short_code,
+            user=user,
+            display_name=request.display_name,
+            responsibility=request.responsibility,
+            ip_address=req.client.host if req.client else None,
+            user_agent=req.headers.get("user-agent"),
+        )
+        db.commit()
+        return JoinInvitationResponse(
+            success=True,
+            matter_id=invitation.matter_id,
+            username=user.username,
+        )
+    except invitation_links.InvitationNotFoundError:
+        return JoinInvitationResponse(success=False, error="Invitation not found")
+    except invitation_links.InvitationExpiredError:
+        return JoinInvitationResponse(success=False, error="Invitation has expired")
+    except invitation_links.InvitationExhaustedError:
+        return JoinInvitationResponse(success=False, error="Invitation has been fully used")
+    except invitation_links.InvitationRevokedError:
+        return JoinInvitationResponse(success=False, error="Invitation has been revoked")
 
 
 @router.get("/matter/{matter_id}", response_model=list[InvitationLinkResponse])
@@ -393,6 +469,7 @@ def show_invitation_page(
             "short_code": short_code,
             "invitation_info": invitation_info,
             "error": error,
+            "site_base": str(request.base_url).rstrip("/"),
             "agent_brief": (
                 build_agent_brief(
                     site_base=str(request.base_url).rstrip("/"),

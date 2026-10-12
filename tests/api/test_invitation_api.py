@@ -437,3 +437,121 @@ def test_HTTP_JSON端点均带api前缀(client):
     # 落地页仍在根上（外部人点邮件里的链接要用）
     assert "/invite/{short_code}" in spec["paths"]
     assert "/api/invitations/create" in spec["paths"]
+
+
+# ---- Agent 代劳接入（2026-10-12）：consume 返令牌 + join 已有账号入板 ----
+
+
+def test_HTTP_消费邀请_直接返回可用令牌(client, test_user, matter_of_test_user):
+    """Agent 代劳路径：注册响应里直接带 access_token，省掉再登录一步。"""
+    code = _create_invitation(client, matter_of_test_user.id).json()["short_code"]
+
+    resp = client.post(f"/api/invitations/consume/{code}", json={
+        "username": "dave", "password": "dave-pw-123",
+        "display_name": "Dave", "responsibility": "负责后端",
+    })
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["success"] is True
+    token = body["access_token"]
+    assert token and token.startswith("hdt_")
+    # 令牌立即可用：能读到刚加入的事项
+    r = client.get("/api/items",
+                   headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 200
+    assert any(i["matter_id"] == matter_of_test_user.id
+               for i in r.json()["items"])
+
+
+def test_HTTP_消费邀请_邮箱选填自动生成占位(client, db_session,
+                                            test_user, matter_of_test_user):
+    """Agent 不知道本人邮箱时不必编造：服务端生成占位邮箱（不发信）。"""
+    code = _create_invitation(client, matter_of_test_user.id).json()["short_code"]
+
+    resp = client.post(f"/api/invitations/consume/{code}", json={
+        "username": "dave", "password": "dave-pw-123",
+        "display_name": "Dave", "responsibility": "负责后端",
+    })
+
+    assert resp.json()["success"] is True
+    user = db_session.scalar(
+        __import__("sqlalchemy").select(
+            __import__("hub.db.models", fromlist=["User"]).User
+        ).where(__import__("hub.db.models", fromlist=["User"]).User.username == "dave")
+    )
+    assert user.email == "dave@onboard.local"
+
+
+def test_HTTP_已有账号_携令牌加入事项(client, db_session, test_user,
+                                      matter_of_test_user, alice):
+    """下次接入路径：账号密码换 Bearer → join 消费邀请码入板。"""
+    code = _create_invitation(client, matter_of_test_user.id).json()["short_code"]
+
+    # alice 已有账号（密码 pw-123456）：先换令牌
+    tok = client.post("/api/auth/token", json={
+        "username": "alice", "password": "pw-123456"}).json()["access_token"]
+
+    resp = client.post(f"/api/invitations/join/{code}",
+                       headers={"Authorization": f"Bearer {tok}"},
+                       json={"display_name": "爱丽丝",
+                             "responsibility": "负责前端"})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["success"] is True
+    assert body["matter_id"] == matter_of_test_user.id
+    # 已在参与人表里，名片写入
+    from hub.db.models import MatterParticipant
+    row = db_session.get(MatterParticipant, (matter_of_test_user.id, alice.id))
+    assert row is not None and row.display_name == "爱丽丝"
+
+
+def test_HTTP_已有账号_join_未认证被拒(client, test_user, matter_of_test_user):
+    code = _create_invitation(client, matter_of_test_user.id).json()["short_code"]
+    resp = client.post(f"/api/invitations/join/{code}", json={})
+    assert resp.status_code == 401
+
+
+def test_HTTP_已有账号_join_无效邀请码返回错误(client, db_session, alice):
+    from hub.api.tokens import issue_token
+    _, plain = issue_token(db_session, user=alice, name="t")
+    db_session.commit()
+    resp = client.post("/api/invitations/join/no-such-code",
+                       headers={"Authorization": f"Bearer {plain}"},
+                       json={})
+    assert resp.status_code == 200
+    assert resp.json()["success"] is False
+
+
+def test_HTTP_已有账号_join_占用邀请次数(client, test_user, matter_of_test_user):
+    """max_uses=1 的链接：被注册用掉后，join 同样不能再消费。"""
+    code = _create_invitation(client, matter_of_test_user.id,
+                              max_uses=1).json()["short_code"]
+    r = client.post(f"/api/invitations/consume/{code}", json={
+        "username": "dave", "password": "dave-pw-123",
+        "display_name": "Dave", "responsibility": "负责后端"})
+    assert r.json()["success"] is True
+
+    tok = client.post("/api/auth/token", json={
+        "username": "alice", "password": "pw-123456"}).json()["access_token"]
+    r = client.post(f"/api/invitations/join/{code}",
+                    headers={"Authorization": f"Bearer {tok}"}, json={})
+    assert r.json()["success"] is False
+    assert "used" in r.json()["error"].lower()
+
+
+def test_HTTP_消费邀请_令牌只出现一次且入库为哈希(client, db_session,
+                                              test_user, matter_of_test_user):
+    """安全口径不变：响应明文一次，库里只有 SHA-256。"""
+    code = _create_invitation(client, matter_of_test_user.id).json()["short_code"]
+    resp = client.post(f"/api/invitations/consume/{code}", json={
+        "username": "dave", "password": "dave-pw-123",
+        "display_name": "Dave", "responsibility": "负责后端"})
+    plain = resp.json()["access_token"]
+
+    from hub.api.tokens import sha256_hex
+    from hub.db.models import AgentToken
+    rows = db_session.scalars(__import__("sqlalchemy").select(AgentToken)).all()
+    assert any(t.token_hash == sha256_hex(plain) for t in rows)
+    assert all(t.token_hash != plain for t in rows)

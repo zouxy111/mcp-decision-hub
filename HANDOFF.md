@@ -109,6 +109,12 @@ HTTPS_PROXY=socks5h://127.0.0.1:1080 gh api repos/zouxy111/mcp-decision-hub
   丢失提示（/settings/agents）、登录后回跳原页（`next` 参数，外跳白名单拦截）、
   附件前端预检（UTF-8 + 扩展名）。SKILL 包新增 §8 任务卡与「开工五步法」
   （复述任务→检索沉淀→口径锁定→人审→进度盘点）。
+- **Agent 代劳接入**（2026-10-12，owner 愿景「点开就能用」）：受邀人全程
+  不填表——本地 Agent 问本人（用户名/密码/称呼/负责什么）后代劳调接口。
+  `POST /api/invitations/consume/{code}` 成功即返 access_token（email 选填、
+  自动生成占位）；`POST /api/invitations/join/{code}`（Bearer）已有账号
+  消费新邀请码入板。agent_brief 重写为代劳协议；邀请落地页顶部加
+  「发给 Agent」免填表通道。账号规则不变（有密码、哈希存储、明文一次）。
 
 ### 注意：两张 tasks 表不是一回事
 

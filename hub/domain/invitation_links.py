@@ -305,9 +305,64 @@ def consume_invitation_link(
     return user, invitation
 
 
+def join_matter_via_link(
+    db: Session,
+    short_code: str,
+    *,
+    user: User,
+    display_name: str | None = None,
+    responsibility: str | None = None,
+    ip_address: str | None = None,
+    user_agent: str | None = None,
+) -> InvitationLink:
+    """已有账号经邀请链接加入事项（Agent 代劳接入，2026-10-12）。
+
+    与 :func:`consume_invitation_link` 的差别：不建号、不收密码——
+    调用方先用账号密码换 Bearer Token（/api/auth/token），再携 Token
+    调本函数。验证、消费记录、计数口径与 consume 完全一致，
+    两种入口不会造出不同的计数语义。
+
+    已在板上时幂等：不重复加行，给了名片就顺手更新。
+    """
+    invitation = get_invitation_by_code(db, short_code)
+    if not invitation:
+        raise InvitationNotFoundError(f"链接 {short_code} 不存在")
+
+    validate_invitation(invitation)
+
+    existing = db.get(MatterParticipant, (invitation.matter_id, user.id))
+    if existing is None:
+        db.add(MatterParticipant(
+            matter_id=invitation.matter_id,
+            user_id=user.id,
+            display_name=(display_name or "").strip()[:100] or None,
+            responsibility=(responsibility or "").strip() or None,
+        ))
+    else:
+        if display_name and display_name.strip():
+            existing.display_name = display_name.strip()[:100]
+        if responsibility and responsibility.strip():
+            existing.responsibility = responsibility.strip()
+
+    db.add(InvitationConsumption(
+        invitation_id=invitation.id,
+        user_id=user.id,
+        ip_address=ip_address,
+        user_agent=user_agent,
+        consumed_at=utcnow(),
+    ))
+
+    invitation.used_count += 1
+    if invitation.max_uses is not None and invitation.used_count >= invitation.max_uses:
+        invitation.status = "consumed"
+
+    db.flush()
+    return invitation
+
+
 def revoke_invitation(db: Session, invitation_id: str, revoked_by: int) -> None:
     """撤销邀请链接。
-    
+
     Args:
         db: 数据库会话
         invitation_id: 邀请链接 ID

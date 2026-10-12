@@ -33,6 +33,17 @@
       </div>
     </div>
 
+    {% if agent_brief %}
+    <details class="agent-route" open>
+      <summary><b>有 AI 助手？全程不用填表</b>——把下面这段原样发给它，注册、入板、接令牌它都代劳</summary>
+      <pre class="board-attach-body">我受邀参与一个协作（邀请码：{{ short_code }}）。请执行：
+1. 读取 {{ site_base }}/api/invitations/validate/{{ short_code }}，用返回里的 agent_brief 作为接入说明
+2. 严格按说明带我完成接入：先问我要用户名、密码、怎么称呼、负责什么，然后由你代劳调接口完成注册和接令牌
+3. 全程不需要我打开网页填表；你想看看板子长什么样时再开浏览器</pre>
+      <p class="dim mt-8 mb-0">没有 Agent 或想自己填？用下面的表单，效果一样。</p>
+    </details>
+    {% endif %}
+
     <form method="post" action="/invite/{{ short_code }}/accept" class="invite-form">
       <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
       
